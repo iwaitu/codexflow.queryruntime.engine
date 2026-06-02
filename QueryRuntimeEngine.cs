@@ -26,6 +26,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
         var terminationReason = QueryTerminationReason.MaxRounds;
         var seq = 0L;
         var requiredToolSatisfied = false;
+        var completedRounds = 0;
 
         try
         {
@@ -89,6 +90,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
                     finalText = assistantText;
                     terminationReason = QueryTerminationReason.NoToolCalls;
                     await EmitRoundCompletedAsync(eventSink, ++seq, queryId, request, round, 0, assistantText, null).ConfigureAwait(false);
+                    completedRounds = round + 1;
                     break;
                 }
 
@@ -157,6 +159,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
 
                 messages.Add(new ChatMessage(ChatRole.Tool, toolMessages));
                 await EmitRoundCompletedAsync(eventSink, ++seq, queryId, request, round, functionCalls.Count, assistantText, "tool_calls").ConfigureAwait(false);
+                completedRounds = round + 1;
             }
 
             stopwatch.Stop();
@@ -169,7 +172,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
                     request.SessionId,
                     Now(),
                     terminationReason,
-                    Math.Min(Math.Max(1, request.MaxRounds), seq == 0 ? 0 : request.MaxRounds),
+                    completedRounds,
                     totalToolCalls,
                     stopwatch.ElapsedMilliseconds,
                     null)).ConfigureAwait(false);
@@ -180,7 +183,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
                 traceFilePath,
                 finalText,
                 terminationReason,
-                Math.Min(Math.Max(1, request.MaxRounds), Math.Max(1, totalToolCalls + 1)),
+                completedRounds,
                 totalToolCalls,
                 stopwatch.ElapsedMilliseconds);
         }
