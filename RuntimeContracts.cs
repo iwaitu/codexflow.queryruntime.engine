@@ -94,8 +94,15 @@ public sealed record ModelResponseSampledEvent(
     DateTimeOffset Timestamp,
     int Round,
     int AssistantTextLength,
-    int StructuredToolCallCount)
+    int StructuredToolCallCount,
+    string AssistantText,
+    IReadOnlyList<QueryRuntimeFunctionCallSnapshot> ToolCalls)
     : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
+
+public sealed record QueryRuntimeFunctionCallSnapshot(
+    string CallId,
+    string Name,
+    IReadOnlyDictionary<string, object?> Arguments);
 
 public sealed record ToolCallRequestedEvent(
     long Seq,

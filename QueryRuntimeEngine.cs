@@ -83,7 +83,16 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
                         Now(),
                         round,
                         assistantText.Length,
-                        functionCalls.Count)).ConfigureAwait(false);
+                        functionCalls.Count,
+                        assistantText,
+                        functionCalls
+                            .Select(static functionCall => new QueryRuntimeFunctionCallSnapshot(
+                                functionCall.CallId,
+                                functionCall.Name,
+                                functionCall.Arguments == null
+                                    ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                                    : new Dictionary<string, object?>(functionCall.Arguments, StringComparer.OrdinalIgnoreCase)))
+                            .ToArray())).ConfigureAwait(false);
 
                 if (functionCalls.Count == 0 || !request.EnableTools)
                 {
