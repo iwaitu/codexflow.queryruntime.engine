@@ -8,6 +8,56 @@ namespace CodexFlow.QueryRuntime.UnitTests.Runtime;
 public sealed class StandaloneQueryRuntimeEngineTests
 {
     [Fact]
+    public async Task ExecuteAsync_UsesInitialMessagesForMultiTurnConversationHistory()
+    {
+        var initialMessages = new List<ChatMessage>
+        {
+            new(ChatRole.System, "You are QRE."),
+            new(ChatRole.User, "Summarize the repository."),
+            new(ChatRole.Assistant, "It is a QueryRuntime engine repository."),
+            new(ChatRole.User, "Now explain how history is passed to the runtime.")
+        };
+        var model = new ScriptedModelClient(
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("Pass history through InitialMessages.")]));
+        var sink = new CapturingEventSink();
+        Qre.IQueryRuntimeEngine engine = new Qre.QueryRuntimeEngine(model);
+
+        var result = await engine.ExecuteAsync(
+            new Qre.QueryRuntimeRequest
+            {
+                SessionId = Guid.NewGuid().ToString("N"),
+                InitialMessages = initialMessages,
+                MaxRounds = 1,
+                EnableTools = false
+            },
+            sink,
+            "run-history",
+            "/tmp/qre-test/events.jsonl",
+            workspacePath: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(Qre.QueryTerminationReason.NoToolCalls, result.TerminationReason);
+        Assert.Equal("Pass history through InitialMessages.", result.FinalText);
+
+        var modelRequest = Assert.Single(model.Requests);
+        Assert.Equal(4, modelRequest.Messages.Count);
+        Assert.Equal(ChatRole.System, modelRequest.Messages[0].Role);
+        Assert.Equal("You are QRE.", ReadText(modelRequest.Messages[0]));
+        Assert.Equal(ChatRole.User, modelRequest.Messages[1].Role);
+        Assert.Equal("Summarize the repository.", ReadText(modelRequest.Messages[1]));
+        Assert.Equal(ChatRole.Assistant, modelRequest.Messages[2].Role);
+        Assert.Equal("It is a QueryRuntime engine repository.", ReadText(modelRequest.Messages[2]));
+        Assert.Equal(ChatRole.User, modelRequest.Messages[3].Role);
+        Assert.Equal("Now explain how history is passed to the runtime.", ReadText(modelRequest.Messages[3]));
+
+        Assert.Contains(
+            sink.Events,
+            evt => evt is Qre.PromptAssemblySnapshotEvent snapshot &&
+                   snapshot.Round == 0 &&
+                   snapshot.MessageCount == initialMessages.Count);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ReportsActualRounds_WhenRoundHasMultipleToolCalls()
     {
         var firstTool = AIFunctionFactory.Create(
@@ -25,7 +75,7 @@ public sealed class StandaloneQueryRuntimeEngineTests
                 ]),
             new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")]));
         var sink = new CapturingEventSink();
-        var engine = new Qre.QueryRuntimeEngine(model);
+        Qre.IQueryRuntimeEngine engine = new Qre.QueryRuntimeEngine(model);
 
         var result = await engine.ExecuteAsync(
             new Qre.QueryRuntimeRequest
@@ -52,14 +102,20 @@ public sealed class StandaloneQueryRuntimeEngineTests
     {
         private readonly Queue<ChatResponseUpdate> _responses = new(responses);
 
+        public List<Qre.QueryRuntimeModelRequest> Requests { get; } = [];
+
         public async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(
             Qre.QueryRuntimeModelRequest request,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
+            Requests.Add(request);
             yield return _responses.Dequeue();
             await Task.CompletedTask;
         }
     }
+
+    private static string ReadText(ChatMessage message)
+        => string.Concat(message.Contents.OfType<TextContent>().Select(static content => content.Text));
 
     private sealed class CapturingEventSink : Qre.IQueryRuntimeEventSink
     {

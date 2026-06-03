@@ -9,6 +9,17 @@ public interface IQueryRuntimeModelClient
         CancellationToken ct = default);
 }
 
+public interface IQueryRuntimeEngine
+{
+    Task<QueryRuntimeResult> ExecuteAsync(
+        QueryRuntimeRequest request,
+        IQueryRuntimeEventSink eventSink,
+        string runId,
+        string traceFilePath,
+        string? workspacePath,
+        CancellationToken ct = default);
+}
+
 public sealed record QueryRuntimeModelRequest(
     IReadOnlyList<ChatMessage> Messages,
     ChatOptions? Options,

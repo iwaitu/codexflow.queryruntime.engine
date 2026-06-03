@@ -293,11 +293,12 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 
 ## 文档
 
-- [docs/queryruntime-technical-guide.md](docs/queryruntime-technical-guide.md) — 技术说明（定位、架构、用法、演进路径）。
-- [docs/IQueryRuntimeEngine.md](docs/IQueryRuntimeEngine.md) — 统一执行引擎详细设计。
-- [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — 开源 harness 策略。
+- [docs/queryruntime-technical-guide.zh-CN.md](docs/queryruntime-technical-guide.zh-CN.md) — 技术说明（定位、架构、用法、演进路径）。
+- [docs/IQueryRuntimeEngine.zh-CN.md](docs/IQueryRuntimeEngine.zh-CN.md) — 统一执行引擎详细设计。
+- [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — 开源 harness 策略（英文）。
 - [docs/queryruntime-next-development-plan.zh-CN.md](docs/queryruntime-next-development-plan.zh-CN.md) — 后续开发计划。
-- [docs/adr/](docs/adr/)、[docs/threat-model.md](docs/threat-model.md)、[docs/tool-capabilities.md](docs/tool-capabilities.md)。
+- [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — 工具分区矩阵（英文）。
+- [docs/tool-capabilities.md](docs/tool-capabilities.md)、[docs/threat-model.md](docs/threat-model.md)（英文）。
 
 ## License
 

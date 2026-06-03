@@ -339,7 +339,8 @@ platform:
 - [docs/IQueryRuntimeEngine.md](docs/IQueryRuntimeEngine.md) — unified execution engine design.
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — open-source harness strategy.
 - [docs/queryruntime-next-development-plan.md](docs/queryruntime-next-development-plan.md) — development plan ([中文](docs/queryruntime-next-development-plan.zh-CN.md)).
-- [docs/adr/](docs/adr/), [docs/threat-model.md](docs/threat-model.md), [docs/tool-capabilities.md](docs/tool-capabilities.md).
+- [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — tool partition matrix.
+- [docs/tool-capabilities.md](docs/tool-capabilities.md), [docs/threat-model.md](docs/threat-model.md).
 
 ## License
 

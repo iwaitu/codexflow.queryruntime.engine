@@ -3,7 +3,7 @@ using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Engine;
 
-public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
+public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : IQueryRuntimeEngine
 {
     public async Task<QueryRuntimeResult> ExecuteAsync(
         QueryRuntimeRequest request,

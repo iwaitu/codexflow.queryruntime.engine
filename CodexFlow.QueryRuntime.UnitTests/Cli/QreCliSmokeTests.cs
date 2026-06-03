@@ -748,6 +748,7 @@ public sealed class QreCliSmokeTests
     public async Task SandboxExec_ReadonlyAllowsRipgrepSearch()
     {
         using var workspace = TemporaryWorkspace.Create();
+        using var rgShim = TemporaryRipgrepShim.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "notes.txt"), "TODO: verify qre policy");
 
         var result = await CaptureConsoleAsync(
@@ -959,6 +960,83 @@ public sealed class QreCliSmokeTests
     }
 
     private sealed record CapturedConsole(int ExitCode, string StandardOutput, string StandardError);
+
+    private sealed class TemporaryRipgrepShim : IDisposable
+    {
+        private readonly string _path;
+        private readonly string? _originalPath;
+        private readonly string? _originalPathExt;
+
+        private TemporaryRipgrepShim(string path, string? originalPath, string? originalPathExt)
+        {
+            _path = path;
+            _originalPath = originalPath;
+            _originalPathExt = originalPathExt;
+        }
+
+        public static TemporaryRipgrepShim Create()
+        {
+            var path = Path.Combine(Path.GetTempPath(), "codexflow-qre-rg-shim", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(path);
+
+            if (OperatingSystem.IsWindows())
+            {
+                File.WriteAllText(
+                    Path.Combine(path, "rg.cmd"),
+                    """
+                    @echo off
+                    echo notes.txt:TODO: verify qre policy
+                    """);
+            }
+            else
+            {
+                var rgPath = Path.Combine(path, "rg");
+                File.WriteAllText(
+                    rgPath,
+                    """
+                    #!/bin/sh
+                    printf '%s\n' 'notes.txt:TODO: verify qre policy'
+                    """);
+                File.SetUnixFileMode(
+                    rgPath,
+                    UnixFileMode.UserRead |
+                    UnixFileMode.UserWrite |
+                    UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead |
+                    UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead |
+                    UnixFileMode.OtherExecute);
+            }
+
+            var originalPath = Environment.GetEnvironmentVariable("PATH");
+            var pathPrefix = string.IsNullOrWhiteSpace(originalPath)
+                ? path
+                : path + Path.PathSeparator + originalPath;
+            Environment.SetEnvironmentVariable("PATH", pathPrefix);
+
+            var originalPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+            if (OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(originalPathExt))
+            {
+                Environment.SetEnvironmentVariable("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+            }
+
+            return new TemporaryRipgrepShim(path, originalPath, originalPathExt);
+        }
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable("PATH", _originalPath);
+            if (OperatingSystem.IsWindows())
+            {
+                Environment.SetEnvironmentVariable("PATHEXT", _originalPathExt);
+            }
+
+            if (Directory.Exists(_path))
+            {
+                Directory.Delete(_path, recursive: true);
+            }
+        }
+    }
 
     private static int CountOccurrences(string value, string search)
     {
