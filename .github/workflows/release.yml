@@ -1,12 +1,17 @@
 name: Release
 
 # Publishes single-file Native AOT `qre` binaries for every supported platform
-# whenever a version tag (e.g. v0.1.0-alpha.1) is pushed.
+# after CI succeeds on main, whenever a version tag (e.g. v0.1.0-alpha.1) is
+# pushed, or when the workflow is manually dispatched.
 #
 # Native AOT cannot cross-compile across operating systems, so each target is
 # built on a matching native runner.
 
 on:
+  workflow_run:
+    workflows: ['CI']
+    branches: [main]
+    types: [completed]
   push:
     tags:
       - 'v*'
@@ -21,8 +26,57 @@ permissions:
   contents: write
 
 jobs:
+  metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      target_commitish: ${{ steps.meta.outputs.target_commitish }}
+    steps:
+      - name: Resolve checkout ref
+        id: ref
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            CHECKOUT_REF="${{ github.event.workflow_run.head_sha }}"
+          else
+            CHECKOUT_REF="${GITHUB_SHA}"
+          fi
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.checkout_ref }}
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj | head -n 1)"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "Failed to resolve release version." >&2
+            exit 1
+          fi
+
+          CHECKOUT_REF="${{ steps.ref.outputs.checkout_ref }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "target_commitish=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+          echo "Resolved checkout ref: $CHECKOUT_REF"
+
   build:
     name: Build ${{ matrix.rid }}
+    needs: metadata
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,6 +94,8 @@ jobs:
             rid: win-x64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -50,26 +106,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: $VERSION"
-
       - name: Publish Native AOT
         shell: bash
         run: |
           dotnet publish CodexFlow.QueryRuntime.Cli \
             -c Release -r ${{ matrix.rid }} \
             -p:PublishAot=true -p:SelfContained=true \
-            -p:Version=${{ steps.ver.outputs.version }} \
-            -p:AssemblyInformationalVersion=${{ steps.ver.outputs.version }}
+            -p:Version=${{ needs.metadata.outputs.version }} \
+            -p:AssemblyInformationalVersion=${{ needs.metadata.outputs.version }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -105,9 +149,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [metadata, build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -121,6 +164,9 @@ jobs:
       - name: Create / update release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.metadata.outputs.version }}
+          target_commitish: ${{ needs.metadata.outputs.target_commitish }}
+          name: qre v${{ needs.metadata.outputs.version }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
