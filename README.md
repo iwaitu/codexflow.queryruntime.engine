@@ -20,10 +20,9 @@ single native binary**.
 > you can run today. This is a standalone repository split out from the original
 > `codexflow` repo, focused only on the QueryRuntime suite.
 
-<!--
-  Demo GIF goes here once recorded, e.g.:
-  ![qre run → trace → replay](docs/assets/qre-demo.gif)
--->
+![qre run -> trace -> replay demo](docs/assets/qre-demo.gif)
+
+[asciinema cast](docs/assets/qre-demo.cast)
 
 ## Why it exists
 
