@@ -1,6 +1,4 @@
 <Solution>
-  <Project Path="CodexFlow.Contracts/CodexFlow.Contracts.csproj" />
-  <Project Path="CodexFlow.Core/CodexFlow.Core.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Abstractions/CodexFlow.QueryRuntime.Abstractions.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Engine/CodexFlow.QueryRuntime.Engine.csproj" />

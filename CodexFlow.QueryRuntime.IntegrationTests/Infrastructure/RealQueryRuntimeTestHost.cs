@@ -1,73 +1,31 @@
-using CodexFlow.Core.Abstractions;
-using CodexFlow.Core.Models;
-using CodexFlow.Core.Runtime;
-using CodexFlow.Core.Services;
-using CodexFlow.Core.Telemetry;
+using System.Diagnostics.CodeAnalysis;
 using CodexFlow.QueryRuntime.Experimental;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using System.Net.Http.Headers;
-using System.Runtime.CompilerServices;
-using System.Text;
+using Microsoft.Extensions.AI.VllmChatClient.Gemma;
+using Microsoft.Extensions.AI.VllmChatClient.GptOss;
 
 namespace CodexFlow.QueryRuntime.IntegrationTests.Infrastructure;
 
 internal sealed class RealQueryRuntimeTestHost : IDisposable
 {
     private readonly IChatClient _chatClient;
-    private readonly DefaultLLMExecutor _llmExecutor;
 
-    private RealQueryRuntimeTestHost(
-        RealVllmAgentSettings settings,
-        IChatClient chatClient,
-        DefaultLLMExecutor llmExecutor,
-        QueryRuntimeEngine engine)
+    private RealQueryRuntimeTestHost(RealQreModelSettings settings, IChatClient chatClient)
     {
         Settings = settings;
         _chatClient = chatClient;
-        _llmExecutor = llmExecutor;
-        Engine = engine;
     }
 
-    public RealVllmAgentSettings Settings { get; }
+    public RealQreModelSettings Settings { get; }
 
-    public QueryRuntimeEngine Engine { get; }
-
-    public async Task<ChatResponse> GetResponseAsync(
+    public Task<ChatResponse> GetResponseAsync(
         IReadOnlyList<ChatMessage> messages,
         ChatOptions? options,
         CancellationToken ct)
-    {
-        return await _chatClient.GetResponseAsync(messages, options, ct);
-    }
+        => _chatClient.GetResponseAsync(messages, options, ct);
 
-    public IAsyncEnumerable<ChatResponseUpdate> StreamResponseAsync(
-        IReadOnlyList<ChatMessage> messages,
-        ChatOptions? options,
-        CancellationToken ct)
-    {
-        return _chatClient.GetStreamingResponseAsync(messages, options, ct);
-    }
-
-    public IExperimentalModelClient CreateExperimentalModelClient(bool enableRequiredToolChoiceInjection = true)
-        => enableRequiredToolChoiceInjection
-            ? new ChatClientExperimentalModelClient(_chatClient)
-            : new ChatClientExperimentalModelClient(CreatePlainChatClient(Settings));
-
-    public QueryRuntimeEngine CreateEngine(IContextWindowManager? contextWindowManager = null)
-    {
-        return new QueryRuntimeEngine(
-            _llmExecutor,
-            contextWindowManager,
-            new DefaultToolExecutionCoordinator(NullLogger<DefaultToolExecutionCoordinator>.Instance),
-            new DefaultQueryRecoveryPolicy(NullLogger<DefaultQueryRecoveryPolicy>.Instance),
-            telemetry: null,
-            logger: NullLogger<QueryRuntimeEngine>.Instance,
-            runtimeHookDispatcher: CreateRuntimeHookDispatcher());
-    }
+    public IExperimentalModelClient CreateExperimentalModelClient()
+        => new ChatClientExperimentalModelClient(_chatClient);
 
     public static bool TryCreate(out RealQueryRuntimeTestHost? host, out string reason)
     {
@@ -82,61 +40,18 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
             return false;
         }
 
-        var configPath = RepositoryPathHelper.FindRepositoryFile(Path.Combine("CodexFlow", "appsettings.json"));
-        if (configPath is null)
-        {
-            reason = "Could not locate CodexFlow/appsettings.json from the current test process.";
-            return false;
-        }
-
-        var configuration = new ConfigurationBuilder()
-            .AddJsonFile(configPath, optional: false, reloadOnChange: false)
-            .Build();
-
-        var settings = configuration.GetSection("VllmAgent").Get<RealVllmAgentSettings>();
-        if (settings is null ||
-            string.IsNullOrWhiteSpace(settings.ApiUrl) ||
+        var settings = RealQreModelSettings.FromEnvironment();
+        if (string.IsNullOrWhiteSpace(settings.ApiUrl) ||
             string.IsNullOrWhiteSpace(settings.ApiKey) ||
             string.IsNullOrWhiteSpace(settings.Model))
         {
-            reason = "VllmAgent section is missing ApiUrl, ApiKey, or Model in CodexFlow/appsettings.json.";
+            reason = "Set QRE_API_URL, QRE_API_KEY, and QRE_MODEL to enable live QueryRuntime integration tests.";
             return false;
         }
 
-        var chatClient = CreateChatClient(settings);
-        var llmExecutor = new DefaultLLMExecutor(
-            chatClient,
-            new NoOpMemoryContextAssembler(),
-            NullLogger<DefaultLLMExecutor>.Instance);
-
-        var engine = new QueryRuntimeEngine(
-            llmExecutor,
-            contextWindowManager: null,
-            toolCoordinator: new DefaultToolExecutionCoordinator(NullLogger<DefaultToolExecutionCoordinator>.Instance),
-            recoveryPolicy: new DefaultQueryRecoveryPolicy(NullLogger<DefaultQueryRecoveryPolicy>.Instance),
-            telemetry: null,
-            logger: NullLogger<QueryRuntimeEngine>.Instance,
-            runtimeHookDispatcher: CreateRuntimeHookDispatcher());
-
-        host = new RealQueryRuntimeTestHost(settings, chatClient, llmExecutor, engine);
+        host = new RealQueryRuntimeTestHost(settings, CreateChatClient(settings));
         reason = string.Empty;
         return true;
-    }
-
-    public static bool IsSoakEnabled()
-    {
-        return string.Equals(
-            Environment.GetEnvironmentVariable("RUN_QUERY_RUNTIME_REAL_SOAK_TESTS"),
-            "true",
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    public static int GetSoakIterations()
-    {
-        var raw = Environment.GetEnvironmentVariable("QUERY_RUNTIME_REAL_SOAK_ITERATIONS");
-        return int.TryParse(raw, out var parsed) && parsed > 0
-            ? parsed
-            : 5;
     }
 
     public ChatOptions CreateChatOptions(IReadOnlyList<AIFunction>? tools = null, int maxOutputTokens = 256)
@@ -150,27 +65,150 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
         };
     }
 
-    public void Dispose()
+    public void Dispose() => _chatClient.Dispose();
+
+    private static IChatClient CreateChatClient(RealQreModelSettings settings)
+        => CreateVllmChatClient(settings.ApiUrl, settings.ApiKey, settings.Model, settings.ApiMode);
+
+    private static IChatClient CreateVllmChatClient(
+        string apiUrl,
+        string apiKey,
+        string model,
+        string? apiMode = null)
+        => CreateVllmChatClient(ToAbsoluteUri(apiUrl), apiKey, model, ResolveApiMode(apiMode));
+
+    private static IChatClient CreateVllmChatClient(
+        Uri apiUrl,
+        string apiKey,
+        string model,
+        VllmApiMode apiMode)
     {
-        _chatClient.Dispose();
+        ArgumentNullException.ThrowIfNull(apiUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
+        var normalizedModel = model.Trim().ToLowerInvariant();
+        var apiUrlText = apiUrl.ToString();
+
+        if (IsGptOssModel(normalizedModel))
+        {
+            return new VllmGptOssChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsOpenAiGptModel(normalizedModel))
+        {
+            return new VllmOpenAiGptClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsGeminiModel(normalizedModel))
+        {
+            if (apiMode != VllmApiMode.ChatCompletions)
+            {
+                throw new NotSupportedException("Gemini client does not support non-ChatCompletions VllmApiMode.");
+            }
+
+            return new VllmGemini3ChatClient(apiUrlText, apiKey, model);
+        }
+
+        if (IsClaudeModel(normalizedModel))
+        {
+            return new VllmClaudeChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsKimiModel(normalizedModel))
+        {
+            return new VllmKimiK2ChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsMiniMaxModel(normalizedModel))
+        {
+            return new VllmMiniMaxChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsGlmModel(normalizedModel))
+        {
+            return new VllmGlmChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsQwenModel(normalizedModel))
+        {
+            return new VllmQwen3NextChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        if (IsDeepseekModel(normalizedModel))
+        {
+            return new VllmDeepseekV3ChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
+        }
+
+        return new VllmQwen3NextChatClient(apiUrlText, apiKey, model, httpClient: null, apiMode);
     }
 
-    private static IChatClient CreateChatClient(RealVllmAgentSettings settings)
+    private static VllmApiMode ResolveApiMode(string? configuredValue)
     {
-        var httpClient = new HttpClient(new LiveToolChoiceInjectionHandler(new HttpClientHandler()));
-        var inner = VllmChatClientFactory.Create(settings.ApiUrl, settings.ApiKey, settings.Model, settings.ApiMode, httpClient);
-        return new ToolChoiceAwareChatClient(inner);
+        if (string.IsNullOrWhiteSpace(configuredValue))
+        {
+            return VllmApiMode.ChatCompletions;
+        }
+
+        var normalized = configuredValue.Trim()
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .ToLowerInvariant();
+
+        return normalized switch
+        {
+            "chat" or "chatcompletion" or "chatcompletions" or "completions"
+                => VllmApiMode.ChatCompletions,
+            "response" or "responses"
+                => VllmApiMode.Responses,
+            "anthropic" or "anthropicmessage" or "anthropicmessages" or "message" or "messages"
+                => VllmApiMode.AnthropicMessages,
+            _ => throw new InvalidOperationException($"Unsupported QRE api mode value '{configuredValue}'.")
+        };
     }
 
-    private static IChatClient CreatePlainChatClient(RealVllmAgentSettings settings)
-        => VllmChatClientFactory.Create(settings.ApiUrl, settings.ApiKey, settings.Model, settings.ApiMode);
+    private static bool IsQwenModel(string model)
+        => model.StartsWith("qwen", StringComparison.Ordinal) ||
+           model.Contains("/qwen", StringComparison.Ordinal);
 
-    private static RuntimeHookDispatcher CreateRuntimeHookDispatcher()
-        => new(
-            [new RequiredToolExecutionRuntimeHook()],
-            NullLogger<RuntimeHookDispatcher>.Instance);
+    private static bool IsGptOssModel(string model)
+        => model.StartsWith("openai/gpt-oss", StringComparison.Ordinal) ||
+           model.StartsWith("gpt-oss", StringComparison.Ordinal);
 
-    internal sealed class RealVllmAgentSettings
+    private static bool IsOpenAiGptModel(string model)
+        => model.StartsWith("openai/gpt-", StringComparison.Ordinal);
+
+    private static bool IsGeminiModel(string model)
+        => model.Contains("gemini", StringComparison.Ordinal);
+
+    private static bool IsClaudeModel(string model)
+        => model.Contains("claude", StringComparison.Ordinal);
+
+    private static bool IsKimiModel(string model)
+        => model.StartsWith("kimi-", StringComparison.Ordinal) ||
+           model.Contains("/kimi-", StringComparison.Ordinal);
+
+    private static bool IsMiniMaxModel(string model)
+        => model.Contains("minimax", StringComparison.Ordinal);
+
+    private static bool IsGlmModel(string model)
+        => model.StartsWith("glm-", StringComparison.Ordinal) ||
+           model.Contains("/glm-", StringComparison.Ordinal);
+
+    private static bool IsDeepseekModel(string model)
+        => model.StartsWith("deepseek", StringComparison.Ordinal) ||
+           model.StartsWith("/deepseek", StringComparison.Ordinal);
+
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings", Justification = "Test host accepts endpoint text from environment variables.")]
+    private static Uri ToAbsoluteUri(string apiUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiUrl);
+
+        return new Uri(apiUrl, UriKind.Absolute);
+    }
+
+    internal sealed class RealQreModelSettings
     {
         public string ApiUrl { get; init; } = string.Empty;
 
@@ -180,212 +218,19 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
 
         public string? ApiMode { get; init; }
 
-        public int? MaxTokensLength { get; init; }
-
-        public float? Temperature { get; init; }
-
         public float? TopP { get; init; }
-    }
 
-    private sealed class NoOpMemoryContextAssembler : IMemoryContextAssembler
-    {
-        public Task<MemoryContextEnvelope> AssembleAsync(MemoryContextRequest request, CancellationToken ct = default)
-            => Task.FromResult(MemoryContextEnvelope.Empty);
-    }
-
-    private sealed class ToolChoiceAwareChatClient(IChatClient inner) : IChatClient
-    {
-        public void Dispose() => inner.Dispose();
-
-        public TService? GetService<TService>(object? serviceKey = null) where TService : class
-            => inner.GetService<TService>(serviceKey);
-
-        object? IChatClient.GetService(Type serviceType, object? serviceKey)
-            => ((IChatClient)inner).GetService(serviceType, serviceKey);
-
-        public async Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            using var scope = LiveToolWireOverrideScope.Push(ResolveRequiredToolName(options));
-            return await inner.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            using var scope = LiveToolWireOverrideScope.Push(ResolveRequiredToolName(options));
-            await foreach (var update in inner.GetStreamingResponseAsync(messages, options, cancellationToken)
-                               .ConfigureAwait(false))
+        public static RealQreModelSettings FromEnvironment()
+            => new()
             {
-                yield return update;
-            }
-        }
-
-        private static string? ResolveRequiredToolName(ChatOptions? options)
-        {
-            if (options == null)
-            {
-                return null;
-            }
-
-            var toolMode = options.GetType().GetProperty("ToolMode")?.GetValue(options);
-            if (toolMode != null)
-            {
-                foreach (var propertyName in new[] { "RequiredFunctionName", "RequiredToolName", "FunctionName", "ToolName", "Name" })
-                {
-                    var value = toolMode.GetType().GetProperty(propertyName)?.GetValue(toolMode) as string;
-                    if (!string.IsNullOrWhiteSpace(value))
-                    {
-                        return value;
-                    }
-                }
-            }
-
-            return options.Tools?.Count == 1 ? options.Tools[0].Name : null;
-        }
-    }
-
-    private sealed class LiveToolChoiceInjectionHandler(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)
-    {
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            var requiredToolName = LiveToolWireOverrideScope.Current;
-            if (request.Content == null || string.IsNullOrWhiteSpace(requiredToolName))
-            {
-                return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            }
-
-            var body = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var effectiveBody = ApplyToolChoice(body, requiredToolName);
-            if (!string.Equals(effectiveBody, body, StringComparison.Ordinal))
-            {
-                request.Content = CloneStringContent(request.Content.Headers, effectiveBody);
-            }
-
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        }
-
-        private static string ApplyToolChoice(string body, string requiredToolName)
-        {
-            if (string.IsNullOrWhiteSpace(body))
-            {
-                return body;
-            }
-
-            try
-            {
-                var root = JObject.Parse(body);
-                if (root["tools"] is not JArray tools || tools.Count == 0)
-                {
-                    return body;
-                }
-
-                foreach (var tool in tools.OfType<JObject>())
-                {
-                    if (!string.Equals(GetToolName(tool), requiredToolName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    root["tools"] = new JArray(tool.DeepClone());
-                    root["tool_choice"] = BuildToolChoice(tool, requiredToolName);
-                    return root.ToString(Formatting.None);
-                }
-            }
-            catch (JsonException)
-            {
-                return body;
-            }
-
-            return body;
-        }
-
-        private static JToken BuildToolChoice(JObject matchedTool, string requiredToolName)
-        {
-            if (matchedTool["function"] is JObject)
-            {
-                return new JObject
-                {
-                    ["type"] = "function",
-                    ["function"] = new JObject
-                    {
-                        ["name"] = requiredToolName
-                    }
-                };
-            }
-
-            return new JObject
-            {
-                ["type"] = "tool",
-                ["name"] = requiredToolName
+                ApiUrl = Environment.GetEnvironmentVariable("QRE_API_URL") ?? string.Empty,
+                ApiKey = Environment.GetEnvironmentVariable("QRE_API_KEY") ?? string.Empty,
+                Model = Environment.GetEnvironmentVariable("QRE_MODEL") ?? string.Empty,
+                ApiMode = Environment.GetEnvironmentVariable("QRE_API_MODE"),
+                TopP = TryParseFloat(Environment.GetEnvironmentVariable("QRE_TOP_P"))
             };
-        }
 
-        private static string? GetToolName(JObject tool)
-        {
-            if (tool["name"]?.Type == JTokenType.String)
-            {
-                return tool["name"]!.Value<string>();
-            }
-
-            return tool["function"] is JObject function && function["name"]?.Type == JTokenType.String
-                ? function["name"]!.Value<string>()
-                : null;
-        }
-
-        private static HttpContent CloneStringContent(HttpContentHeaders headers, string body)
-        {
-            var mediaType = headers.ContentType?.MediaType ?? "application/json";
-            var charset = headers.ContentType?.CharSet;
-            Encoding encoding;
-            try
-            {
-                encoding = string.IsNullOrWhiteSpace(charset) ? Encoding.UTF8 : Encoding.GetEncoding(charset);
-            }
-            catch (ArgumentException)
-            {
-                encoding = Encoding.UTF8;
-            }
-
-            var content = new StringContent(body, encoding, mediaType);
-            foreach (var header in headers)
-            {
-                if (string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                content.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-
-            return content;
-        }
-    }
-
-    private sealed class LiveToolWireOverrideScope : IDisposable
-    {
-        private static readonly AsyncLocal<string?> CurrentOverride = new();
-        private readonly string? _previous;
-
-        private LiveToolWireOverrideScope(string? current)
-        {
-            _previous = CurrentOverride.Value;
-            CurrentOverride.Value = current;
-        }
-
-        public static string? Current => CurrentOverride.Value;
-
-        public static IDisposable Push(string? requiredToolName)
-            => new LiveToolWireOverrideScope(requiredToolName);
-
-        public void Dispose()
-        {
-            CurrentOverride.Value = _previous;
-        }
+        private static float? TryParseFloat(string? value)
+            => float.TryParse(value, out var parsed) ? parsed : null;
     }
 }

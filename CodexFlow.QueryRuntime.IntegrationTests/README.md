@@ -1,16 +1,19 @@
 # QueryRuntime Integration Tests
 
-这个项目专门承载 `QueryRuntime` 的真实模型集成测试与 spike 实验，不与现有 `CodexFlow.Tests` / `CodexFlow.Core.Tests` 混放。
+这个项目专门承载 `QueryRuntime` 的真实模型集成测试与 spike 实验，不混放 Core bridge 回归测试。
 
 ## 配置来源
 
-- 直接读取 `CodexFlow/appsettings.json` 中的 `VllmAgent` 配置
-- 不单独维护第二份模型配置
+- 直接读取 `QRE_API_URL`、`QRE_API_KEY`、`QRE_MODEL`
+- 可选读取 `QRE_API_MODE`、`QRE_TOP_P`
 
 ## 运行方式
 
 ```bash
 export RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true
+export QRE_API_URL=https://example.test/v1
+export QRE_API_KEY=...
+export QRE_MODEL=...
 dotnet test CodexFlow.QueryRuntime.IntegrationTests/CodexFlow.QueryRuntime.IntegrationTests.csproj
 ```
 

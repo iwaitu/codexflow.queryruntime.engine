@@ -18,12 +18,9 @@ Test projects:
 - `CodexFlow.QueryRuntime.UnitTests`
 - `CodexFlow.QueryRuntime.IntegrationTests`
 
-Compatibility projects:
-
-- `CodexFlow.Contracts`
-- `CodexFlow.Core`
-
-`CodexFlow.Core` and `CodexFlow.Contracts` are included because the current QueryRuntime unit and integration test surface still has Core bridge coverage. The long-term direction is for QueryRuntime runtime projects to stay independent and for Core to consume QueryRuntime through adapters.
+This repository intentionally does not include `CodexFlow.Core`. Core-side bridge
+coverage belongs in the original CodexFlow repository, with Core consuming
+QueryRuntime through adapters.
 
 ## Build
 
@@ -67,7 +64,6 @@ Primary QueryRuntime docs:
 - `docs/queryruntime-next-development-plan.md`
 - `docs/queryruntime-next-development-plan.zh-CN.md`
 - `docs/queryruntime-tool-partition-matrix.md`
-- `docs/IQueryRuntimeEngine.md`
 
 Related architecture and runtime docs:
 

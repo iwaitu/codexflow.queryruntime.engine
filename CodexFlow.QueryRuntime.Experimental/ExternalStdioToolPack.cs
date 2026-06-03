@@ -112,6 +112,11 @@ internal sealed class ExternalStdioAIFunction(
             process.StandardInput.Close();
             await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
         }
+        catch (IOException ex) when (IsBrokenPipe(ex))
+        {
+            process.StandardInput.Close();
+            await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             timedOut = true;
@@ -156,6 +161,24 @@ internal sealed class ExternalStdioAIFunction(
         return manifest.Transport.Equals("mcp-stdio", StringComparison.OrdinalIgnoreCase)
             ? ExtractMcpResult(stdout)
             : ExtractResult(stdout);
+    }
+
+    private static bool IsBrokenPipe(IOException exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException as IOException)
+        {
+            if (current.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (current.InnerException?.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string BuildRequestJson(

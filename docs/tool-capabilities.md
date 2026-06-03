@@ -66,15 +66,11 @@ Approval does not override unknown commands. `command.unknown_process` remains
 `Deny` until the command is added to the classifier with explicit capability
 coverage.
 
-## Legacy Policy Migration
+## Policy Migration Notes
 
-CodexFlow Core still has `CommandExecutionPolicy.VerifyWorker` during the
-migration. QRE must not reference Core at runtime, but the test suite checks
-that every legacy denied verify-worker subcommand is not allowed by the QRE
-capability policy unless it is routed through an explicit approval decision.
-
-This keeps the migration in dual-mode without making QRE depend on platform or
-Core services.
+This standalone repository owns the QRE capability policy directly and does not
+reference CodexFlow Core. Core-side legacy policy comparisons belong in the
+original CodexFlow repository, where Core consumes QRE through adapters.
 
 ## Trace Expectations
 
