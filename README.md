@@ -59,3 +59,29 @@ dotnet publish CodexFlow.QueryRuntime.Cli -c Release -r osx-arm64 -p:PublishAot=
 ## Documentation
 
 QueryRuntime design and phase planning docs live under `docs/`.
+
+Primary QueryRuntime docs:
+
+- `docs/queryruntime-technical-guide.md`
+- `docs/queryruntime-harness-open-source-strategy.md`
+- `docs/queryruntime-next-development-plan.md`
+- `docs/queryruntime-next-development-plan.zh-CN.md`
+- `docs/queryruntime-tool-partition-matrix.md`
+- `docs/IQueryRuntimeEngine.md`
+
+Related architecture and runtime docs:
+
+- `docs/adr/`
+- `docs/kernel-tech.md`
+- `docs/runtime-stop-hooks-tech.md`
+- `docs/tool-capabilities.md`
+- `docs/threat-model.md`
+
+Historical planning, reviews, and regressions:
+
+- `docs/archived-blueprints/`
+- `docs/bugfixed/`
+- `docs/review-gates/`
+- `docs/review/`
+- `docs/spike-reports/`
+- `docs/spike-data/`
