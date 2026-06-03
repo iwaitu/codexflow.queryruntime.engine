@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodexFlow.QueryRuntime.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.LocalProcess\CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="seccomp\qre-seccomp-profile.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

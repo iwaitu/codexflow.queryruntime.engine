@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="VllmChatClient" Version="2.0.21" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.6" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.201">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="SecurityCodeScan.VS2019" Version="5.6.7">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <AnalysisMode>All</AnalysisMode>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Only exempt specific non-critical design/style CA rules from TreatWarningsAsErrors.
+         Security rules (CA5xxx) are NOT listed here, so they remain fatal errors. -->
+    <WarningsNotAsErrors>CA1002;CA1003;CA1031;CA1034;CA1054;CA1056;CA1068;CA1304;CA1305;CA1307;CA1308;CA1309;CA1310;CA1311;CA1707;CA1725;CA1806;CA1812;CA1822;CA1845;CA1847;CA1848;CA1849;CA1854;CA1860;CA1866;CA1869;CA1873;CA2000;CA2007;CA2201;CA2227;CA2234;CA2254</WarningsNotAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodexFlow.Contracts\CodexFlow.Contracts.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Engine\CodexFlow.QueryRuntime.Engine.csproj" />
+  </ItemGroup>
+
+</Project>

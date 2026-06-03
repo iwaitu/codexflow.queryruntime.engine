@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>qre</AssemblyName>
+    <Version>0.1.0-alpha.1</Version>
+    <AssemblyInformationalVersion>0.1.0-alpha.1</AssemblyInformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodexFlow.QueryRuntime.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="VllmChatClient" Version="2.0.21" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.Docker\CodexFlow.QueryRuntime.Sandbox.Docker.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.LocalProcess\CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
+  </ItemGroup>
+
+</Project>

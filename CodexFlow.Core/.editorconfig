@@ -1,0 +1,122 @@
+[*.cs]
+
+# =============================
+# Security rules → error (non-negotiable)
+# These are enforced regardless of WarningsNotAsErrors in the csproj.
+# =============================
+
+# CA5350: Do Not Use Weak Cryptographic Algorithms
+dotnet_diagnostic.CA5350.severity = error
+
+# CA5351: Do Not Use Broken Cryptographic Algorithms
+dotnet_diagnostic.CA5351.severity = error
+
+# CA5359: Do Not Disable Certificate Validation
+dotnet_diagnostic.CA5359.severity = error
+
+# CA5360: Do Not Call Dangerous Methods In Deserialization
+dotnet_diagnostic.CA5360.severity = error
+
+# CA5363: Do Not Disable Request Validation
+dotnet_diagnostic.CA5363.severity = error
+
+# CA5364: Do Not Use Deprecated Security Protocols
+dotnet_diagnostic.CA5364.severity = error
+
+# CA5365: Do Not Disable HTTP Header Checking
+dotnet_diagnostic.CA5365.severity = error
+
+# CA5366: Use XmlReader For DataSet Read Xml
+dotnet_diagnostic.CA5366.severity = error
+
+# CA5368: Set ViewStateUserKey For Classes Derived From Page
+dotnet_diagnostic.CA5368.severity = error
+
+# CA5369: Use XmlReader For Deserialize
+dotnet_diagnostic.CA5369.severity = error
+
+# CA5370: Use XmlReader For Validating Reader
+dotnet_diagnostic.CA5370.severity = error
+
+# CA5371: Use XmlReader For Schema Read
+dotnet_diagnostic.CA5371.severity = error
+
+# CA5372: Use XmlReader For XPathDocument
+dotnet_diagnostic.CA5372.severity = error
+
+# CA5373: Do not use obsolete key derivation function
+dotnet_diagnostic.CA5373.severity = error
+
+# CA5374: Do Not Use XslTransform
+dotnet_diagnostic.CA5374.severity = error
+
+# CA5379: Do Not Use Weak Key Derivation Function Algorithm
+dotnet_diagnostic.CA5379.severity = error
+
+# CA5384: Do Not Use Digital Signature Algorithm (DSA)
+dotnet_diagnostic.CA5384.severity = error
+
+# CA5385: Use Rivest–Shamir–Adleman (RSA) Algorithm With Sufficient Key Size
+dotnet_diagnostic.CA5385.severity = error
+
+# CA5397: Do not use deprecated SslProtocols values
+dotnet_diagnostic.CA5397.severity = error
+
+# =============================
+# Project-level analyzer baseline
+# These rules are currently treated as low-signal guidance for this codebase.
+# We keep security analyzers strict, but suppress broad perf/async/style noise
+# until a dedicated modernization pass is scheduled.
+# =============================
+
+# Logging perf guidance: valuable, but too noisy for current merge gate.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+
+# Library-style ConfigureAwait guidance is not required for this application code.
+dotnet_diagnostic.CA2007.severity = none
+
+# Recovery/orchestration layers intentionally own broad exception boundaries.
+dotnet_diagnostic.CA1031.severity = none
+
+# Static suggestion only; low value for merge gating.
+dotnet_diagnostic.CA1822.severity = none
+
+# Globalization/string-comparison guidance is deferred to targeted cleanup passes.
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA1307.severity = none
+dotnet_diagnostic.CA1308.severity = none
+dotnet_diagnostic.CA1310.severity = none
+dotnet_diagnostic.CA1725.severity = none
+dotnet_diagnostic.CA2234.severity = none
+dotnet_diagnostic.CA1869.severity = none
+dotnet_diagnostic.CA1847.severity = none
+
+[Gateway/*.cs]
+
+# Gateway wire contracts intentionally use string URLs for transport compatibility.
+dotnet_diagnostic.CA1056.severity = none
+
+[Hashline/Models/*.cs]
+
+# Hashline request/response models are serialization contracts and intentionally
+# preserve mutable List-backed properties for binder and patch ergonomics.
+dotnet_diagnostic.CA1002.severity = none
+dotnet_diagnostic.CA2227.severity = none
+
+[Planning/Committee/*.cs]
+
+# Committee DTOs and persisted meeting artifacts are mutable serialized models.
+dotnet_diagnostic.CA1002.severity = none
+dotnet_diagnostic.CA2227.severity = none
+
+[Protocols/*.cs]
+
+# Worker notification envelopes are transport DTOs; mutable List shapes are intentional.
+dotnet_diagnostic.CA1002.severity = none
+
+[Runtime/*.cs]
+
+# Runtime state objects are mutable orchestration state, not immutable library DTOs.
+dotnet_diagnostic.CA1002.severity = none
+dotnet_diagnostic.CA2227.severity = none
