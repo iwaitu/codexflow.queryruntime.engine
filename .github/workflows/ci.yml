@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore CodexFlow.QueryRuntime.slnx
+
+      - name: Build
+        run: dotnet build CodexFlow.QueryRuntime.slnx --configuration Release --no-restore
+
+      - name: Test (unit)
+        run: |
+          dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj \
+            --configuration Release --no-build --logger "console;verbosity=normal"
+
+  aot-smoke:
+    name: Native AOT smoke (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install AOT toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish Native AOT
+        run: |
+          dotnet publish CodexFlow.QueryRuntime.Cli \
+            -c Release -r linux-x64 \
+            -p:PublishAot=true -p:SelfContained=true
+
+      - name: Smoke test the native binary
+        run: |
+          BIN="CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/linux-x64/publish/qre"
+          "$BIN" --version
+          mkdir -p /tmp/qre-smoke
+          "$BIN" run --workspace /tmp/qre-smoke --response "offline smoke" --json "analyze this repo"
+          "$BIN" tool list --workspace /tmp/qre-smoke --profile readonly --json
+          "$BIN" replay latest --workspace /tmp/qre-smoke --json

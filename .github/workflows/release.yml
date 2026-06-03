@@ -1,0 +1,126 @@
+name: Release
+
+# Publishes single-file Native AOT `qre` binaries for every supported platform
+# whenever a version tag (e.g. v0.1.0-alpha.1) is pushed.
+#
+# Native AOT cannot cross-compile across operating systems, so each target is
+# built on a matching native runner.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp (without leading v), e.g. 0.1.0-alpha.1'
+        required: true
+        default: '0.0.0-dev'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            rid: osx-arm64
+          - os: macos-13
+            rid: osx-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install AOT toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Publish Native AOT
+        shell: bash
+        run: |
+          dotnet publish CodexFlow.QueryRuntime.Cli \
+            -c Release -r ${{ matrix.rid }} \
+            -p:PublishAot=true -p:SelfContained=true \
+            -p:Version=${{ steps.ver.outputs.version }} \
+            -p:AssemblyInformationalVersion=${{ steps.ver.outputs.version }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          PUB="CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          OUT="qre-${{ matrix.rid }}.tar.gz"
+          chmod +x "$PUB/qre"
+          tar -czf "$OUT" -C "$PUB" qre
+          shasum -a 256 "$OUT" > "$OUT.sha256" 2>/dev/null || sha256sum "$OUT" > "$OUT.sha256"
+          ls -la "$OUT" "$OUT.sha256"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pub = "CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/${{ matrix.rid }}/publish"
+          $out = "qre-${{ matrix.rid }}.zip"
+          Compress-Archive -Path "$pub/qre.exe" -DestinationPath $out -Force
+          (Get-FileHash $out -Algorithm SHA256).Hash.ToLower() + "  " + $out | Out-File -Encoding ascii "$out.sha256"
+          Get-ChildItem $out, "$out.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qre-${{ matrix.rid }}
+          path: |
+            qre-${{ matrix.rid }}.tar.gz
+            qre-${{ matrix.rid }}.tar.gz.sha256
+            qre-${{ matrix.rid }}.zip
+            qre-${{ matrix.rid }}.zip.sha256
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -9,3 +9,10 @@ TestResults/
 coverage/
 *.nupkg
 *.snupkg
+
+# QueryRuntime run artifacts may contain prompts, model output, tool results,
+# and the contents of files that were read. Never commit them.
+.qre/
+
+# macOS
+.DS_Store

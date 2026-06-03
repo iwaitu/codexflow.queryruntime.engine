@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(python3 -c \"import yaml,sys; [yaml.safe_load\\(open\\(f\\)\\) and print\\(f'OK {f}'\\) for f in ['.github/workflows/ci.yml','.github/workflows/release.yml']]\")",
+      "Bash(python3 -c ' *)",
+      "Bash(ruby -ryaml -e 'YAML.load_file\\(\".github/workflows/ci.yml\"\\); YAML.load_file\\(\".github/workflows/release.yml\"\\); puts \"YAML OK\"')",
+      "Bash(rm -rf /tmp/qre-smoke)",
+      "Bash(mkdir -p /tmp/qre-smoke)",
+      "Bash(dotnet run *)"
+    ]
+  }
+}
