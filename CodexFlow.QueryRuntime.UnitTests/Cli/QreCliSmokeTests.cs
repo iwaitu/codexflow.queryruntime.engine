@@ -4,6 +4,7 @@ using Xunit;
 
 namespace CodexFlow.QueryRuntime.UnitTests.Cli;
 
+[Collection("QreCliConsole")]
 public sealed class QreCliSmokeTests
 {
     [Fact]
@@ -178,6 +179,104 @@ public sealed class QreCliSmokeTests
         Assert.Equal("qre.replay.completed", replayRunJson.RootElement.GetProperty("type").GetString());
         Assert.Equal("cli contract smoke", replayRunJson.RootElement.GetProperty("finalText").GetString());
         Assert.Equal("recorded-replay", replayRunJson.RootElement.GetProperty("runner").GetString());
+    }
+
+    [Fact]
+    public async Task ReplayStrict_ProducesDeterministicDigest_WithoutProviderOrToolCalls()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var run = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["run", "--workspace", workspace.Path, "--response", "strict smoke", "--json", "analyze"],
+                TestContext.Current.CancellationToken));
+        Assert.Equal(0, run.ExitCode);
+        using var runJson = JsonDocument.Parse(run.StandardOutput);
+        var sourceRunId = runJson.RootElement.GetProperty("runId").GetString();
+
+        var strict = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["replay", "latest", "--workspace", workspace.Path, "--strict", "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, strict.ExitCode);
+        using var strictJson = JsonDocument.Parse(strict.StandardOutput);
+        var root = strictJson.RootElement;
+        Assert.Equal("qre.replay.completed", root.GetProperty("type").GetString());
+        Assert.Equal("strict-replay", root.GetProperty("mode").GetString());
+        Assert.Equal("strict smoke", root.GetProperty("finalText").GetString());
+        Assert.Equal(sourceRunId, root.GetProperty("sourceRunId").GetString());
+        Assert.Equal(1, root.GetProperty("schemaVersion").GetInt32());
+        Assert.False(root.GetProperty("providerCalls").GetBoolean());
+        Assert.False(root.GetProperty("toolExecutions").GetBoolean());
+        var digest = root.GetProperty("replayDigest").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(digest));
+        Assert.Equal(64, digest!.Length);
+        Assert.Matches("^[0-9a-f]+$", digest);
+    }
+
+    [Fact]
+    public async Task ReplayStrict_RejectsLegacyUnversionedTrace_WithPreciseReason()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var runDirectory = Path.Combine(workspace.Path, ".qre", "runs", "legacy-run");
+        Directory.CreateDirectory(runDirectory);
+        var lines = new[]
+        {
+            "{\"Type\":\"run.started\",\"RunId\":\"legacy-run\",\"SessionId\":\"qre-legacy-run\",\"Prompt\":\"hello\",\"Timestamp\":\"2026-01-01T00:00:00+00:00\"}",
+            "{\"Type\":\"model.response\",\"Seq\":1,\"RuntimeEventType\":\"ModelResponseSampledEvent\",\"QueryId\":\"00000000000000000000000000000001\",\"SessionId\":\"qre-legacy-run\",\"Timestamp\":\"2026-01-01T00:00:00+00:00\",\"Data\":{\"Round\":0,\"AssistantTextLength\":5,\"StructuredToolCallCount\":0,\"AssistantText\":\"hello\",\"ToolCalls\":[]}}",
+            "{\"Type\":\"run.completed\",\"RunId\":\"legacy-run\",\"SessionId\":\"qre-legacy-run\",\"TerminationReason\":\"NoToolCalls\",\"TotalRounds\":1,\"TotalToolCalls\":0,\"TotalDurationMs\":0,\"Timestamp\":\"2026-01-01T00:00:00+00:00\"}"
+        };
+        await File.WriteAllLinesAsync(
+            Path.Combine(runDirectory, "events.jsonl"),
+            lines,
+            TestContext.Current.CancellationToken);
+
+        var summary = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["replay", "latest", "--workspace", workspace.Path, "--summary", "--json"],
+                TestContext.Current.CancellationToken));
+        Assert.Equal(0, summary.ExitCode);
+        using var summaryJson = JsonDocument.Parse(summary.StandardOutput);
+        Assert.Equal(0, summaryJson.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.True(summaryJson.RootElement.GetProperty("strictReplayable").GetBoolean());
+        Assert.False(summaryJson.RootElement.GetProperty("strictReplayCompatible").GetBoolean());
+
+        var strict = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["replay", "latest", "--workspace", workspace.Path, "--strict", "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, strict.ExitCode);
+        Assert.Contains("strict replay requires schema version", strict.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("legacy", strict.StandardError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ReplayRecorded_RejectsUnsupportedFutureSchema_WithPreciseReason()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var runDirectory = Path.Combine(workspace.Path, ".qre", "runs", "future-run");
+        Directory.CreateDirectory(runDirectory);
+        var lines = new[]
+        {
+            "{\"Type\":\"run.started\",\"SchemaVersion\":2,\"RunId\":\"future-run\",\"SessionId\":\"qre-future-run\",\"Prompt\":\"hello\",\"Timestamp\":\"2026-01-01T00:00:00+00:00\"}",
+            "{\"Type\":\"model.response\",\"Seq\":1,\"RuntimeEventType\":\"ModelResponseSampledEvent\",\"QueryId\":\"00000000000000000000000000000001\",\"SessionId\":\"qre-future-run\",\"Timestamp\":\"2026-01-01T00:00:00+00:00\",\"Data\":{\"Round\":0,\"AssistantTextLength\":5,\"StructuredToolCallCount\":0,\"AssistantText\":\"hello\",\"ToolCalls\":[]}}",
+            "{\"Type\":\"run.completed\",\"RunId\":\"future-run\",\"SessionId\":\"qre-future-run\",\"TerminationReason\":\"NoToolCalls\",\"TotalRounds\":1,\"TotalToolCalls\":0,\"TotalDurationMs\":0,\"Timestamp\":\"2026-01-01T00:00:00+00:00\"}"
+        };
+        await File.WriteAllLinesAsync(
+            Path.Combine(runDirectory, "events.jsonl"),
+            lines,
+            TestContext.Current.CancellationToken);
+
+        var recorded = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["replay", "latest", "--workspace", workspace.Path, "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, recorded.ExitCode);
+        Assert.Contains("unsupported trace schema version 2", recorded.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("runtime supports up to 1", recorded.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

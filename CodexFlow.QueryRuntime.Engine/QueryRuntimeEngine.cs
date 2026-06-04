@@ -1,10 +1,33 @@
-using System.Diagnostics;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Engine;
 
-public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : IQueryRuntimeEngine
+public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
 {
+    private readonly IQueryRuntimeModelClient _modelClient;
+    private readonly TimeProvider _timeProvider;
+    private readonly Func<Guid> _queryIdFactory;
+
+    public QueryRuntimeEngine(IQueryRuntimeModelClient modelClient)
+        : this(modelClient, timeProvider: null, queryIdFactory: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates an engine with injectable clock and query-id sources. Both default to
+    /// non-deterministic system sources; deterministic replay seeds them from a source
+    /// trace so repeated replays produce a byte-identical canonical event projection.
+    /// </summary>
+    public QueryRuntimeEngine(
+        IQueryRuntimeModelClient modelClient,
+        TimeProvider? timeProvider,
+        Func<Guid>? queryIdFactory)
+    {
+        _modelClient = modelClient ?? throw new ArgumentNullException(nameof(modelClient));
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _queryIdFactory = queryIdFactory ?? Guid.NewGuid;
+    }
+
     public async Task<QueryRuntimeResult> ExecuteAsync(
         QueryRuntimeRequest request,
         IQueryRuntimeEventSink eventSink,
@@ -18,8 +41,8 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentException.ThrowIfNullOrWhiteSpace(traceFilePath);
 
-        var queryId = Guid.NewGuid();
-        var stopwatch = Stopwatch.StartNew();
+        var queryId = _queryIdFactory();
+        var startTimestamp = _timeProvider.GetTimestamp();
         var messages = request.InitialMessages.ToList();
         var totalToolCalls = 0;
         var finalText = string.Empty;
@@ -54,7 +77,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
 
                 var textParts = new List<string>();
                 var functionCalls = new List<FunctionCallContent>();
-                await foreach (var update in modelClient.StreamAsync(
+                await foreach (var update in _modelClient.StreamAsync(
                                    new QueryRuntimeModelRequest(messages, options, runId, workspacePath),
                                    ct).ConfigureAwait(false))
                 {
@@ -171,7 +194,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
                 completedRounds = round + 1;
             }
 
-            stopwatch.Stop();
+            var elapsedMs = (long)_timeProvider.GetElapsedTime(startTimestamp).TotalMilliseconds;
             await EmitAsync(
                 eventSink,
                 QueryRuntimeEventType.Terminated,
@@ -183,7 +206,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
                     terminationReason,
                     completedRounds,
                     totalToolCalls,
-                    stopwatch.ElapsedMilliseconds,
+                    elapsedMs,
                     null)).ConfigureAwait(false);
 
             return new QueryRuntimeResult(
@@ -194,11 +217,10 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
                 terminationReason,
                 completedRounds,
                 totalToolCalls,
-                stopwatch.ElapsedMilliseconds);
+                elapsedMs);
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
             await EmitAsync(
                 eventSink,
                 QueryRuntimeEventType.Error,
@@ -231,7 +253,7 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
         return options;
     }
 
-    private static async ValueTask EmitRoundCompletedAsync(
+    private async ValueTask EmitRoundCompletedAsync(
         IQueryRuntimeEventSink eventSink,
         long seq,
         Guid queryId,
@@ -265,5 +287,5 @@ public sealed class QueryRuntimeEngine(IQueryRuntimeModelClient modelClient) : I
         }
     }
 
-    private static DateTimeOffset Now() => DateTimeOffset.UtcNow;
+    private DateTimeOffset Now() => _timeProvider.GetUtcNow();
 }

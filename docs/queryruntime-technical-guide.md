@@ -154,12 +154,15 @@ does not call the provider, and does not execute the original tools. `--summary`
 keeps the read-only trace summary mode. Currently invoked via `qre replay latest ...`.
 
 The hardest thing to debug in agent development is "why did it answer this way this
-time." The current recorded replay can already replay a provider-free / tool-free
-decision trajectory, but it is not yet full benchmark-grade deterministic replay;
-deterministic IDs, clock, and cross-version trace migration are still later
-hardening items.
+time." Recorded replay reproduces a provider-free / tool-free decision trajectory,
+and `replay latest --strict` adds deterministic clock + query-id injection and an
+explicit trace `SchemaVersion`, producing a byte-identical canonical `replayDigest`
+across repeated strict replays of the same source trace and runtime version (see
+§5.8). Strict replay gates on schema version: legacy unversioned traces and
+unsupported-future versions are rejected with precise reasons rather than replayed
+non-deterministically.
 
-After deterministic replay is later completed, it can be used to:
+Deterministic strict replay can be used to:
 
 - Reproduce an agent decision trajectory.
 - Compare the behavior of different runtime policies.
@@ -753,9 +756,10 @@ restrictions to upper-layer callers.
 
 ### 5.8 Trace, run artifacts, and replay
 
-**Today**: the trace is already written as JSONL; `replay latest` does a recorded
-replay by default, not calling the provider and not executing the original tools.
-`--summary` keeps the read-only summary mode.
+**Today**: the trace is written as JSONL with an explicit, durable `SchemaVersion`;
+`replay latest` does a recorded replay by default, not calling the provider and not
+executing the original tools. `--summary` keeps the read-only summary mode, and
+`--strict` runs the deterministic, byte-stable replay described below.
 
 Each `qre run` writes under the workspace:
 
@@ -806,10 +810,69 @@ Core mechanism of recorded replay:
 - `replay latest --summary` is still usable for a quick trace summary without
   executing the runtime.
 
-Note: the current replay can already do provider-free / tool-free recorded replay,
-but it is not yet full benchmark-grade deterministic replay. Deterministic IDs,
-clock injection, cross-version trace schema migration, and stricter public trace
-DTOs are still later hardening items.
+#### Strict deterministic replay (`--strict`)
+
+`qre replay latest --workspace . --strict --json` runs the recorded replay with a
+deterministic clock and query-id injected into the engine, seeded from the source
+trace. Two strict replays of the same source trace and runtime version therefore
+produce a **byte-identical canonical event projection**, surfaced as a stable
+`replayDigest` (SHA-256 over the engine event records: `Type`, `Seq`,
+`RuntimeEventType`, deterministic `QueryId`, deterministic `Timestamp`, and `Data`).
+The digest deliberately excludes run-scoped `RunId`/`SessionId`, so it is stable
+across runs.
+
+Strict replay output example:
+
+```json
+{"type":"qre.replay.completed","mode":"strict-replay","finalText":"offline smoke","sourceRunId":"20260603043913655","runId":"20260604044405928","termination":"NoToolCalls","profile":"none","schemaVersion":1,"replayDigest":"fc0a93aab02c…","providerCalls":false,"toolExecutions":false,"tools":[],"workspacePath":"/repo","traceFilePath":"/repo/.qre/runs/20260604044405928/events.jsonl","runDirectory":"/repo/.qre/runs/20260604044405928","manifestPath":"/repo/.qre/runs/20260604044405928/manifest.json","totalRounds":1,"totalToolCalls":0,"totalDurationMs":1}
+```
+
+##### Trace schema versioning and compatibility
+
+The trace format carries an explicit, durable `SchemaVersion` on the `run.started`
+record and in `manifest.json` (current version `1`, the first public,
+deterministically-replayable format). Strict replay gates on this version:
+
+- A trace at the current version replays strictly.
+- A trace with **no** recorded `SchemaVersion` is treated as legacy version `0`
+  (pre-public) and is rejected from strict replay with a precise reason
+  (`strict replay requires schema version >= 1; trace has no recorded schema
+  version (pre-public legacy trace)…`). Such traces remain usable via non-strict
+  recorded replay.
+- A trace recorded at a version **newer** than the runtime supports is rejected
+  with `unsupported trace schema version N (runtime supports up to M)…`.
+
+`replay latest --summary` reports `schemaVersion`, `strictReplayCompatible`, and,
+when blocked, `strictReplayBlockedReason`.
+
+##### Replay guarantees and non-guarantees
+
+Guaranteed by strict replay:
+
+- No provider is called: the model client is `RecordedReplayModelClient`, which only
+  dequeues recorded assistant text and tool-call snapshots.
+- No original tool executes: tools come from `RecordedReplayToolPack`, which returns
+  recorded results keyed by `toolName + normalized argument hash`.
+- Deterministic clock and query id, hence byte-identical `replayDigest` across
+  repeated strict replays of the same source trace and runtime version.
+
+Not guaranteed:
+
+- The on-disk replay run directory (`RunId`, `SessionId`, envelope `run.started`/
+  `run.completed` wall-clock timestamps) is not byte-identical — only the canonical
+  engine projection / `replayDigest` is. Run-scoping is intentionally excluded.
+- Cross-runtime-version determinism: a different runtime version may legitimately
+  change the canonical projection.
+- Live behavior: see live rerun below.
+
+##### Live rerun is separate from strict replay
+
+`qre rerun latest` is a **live rerun**, not a strict replay: it re-executes the
+runtime with a fresh response/clock and may legitimately differ from the source run
+whenever sandbox commands depend on the clock, filesystem, network, or host state.
+Strict replay (`replay latest --strict`) is the deterministic, provider-free /
+tool-free path; live rerun is the non-deterministic re-execution path. Do not treat
+live rerun output as a determinism guarantee.
 
 `manifest.json` is the Phase 1 run-artifact index, intended to let the CLI, CI,
 desktop, or other platforms locate runId, the run directory, the trace file, the

@@ -6,6 +6,7 @@ namespace CodexFlow.QueryRuntime.UnitTests.Cli;
 /// CLI-level coverage that model-adapter selection failures surface as clear,
 /// non-zero-exit errors before any provider call is attempted.
 /// </summary>
+[Collection("QreCliConsole")]
 public sealed class QreCliModelSelectionTests
 {
     [Fact]

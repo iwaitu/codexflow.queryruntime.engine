@@ -1978,6 +1978,7 @@ internal static class QreCli
         var workspace = Directory.GetCurrentDirectory();
         var json = false;
         var summaryOnly = false;
+        var strict = false;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -1995,6 +1996,9 @@ internal static class QreCli
                     break;
                 case "--summary":
                     summaryOnly = true;
+                    break;
+                case "--strict":
+                    strict = true;
                     break;
                 default:
                     return Fail($"Unknown replay latest option: {args[i]}");
@@ -2024,6 +2028,18 @@ internal static class QreCli
             return Fail($"Latest trace is not strict-replayable: {string.Join(", ", summary.MissingReplayRecords)}");
         }
 
+        var compatibility = QueryRuntimeTraceSchema.GetReplayCompatibility(summary.SchemaVersion, strict);
+        if (!compatibility.Compatible)
+        {
+            return Fail(compatibility.Reason ??
+                $"Latest trace is not replay-compatible at schema version {summary.SchemaVersion}.");
+        }
+
+        if (strict)
+        {
+            return await ExecuteStrictReplayAsync(workspace, traceFile, summary, json, ct).ConfigureAwait(false);
+        }
+
         return await ExecuteReplayAsync(workspace, traceFile, summary, json, ct).ConfigureAwait(false);
     }
 
@@ -2046,6 +2062,12 @@ internal static class QreCli
         Console.WriteLine($"tool_results: {summary.ToolResults}");
         Console.WriteLine($"events: {summary.EventCount}");
         Console.WriteLine($"strict_replayable: {summary.StrictReplayable.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"schema_version: {summary.SchemaVersion}");
+        Console.WriteLine($"strict_replay_compatible: {summary.StrictReplayCompatible.ToString().ToLowerInvariant()}");
+        if (!string.IsNullOrWhiteSpace(summary.StrictReplayBlockedReason))
+        {
+            Console.WriteLine($"strict_replay_blocked_reason: {summary.StrictReplayBlockedReason}");
+        }
         Console.WriteLine($"trajectory_steps: {summary.DecisionTrajectory.Count}");
         if (!string.IsNullOrWhiteSpace(summary.TerminationReason))
         {
@@ -2124,6 +2146,93 @@ internal static class QreCli
         return 0;
     }
 
+    private static async Task<int> ExecuteStrictReplayAsync(
+        string workspace,
+        string traceFile,
+        QreReplaySummary summary,
+        bool json,
+        CancellationToken ct)
+    {
+        var records = JsonlTraceStore.ReadRecords(traceFile);
+        var prompt = records.FirstOrDefault(static record => record.Type == "run.started")?.TryGetString("Prompt");
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return Fail($"Latest trace has no recorded prompt: {traceFile}");
+        }
+
+        var seed = DeterministicReplay.ReadSeed(traceFile);
+        var profileName = TryGetJsonString(summary.Manifest, "ToolProfile") ?? "readonly";
+        var tools = summary.ToolResults > 0
+            ? RecordedReplayToolPack.Create(traceFile)
+            : [];
+
+        // Strict replay seeds the engine with a deterministic clock + query id from the
+        // source trace so repeated replays produce a byte-identical canonical projection.
+        // It never instantiates a provider chat client (RecordedReplayModelClient) and
+        // never executes the original tools (RecordedReplayToolPack returns recorded output).
+        var harness = new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(traceFile));
+        var result = await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                Prompt = prompt,
+                WorkspacePath = Path.GetFullPath(workspace),
+                MaxRounds = Math.Max(1, summary.DecisionTrajectory.Count(static step => step.Kind == "model")),
+                EnableTools = tools.Count > 0,
+                ToolProfile = new QueryRuntimeToolProfile(profileName),
+                Tools = tools,
+                TimeProvider = new DeterministicReplayClock(seed.BaseTimestamp),
+                QueryIdFactory = () => seed.QueryId
+            },
+            ct).ConfigureAwait(false);
+
+        var replayDigest = DeterministicReplay.ComputeCanonicalDigest(result.TraceFilePath);
+        var output = new QreStrictReplayOutput(
+            "qre.replay.completed",
+            "strict-replay",
+            result.FinalText,
+            summary.RunId,
+            result.RunId,
+            result.TerminationReason,
+            profileName,
+            summary.SchemaVersion,
+            replayDigest,
+            ProviderCalls: false,
+            ToolExecutions: false,
+            tools.Select(static tool => tool.Name).ToArray(),
+            Path.GetFullPath(workspace),
+            result.TraceFilePath,
+            JsonlTraceStore.GetRunDirectory(result.TraceFilePath),
+            Path.Combine(JsonlTraceStore.GetRunDirectory(result.TraceFilePath), "manifest.json"),
+            result.TotalRounds,
+            result.TotalToolCalls,
+            result.TotalDurationMs);
+        await FinalizeRunArtifactsAsync(
+            result.TraceFilePath,
+            Path.GetFullPath(workspace),
+            result.RunId,
+            result.TotalRounds,
+            result.TotalToolCalls,
+            result.TotalDurationMs,
+            ct).ConfigureAwait(false);
+
+        if (json)
+        {
+            WriteJson(output);
+            return 0;
+        }
+
+        Console.WriteLine(output.FinalText);
+        Console.WriteLine($"run_id: {output.RunId}");
+        Console.WriteLine($"source_run_id: {output.SourceRunId}");
+        Console.WriteLine($"trace: {output.TraceFilePath}");
+        Console.WriteLine($"mode: strict-replay");
+        Console.WriteLine($"schema_version: {output.SchemaVersion}");
+        Console.WriteLine($"replay_digest: {output.ReplayDigest}");
+        Console.WriteLine($"provider_calls: false");
+        Console.WriteLine($"tool_executions: false");
+        return 0;
+    }
+
     private static bool TryFindLatestTraceFile(string workspace, out string traceFile, out string error)
     {
         try
@@ -2154,6 +2263,8 @@ internal static class QreCli
         var strictReplayable = terminalRecord != null &&
             trajectory.Any(static step => step.Kind == "model") &&
             missing.Count == 0;
+        var schemaVersion = DeterministicReplay.ReadSchemaVersion(traceFile);
+        var compatibility = QueryRuntimeTraceSchema.GetReplayCompatibility(schemaVersion, strict: true);
 
         return new QreReplaySummary(
             Type: "qre.replay.summary",
@@ -2172,7 +2283,10 @@ internal static class QreCli
             DecisionTrajectory: trajectory,
             MissingReplayRecords: missing,
             TerminalRecord: terminalRecord?.Root,
-            Manifest: JsonlTraceStore.TryReadManifest(runDirectory));
+            Manifest: JsonlTraceStore.TryReadManifest(runDirectory),
+            SchemaVersion: schemaVersion,
+            StrictReplayCompatible: strictReplayable && compatibility.Compatible,
+            StrictReplayBlockedReason: compatibility.Compatible ? null : compatibility.Reason);
     }
 
     private static IReadOnlyList<QreReplayStep> BuildReplayTrajectory(JsonlTraceNodeRecord[] records)
@@ -2279,6 +2393,7 @@ internal static class QreCli
             QreToolListOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolListOutput),
             QrePolicyCheckOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QrePolicyCheckOutput),
             QreReplaySummary output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreReplaySummary),
+            QreStrictReplayOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreStrictReplayOutput),
             QreDiffLatestOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreDiffLatestOutput),
             QreSandboxExecOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreSandboxExecOutput),
             QreDoctorOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreDoctorOutput),
@@ -2374,7 +2489,10 @@ internal static class QreCli
     private static void PrintReplayHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre replay latest --workspace . [--json] [--summary]");
+        Console.WriteLine("  qre replay latest --workspace . [--json] [--summary] [--strict]");
+        Console.WriteLine("    --summary  Read-only trace summary; the runtime is not executed.");
+        Console.WriteLine("    --strict   Deterministic replay with injected clock/ids; emits a byte-stable");
+        Console.WriteLine("               replay_digest and requires schema version >= 1. No provider/tool calls.");
     }
 
     private static void PrintRerunHelp()
@@ -2718,7 +2836,31 @@ internal static class QreCli
         IReadOnlyList<QreReplayStep> DecisionTrajectory,
         IReadOnlyList<string> MissingReplayRecords,
         JsonElement? TerminalRecord,
-        JsonElement? Manifest);
+        JsonElement? Manifest,
+        int SchemaVersion,
+        bool StrictReplayCompatible,
+        string? StrictReplayBlockedReason);
+
+    internal sealed record QreStrictReplayOutput(
+        string Type,
+        string Mode,
+        string FinalText,
+        string? SourceRunId,
+        string RunId,
+        string Termination,
+        string Profile,
+        int SchemaVersion,
+        string ReplayDigest,
+        bool ProviderCalls,
+        bool ToolExecutions,
+        IReadOnlyList<string> Tools,
+        string WorkspacePath,
+        string TraceFilePath,
+        string RunDirectory,
+        string ManifestPath,
+        int TotalRounds,
+        int TotalToolCalls,
+        long TotalDurationMs);
 
     internal sealed record QreReplayStep(
         string Kind,
@@ -2914,6 +3056,7 @@ internal static class QreCli
 [JsonSerializable(typeof(QreCli.QreToolDescriptor))]
 [JsonSerializable(typeof(QreCli.QrePolicyCheckOutput))]
 [JsonSerializable(typeof(QreCli.QreReplaySummary))]
+[JsonSerializable(typeof(QreCli.QreStrictReplayOutput))]
 [JsonSerializable(typeof(QreCli.QreReplayStep))]
 [JsonSerializable(typeof(QreCli.QreDiffLatestOutput))]
 [JsonSerializable(typeof(QreCli.QreSandboxExecOutput))]

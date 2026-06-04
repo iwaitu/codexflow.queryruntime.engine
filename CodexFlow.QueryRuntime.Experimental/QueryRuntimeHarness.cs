@@ -29,6 +29,18 @@ public sealed record ExperimentalQueryRuntimeRequest
     public bool RequiresStructuredOutput { get; init; }
 
     public QreThinkingPolicy ThinkingPolicy { get; init; } = QreThinkingPolicy.Auto;
+
+    /// <summary>
+    /// Optional deterministic clock. When set (strict replay), the engine stamps every
+    /// event with deterministic timestamps and durations instead of wall-clock time.
+    /// </summary>
+    public TimeProvider? TimeProvider { get; init; }
+
+    /// <summary>
+    /// Optional deterministic query-id source. When set (strict replay), the engine's
+    /// per-run query id is seeded from the source trace instead of <see cref="Guid.NewGuid"/>.
+    /// </summary>
+    public Func<Guid>? QueryIdFactory { get; init; }
 }
 
 public sealed record ExperimentalQueryRuntimeResult(
@@ -107,7 +119,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
         var started = ExperimentalRunStartedRecord.Create(runId, sessionId, request.WorkspacePath, request.Prompt);
 
         await using var traceSink = await JsonlTraceEventSink.CreateAsync(traceFilePath, started, ct).ConfigureAwait(false);
-        var engine = new QueryRuntimeEngine(modelClient);
+        var engine = new QueryRuntimeEngine(modelClient, request.TimeProvider, request.QueryIdFactory);
 
         try
         {

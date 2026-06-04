@@ -159,6 +159,7 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
 
 public sealed record ExperimentalRunStartedRecord(
     string Type,
+    int SchemaVersion,
     string RunId,
     string SessionId,
     string? WorkspacePath,
@@ -170,7 +171,14 @@ public sealed record ExperimentalRunStartedRecord(
         string sessionId,
         string? workspacePath,
         string prompt)
-        => new("run.started", runId, sessionId, workspacePath, prompt, DateTimeOffset.UtcNow);
+        => new(
+            "run.started",
+            QueryRuntimeTraceSchema.CurrentVersion,
+            runId,
+            sessionId,
+            workspacePath,
+            prompt,
+            DateTimeOffset.UtcNow);
 }
 
 public sealed record ExperimentalRunCompletedRecord(
@@ -259,7 +267,7 @@ public sealed record ExperimentalRunManifest(
         string toolProfile,
         EngineQueryRuntimeResult result)
         => new(
-            1,
+            QueryRuntimeTraceSchema.CurrentVersion,
             "qre.run.manifest",
             runId,
             sessionId,
@@ -282,7 +290,7 @@ public sealed record ExperimentalRunManifest(
         string toolProfile,
         Exception exception)
         => new(
-            1,
+            QueryRuntimeTraceSchema.CurrentVersion,
             "qre.run.manifest",
             runId,
             sessionId,

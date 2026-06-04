@@ -114,7 +114,7 @@ internal sealed class ExternalStdioAIFunction(
         }
         catch (IOException ex) when (IsBrokenPipe(ex))
         {
-            process.StandardInput.Close();
+            CloseStandardInputAfterBrokenPipe(process);
             await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -179,6 +179,20 @@ internal sealed class ExternalStdioAIFunction(
         }
 
         return false;
+    }
+
+    private static void CloseStandardInputAfterBrokenPipe(Process process)
+    {
+        try
+        {
+            process.StandardInput.Close();
+        }
+        catch (IOException ex) when (IsBrokenPipe(ex))
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private static string BuildRequestJson(

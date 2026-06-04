@@ -606,6 +606,132 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Assert.True(options.ThinkingEnabled);
     }
 
+    [Fact]
+    public async Task RunAsync_StampsSchemaVersion_OnRunStartedRecord()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var harness = new ExperimentalQueryRuntimeHarness(
+            new StaticExperimentalModelClient("versioned response"));
+
+        var result = await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                Prompt = "summarize",
+                WorkspacePath = workspace.Path,
+                RunId = "run-schema-version",
+                MaxRounds = 1
+            },
+            TestContext.Current.CancellationToken);
+
+        var seed = DeterministicReplay.ReadSeed(result.TraceFilePath);
+        Assert.Equal(QueryRuntimeTraceSchema.CurrentVersion, seed.SchemaVersion);
+        Assert.NotEqual(Guid.Empty, seed.QueryId);
+        Assert.NotEqual(default, seed.BaseTimestamp);
+        Assert.Equal(QueryRuntimeTraceSchema.CurrentVersion, DeterministicReplay.ReadSchemaVersion(result.TraceFilePath));
+    }
+
+    [Fact]
+    public async Task StrictReplay_ProducesByteIdenticalDigest_AndNeverExecutesOriginalTool()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var originalToolCalls = 0;
+        var workspaceInfo = AIFunctionFactory.Create(
+            () =>
+            {
+                originalToolCalls++;
+                return "workspace-ok";
+            },
+            new AIFunctionFactoryOptions { Name = "workspace_info", Description = "inspect workspace" });
+        var source = await new ExperimentalQueryRuntimeHarness(
+                new ScriptedExperimentalModelClient(
+                    [new FunctionCallContent("tool-1", "workspace_info", new Dictionary<string, object?>())],
+                    [new TextContent("done")]))
+            .RunAsync(
+                new ExperimentalQueryRuntimeRequest
+                {
+                    Prompt = "inspect workspace",
+                    WorkspacePath = workspace.Path,
+                    RunId = "run-strict-source",
+                    MaxRounds = 3,
+                    EnableTools = true,
+                    Tools = [workspaceInfo]
+                },
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, originalToolCalls);
+
+        var seed = DeterministicReplay.ReadSeed(source.TraceFilePath);
+        Assert.Equal(QueryRuntimeTraceSchema.CurrentVersion, seed.SchemaVersion);
+
+        var firstDigest = await StrictReplayDigestAsync(workspace.Path, source.TraceFilePath, seed, "run-strict-1");
+        var secondDigest = await StrictReplayDigestAsync(workspace.Path, source.TraceFilePath, seed, "run-strict-2");
+
+        Assert.Equal(firstDigest, secondDigest);
+        Assert.False(string.IsNullOrWhiteSpace(firstDigest));
+        // Strict replay returns recorded outputs and never re-invokes the original tool.
+        Assert.Equal(1, originalToolCalls);
+    }
+
+    private static async Task<string> StrictReplayDigestAsync(
+        string workspacePath,
+        string sourceTraceFile,
+        DeterministicReplaySeed seed,
+        string runId)
+    {
+        var replay = await new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(sourceTraceFile))
+            .RunAsync(
+                new ExperimentalQueryRuntimeRequest
+                {
+                    Prompt = "inspect workspace",
+                    WorkspacePath = workspacePath,
+                    RunId = runId,
+                    MaxRounds = 3,
+                    EnableTools = true,
+                    Tools = RecordedReplayToolPack.Create(sourceTraceFile),
+                    TimeProvider = new DeterministicReplayClock(seed.BaseTimestamp),
+                    QueryIdFactory = () => seed.QueryId
+                },
+                TestContext.Current.CancellationToken);
+
+        return DeterministicReplay.ComputeCanonicalDigest(replay.TraceFilePath);
+    }
+
+    [Theory]
+    [InlineData(0, true, false, "legacy")]
+    [InlineData(1, true, true, null)]
+    [InlineData(2, true, false, "unsupported")]
+    [InlineData(0, false, true, null)]
+    public void TraceSchema_GatesStrictReplayByVersion(int version, bool strict, bool expectedCompatible, string? reasonFragment)
+    {
+        var compatibility = QueryRuntimeTraceSchema.GetReplayCompatibility(version, strict);
+
+        Assert.Equal(expectedCompatible, compatibility.Compatible);
+        if (reasonFragment == null)
+        {
+            Assert.Null(compatibility.Reason);
+        }
+        else
+        {
+            Assert.NotNull(compatibility.Reason);
+            Assert.Contains(reasonFragment, compatibility.Reason, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void DeterministicReplayClock_AdvancesDeterministically()
+    {
+        var baseUtc = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var first = new DeterministicReplayClock(baseUtc);
+        var second = new DeterministicReplayClock(baseUtc);
+
+        Assert.Equal(first.GetUtcNow(), second.GetUtcNow());
+        Assert.Equal(first.GetUtcNow(), second.GetUtcNow());
+
+        var startA = first.GetTimestamp();
+        var startB = second.GetTimestamp();
+        Assert.Equal(first.GetElapsedTime(startA), second.GetElapsedTime(startB));
+    }
+
     private static List<JsonDocument> ReadJsonl(string path)
         => File.ReadAllLines(path)
             .Where(line => !string.IsNullOrWhiteSpace(line))

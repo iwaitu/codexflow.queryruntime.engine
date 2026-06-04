@@ -192,10 +192,32 @@ Suggested tests:
 - Gated real-provider tests for OpenAI-compatible and Anthropic Messages.
 - AOT CI publish smoke after adapter changes.
 
-## 6. P2: Deterministic Replay Hardening
+## 6. P2: Deterministic Replay Hardening — complete (2026-06-03)
 
 Objective: finish Phase 3 by making trace/replay durable enough for regression
 testing, issue reproduction, and public format documentation.
+
+Status: complete as of 2026-06-03. `QueryRuntimeEngine` now takes an injectable
+`TimeProvider` and query-id factory (defaults remain system clock + `Guid.NewGuid`),
+with `DeterministicReplayClock` providing a fully deterministic clock/duration for
+strict replay. Traces carry an explicit `SchemaVersion` on the `run.started` record
+and in `manifest.json`, governed by the public `QueryRuntimeTraceSchema`
+(`CurrentVersion = 1`) plus `QueryRuntimeReplayMode` / `QueryRuntimeTraceCompatibility`
+DTOs in Abstractions. The new `qre replay latest --strict` seeds the clock/id from the
+source trace and emits a byte-stable `replayDigest`
+(`DeterministicReplay.ComputeCanonicalDigest`, excluding run-scoped RunId/SessionId).
+It gates on schema version: legacy unversioned traces are rejected from strict
+replay with precise reasons but remain available through non-strict recorded replay,
+while unsupported future schema versions are rejected in both strict and non-strict
+replay with an upgrade-oriented reason. Strict replay stays provider-free / tool-free via
+`RecordedReplayModelClient` and `RecordedReplayToolPack`. Covered by
+`StrictReplay_ProducesByteIdenticalDigest_AndNeverExecutesOriginalTool`,
+`TraceSchema_GatesStrictReplayByVersion`, `ReplayRecorded_RejectsUnsupportedFutureSchema_WithPreciseReason`,
+and CLI `ReplayStrict_*` tests; all 179 unit tests pass. A 20-minute Antigravity
+re-review found no blocking issues after the future-schema replay gate fix. Note:
+schema v1 was frozen before P5 write-tool events exist, so file
+mutation / patch / content-hash events will arrive as an additive v2 bump, which the
+new versioning + compatibility machinery is designed to absorb.
 
 Scope:
 
@@ -383,11 +405,11 @@ Suggested tests:
 
 The consolidated recommended sequence is:
 
-1. P0 baseline freeze and hardening.
+1. P0 baseline freeze and hardening. (complete 2026-06-03)
 2. P3 Native AOT blocking CI.
-3. P1 provider-neutral model adapters.
+3. P1 provider-neutral model adapters. (complete 2026-06-03)
 4. P5 repair profile write tools and run-scoped diff.
-5. P2 deterministic replay hardening.
+5. P2 deterministic replay hardening. (complete 2026-06-03)
 6. P4 complete Phase 1.6 reverse dependency.
 7. P6 open-source release readiness.
 

@@ -192,10 +192,28 @@ gated checkpoint（需外部 credentials/endpoints），保持 non-CI。
 - OpenAI-compatible 与 Anthropic Messages 的 gated real-provider tests。
 - Adapter 变更后的 AOT CI publish smoke。
 
-## 6. P2：Deterministic Replay Hardening
+## 6. P2：Deterministic Replay Hardening ✅ 已完成（2026-06-03）
 
 目标：完成 Phase 3，使 trace/replay 足够稳定，能用于 regression testing、
 issue reproduction 和 public format documentation。
+
+状态：截至 2026-06-03，P2 已完成。`QueryRuntimeEngine` 现在接受可注入的
+`TimeProvider` 和 query-id factory（默认仍是 system clock + `Guid.NewGuid`）；
+`DeterministicReplayClock` 为 strict replay 提供完全确定的时钟与时长。trace 在
+`run.started` 记录和 `manifest.json` 上携带显式 `SchemaVersion`，由 Abstractions
+中的 public `QueryRuntimeTraceSchema`（`CurrentVersion = 1`）定义，并配套
+`QueryRuntimeReplayMode` 与 `QueryRuntimeTraceCompatibility` public DTO。新增的
+`qre replay latest --strict` 以 source trace 种子化 clock/id，输出 byte-stable 的
+`replayDigest`（`DeterministicReplay.ComputeCanonicalDigest`，排除 run-scoped
+RunId/SessionId），并按 schema 版本 gate：legacy 无版本 trace 会以精确 reason
+拒绝 strict replay，但仍可走 non-strict recorded replay；unsupported 未来版本会在
+strict 与 non-strict replay 下都以面向升级的精确 reason 拒绝。Strict replay 经
+`RecordedReplayModelClient` / `RecordedReplayToolPack` 保证 provider-free / tool-free。
+覆盖测试：`StrictReplay_ProducesByteIdenticalDigest_AndNeverExecutesOriginalTool`、
+`TraceSchema_GatesStrictReplayByVersion`、
+`ReplayRecorded_RejectsUnsupportedFutureSchema_WithPreciseReason`、CLI `ReplayStrict_*`
+（确定性 digest 形态 + legacy 拒绝），全部 179 个 unit tests 通过。20 分钟
+Antigravity 复核在 future-schema replay gate 修复后未发现 blocking issue。
 
 范围：
 
@@ -378,7 +396,7 @@ workspace-scoped 且可审计。
    该 lane 是否已作为 required/blocking check。）
 3. ✅ P1 provider-neutral model adapters。（已完成 2026-06-03）
 4. ◻ P5 repair profile write tools and run-scoped diff。
-5. ◻ P2 deterministic replay hardening。
+5. ✅ P2 deterministic replay hardening。（已完成 2026-06-03）
 6. ◻ P4 complete Phase 1.6 reverse dependency。
 7. ◻ P6 open-source release readiness。
 

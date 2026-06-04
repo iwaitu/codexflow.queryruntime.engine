@@ -126,12 +126,14 @@ artifact，后续再由别的系统决定是否阻断构建。
 读取已记录的模型响应和工具结果，不调用 provider，不执行原始工具。`--summary`
 保留只读 trace 摘要模式。当前通过 `qre replay latest ...` 调用。
 
-Agent 开发最难调试的是“这次为什么这么回答”。当前 recorded replay 已能重放
-一条 provider-free / tool-free 决策轨迹，但还不是完整 benchmark 级
-deterministic replay；deterministic ID、clock 和跨版本 trace migration 仍是
-后续硬化项。
+Agent 开发最难调试的是“这次为什么这么回答”。Recorded replay 已能重放一条
+provider-free / tool-free 决策轨迹；`replay latest --strict` 进一步加入
+deterministic clock + query-id 注入，以及显式的 trace `SchemaVersion`，对同一
+source trace 与同一 runtime 版本的多次 strict replay 产出 byte-identical 的
+canonical `replayDigest`（见 §5.8）。Strict replay 会按 schema 版本 gate：旧的
+无版本 trace 和不支持的未来版本会以精确 reason 拒绝，而不是做非确定性重放。
 
-后续 deterministic replay 完成后，可以用于：
+Deterministic strict replay 可以用于：
 
 - 复现一次 Agent 决策轨迹。
 - 对比不同 runtime policy 的行为。
@@ -686,8 +688,9 @@ endpoint 在 thinking 模式下会拒绝 required/object `tool_choice`。因此 
 
 ### 5.8 Trace、run artifacts 和 replay
 
-**Today**：trace 已写入 JSONL；`replay latest` 默认走 recorded replay，
-不调用 provider，也不执行原始工具。`--summary` 保留只读摘要模式。
+**Today**：trace 以 JSONL 写入，并带有显式、durable 的 `SchemaVersion`；
+`replay latest` 默认走 recorded replay，不调用 provider，也不执行原始工具。
+`--summary` 保留只读摘要模式，`--strict` 走下文描述的确定性、byte-stable replay。
 
 每次 `qre run` 会在 workspace 下写入：
 
@@ -737,9 +740,65 @@ Recorded replay 的核心机制：
   中保留 digest、size 和 length metadata。
 - `replay latest --summary` 仍可用于不执行 runtime 的快速 trace 摘要。
 
-注意：当前 replay 已能做到 provider-free / tool-free 的 recorded replay，但
-还不是完整 benchmark 级 deterministic replay。deterministic ID、clock 注入、
-跨版本 trace schema migration 和更严格的 public trace DTO 仍属于后续硬化项。
+#### Strict deterministic replay（`--strict`）
+
+`qre replay latest --workspace . --strict --json` 在 recorded replay 基础上，向
+engine 注入由 source trace 种子化的 deterministic clock 和 query-id。因此对同一
+source trace 与同一 runtime 版本的两次 strict replay 会产出 **byte-identical 的
+canonical event projection**，以稳定的 `replayDigest`（对 engine 事件记录的
+`Type`、`Seq`、`RuntimeEventType`、deterministic `QueryId`、deterministic
+`Timestamp` 和 `Data` 做 SHA-256）暴露。该 digest 刻意排除 run-scoped 的
+`RunId`/`SessionId`，因此跨 run 稳定。
+
+Strict replay 输出示例：
+
+```json
+{"type":"qre.replay.completed","mode":"strict-replay","finalText":"offline smoke","sourceRunId":"20260603043913655","runId":"20260604044405928","termination":"NoToolCalls","profile":"none","schemaVersion":1,"replayDigest":"fc0a93aab02c…","providerCalls":false,"toolExecutions":false,"tools":[],"workspacePath":"/repo","traceFilePath":"/repo/.qre/runs/20260604044405928/events.jsonl","runDirectory":"/repo/.qre/runs/20260604044405928","manifestPath":"/repo/.qre/runs/20260604044405928/manifest.json","totalRounds":1,"totalToolCalls":0,"totalDurationMs":1}
+```
+
+##### Trace schema 版本与兼容性
+
+trace 格式在 `run.started` 记录和 `manifest.json` 中携带显式、durable 的
+`SchemaVersion`（当前版本 `1`，第一个公开、可确定性重放的格式）。Strict replay
+按该版本 gate：
+
+- 当前版本的 trace 可以 strict replay。
+- **没有**记录 `SchemaVersion` 的 trace 视为 legacy 版本 `0`（pre-public），会被
+  strict replay 以精确 reason 拒绝（`strict replay requires schema version >= 1;
+  trace has no recorded schema version (pre-public legacy trace)…`）。这类 trace
+  仍可用 non-strict recorded replay。
+- 版本**高于** runtime 支持的 trace 会以 `unsupported trace schema version N
+  (runtime supports up to M)…` 拒绝。
+
+`replay latest --summary` 会报告 `schemaVersion`、`strictReplayCompatible`，被阻断
+时还会报告 `strictReplayBlockedReason`。
+
+##### Replay 保证与非保证
+
+Strict replay 保证：
+
+- 不调用 provider：model client 是 `RecordedReplayModelClient`，只出队已记录的
+  assistant text 和 tool-call snapshots。
+- 不执行原始工具：工具来自 `RecordedReplayToolPack`，按 `toolName + normalized
+  argument hash` 返回已记录结果。
+- deterministic clock 与 query id，因此对同一 source trace 和 runtime 版本的多次
+  strict replay 产出 byte-identical 的 `replayDigest`。
+
+不保证：
+
+- 磁盘上的 replay run 目录（`RunId`、`SessionId`、envelope `run.started`/
+  `run.completed` 的 wall-clock 时间戳）并非 byte-identical——只有 canonical engine
+  projection / `replayDigest` 是。Run-scoping 被刻意排除。
+- 跨 runtime 版本的确定性：不同 runtime 版本可以合理地改变 canonical projection。
+- Live 行为：见下文 live rerun。
+
+##### Live rerun 与 strict replay 分开
+
+`qre rerun latest` 是 **live rerun**，不是 strict replay：它用新的 response/clock
+重新执行 runtime，当 sandbox 命令依赖 clock、filesystem、network 或 host state
+时，可以合理地与 source run 不同。Strict replay（`replay latest --strict`）是
+确定性、provider-free / tool-free 路径；live rerun 是非确定性重执行路径。不要把
+live rerun 输出当作确定性保证。
 
 `manifest.json` 是 Phase 1 的 run artifact 索引，目的是让 CLI、CI、桌面端或
 其他平台不用解析完整 JSONL 就能定位 runId、run 目录、trace 文件、profile
