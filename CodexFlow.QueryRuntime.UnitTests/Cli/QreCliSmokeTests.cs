@@ -574,6 +574,111 @@ public sealed class QreCliSmokeTests
     }
 
     [Fact]
+    public async Task ToolRegister_CopiesManifestAndListsExternalTool()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var manifestPath = Path.Combine(workspace.Path, "demo-tool.json");
+        File.WriteAllText(
+            manifestPath,
+            """
+            {
+              "name": "demo_external_tool",
+              "description": "Demo external stdio tool.",
+              "transport": "stdio",
+              "command": "demo-tool",
+              "capabilities": ["read_file_system"]
+            }
+            """);
+
+        var register = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "register", "--workspace", workspace.Path, "--manifest", manifestPath, "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, register.ExitCode);
+        using var registerJson = JsonDocument.Parse(register.StandardOutput);
+        Assert.Equal("qre.tool.registered", registerJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal("demo_external_tool", registerJson.RootElement.GetProperty("toolName").GetString());
+        Assert.False(registerJson.RootElement.GetProperty("overwritten").GetBoolean());
+        var destinationPath = registerJson.RootElement.GetProperty("destinationPath").GetString();
+        Assert.Equal(Path.Combine(workspace.Path, ".qre", "tools", "demo_external_tool.json"), destinationPath);
+        Assert.True(File.Exists(destinationPath));
+
+        var list = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "list", "--workspace", workspace.Path, "--profile", "readonly", "--external", "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, list.ExitCode);
+        using var listJson = JsonDocument.Parse(list.StandardOutput);
+        Assert.Contains(
+            listJson.RootElement.GetProperty("tools").EnumerateArray(),
+            tool => tool.GetProperty("name").GetString() == "demo_external_tool" &&
+                    tool.GetProperty("source").GetString() == "external");
+    }
+
+    [Fact]
+    public async Task ToolRegister_RequiresForceToOverwrite()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var manifestPath = Path.Combine(workspace.Path, "demo-tool.json");
+        File.WriteAllText(
+            manifestPath,
+            """
+            {
+              "name": "demo_external_tool",
+              "description": "Demo external stdio tool.",
+              "transport": "stdio",
+              "command": "demo-tool"
+            }
+            """);
+
+        var first = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "register", "--workspace", workspace.Path, "--manifest", manifestPath],
+                TestContext.Current.CancellationToken));
+        var second = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "register", "--workspace", workspace.Path, "--manifest", manifestPath],
+                TestContext.Current.CancellationToken));
+        var forced = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "register", "--workspace", workspace.Path, "--manifest", manifestPath, "--force", "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, first.ExitCode);
+        Assert.Equal(1, second.ExitCode);
+        Assert.Contains("already registered", second.StandardError);
+        Assert.Equal(0, forced.ExitCode);
+        using var forcedJson = JsonDocument.Parse(forced.StandardOutput);
+        Assert.True(forcedJson.RootElement.GetProperty("overwritten").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ToolRegister_RejectsUnsupportedTransport()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var manifestPath = Path.Combine(workspace.Path, "demo-tool.json");
+        File.WriteAllText(
+            manifestPath,
+            """
+            {
+              "name": "demo_external_tool",
+              "transport": "http",
+              "command": "demo-tool"
+            }
+            """);
+
+        var result = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "register", "--workspace", workspace.Path, "--manifest", manifestPath],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("unsupported transport", result.StandardError);
+    }
+
+    [Fact]
     public async Task DiffLatest_PrintsWorkspaceGitDiffJson()
     {
         using var workspace = TemporaryWorkspace.Create();

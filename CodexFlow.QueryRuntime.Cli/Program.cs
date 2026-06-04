@@ -472,8 +472,112 @@ internal static class QreCli
         return args[0] switch
         {
             "list" => ToolList(args[1..]),
+            "register" => ToolRegister(args[1..]),
             _ => Fail($"Unknown tool command: {args[0]}")
         };
+    }
+
+    private static int ToolRegister(string[] args)
+    {
+        var workspace = Directory.GetCurrentDirectory();
+        string? manifest = null;
+        var json = false;
+        var force = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--workspace":
+                case "-w":
+                    if (++i >= args.Length)
+                    {
+                        return Fail("--workspace requires a path.");
+                    }
+                    workspace = args[i];
+                    break;
+                case "--manifest":
+                case "-m":
+                    if (++i >= args.Length)
+                    {
+                        return Fail("--manifest requires a path.");
+                    }
+                    manifest = args[i];
+                    break;
+                case "--json":
+                    json = true;
+                    break;
+                case "--force":
+                    force = true;
+                    break;
+                default:
+                    return Fail($"Unknown tool register option: {args[i]}");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(manifest))
+        {
+            return Fail("--manifest is required.");
+        }
+
+        var resolvedWorkspace = Path.GetFullPath(workspace);
+        if (!Directory.Exists(resolvedWorkspace))
+        {
+            return Fail($"Workspace does not exist: {resolvedWorkspace}");
+        }
+
+        var manifestPath = Path.GetFullPath(manifest);
+        if (!File.Exists(manifestPath))
+        {
+            return Fail($"External tool manifest does not exist: {manifestPath}");
+        }
+
+        var descriptor = TryReadExternalToolDescriptor(manifestPath);
+        if (descriptor == null)
+        {
+            return Fail("External tool manifest is invalid or uses an unsupported transport.");
+        }
+
+        if (!IsValidToolManifestFileName(descriptor.Name))
+        {
+            return Fail($"External tool name is not safe for registration: {descriptor.Name}");
+        }
+
+        var toolsDirectory = Path.Combine(resolvedWorkspace, ".qre", "tools");
+        var destinationPath = Path.Combine(toolsDirectory, descriptor.Name + ".json");
+        var overwritten = File.Exists(destinationPath);
+        if (overwritten && !force)
+        {
+            return Fail($"External tool is already registered: {destinationPath}. Use --force to overwrite.");
+        }
+
+        Directory.CreateDirectory(toolsDirectory);
+        File.Copy(manifestPath, destinationPath, overwrite: force);
+
+        var installedDescriptor = TryReadExternalToolDescriptor(destinationPath);
+        if (installedDescriptor == null)
+        {
+            return Fail($"Registered manifest could not be read back: {destinationPath}");
+        }
+
+        var output = new QreToolRegisterOutput(
+            "qre.tool.registered",
+            resolvedWorkspace,
+            manifestPath,
+            destinationPath,
+            installedDescriptor.Name,
+            installedDescriptor.Transport ?? "stdio",
+            installedDescriptor.Capabilities,
+            overwritten);
+
+        if (json)
+        {
+            WriteJson(output);
+            return 0;
+        }
+
+        Console.WriteLine($"registered {output.ToolName} -> {output.DestinationPath}");
+        return 0;
     }
 
     private static int ToolList(string[] args)
@@ -612,6 +716,12 @@ internal static class QreCli
     private static bool IsSupportedExternalToolTransport(string transport)
         => transport.Equals("stdio", StringComparison.OrdinalIgnoreCase) ||
            transport.Equals("mcp-stdio", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsValidToolManifestFileName(string name)
+        => !string.IsNullOrWhiteSpace(name) &&
+           name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+           !name.Contains(Path.DirectorySeparatorChar) &&
+           !name.Contains(Path.AltDirectorySeparatorChar);
 
     private static string? TryGetJsonString(JsonElement root, string propertyName)
         => root.ValueKind == JsonValueKind.Object &&
@@ -2465,6 +2575,7 @@ internal static class QreCli
             QreTraceLatestOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreTraceLatestOutput),
             QreTraceJsonlEvent output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreTraceJsonlEvent),
             QreToolListOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolListOutput),
+            QreToolRegisterOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolRegisterOutput),
             QrePolicyCheckOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QrePolicyCheckOutput),
             QreReplaySummary output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreReplaySummary),
             QreStrictReplayOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreStrictReplayOutput),
@@ -2553,6 +2664,7 @@ internal static class QreCli
     {
         Console.WriteLine("Usage:");
         Console.WriteLine("  qre tool list --workspace . --profile readonly|verify|repair [--json] [--external]");
+        Console.WriteLine("  qre tool register --workspace . --manifest tool.json [--json] [--force]");
     }
 
     private static void PrintPolicyHelp()
@@ -2881,6 +2993,16 @@ internal static class QreCli
         string Source = "builtin",
         string? Transport = null);
 
+    internal sealed record QreToolRegisterOutput(
+        string Type,
+        string WorkspacePath,
+        string ManifestPath,
+        string DestinationPath,
+        string ToolName,
+        string Transport,
+        IReadOnlySet<string> Capabilities,
+        bool Overwritten);
+
     internal sealed record QrePolicyCheckOutput(
         string Type,
         string Profile,
@@ -3130,6 +3252,7 @@ internal static class QreCli
 [JsonSerializable(typeof(QreCli.QreTraceLatestOutput))]
 [JsonSerializable(typeof(QreCli.QreTraceJsonlEvent))]
 [JsonSerializable(typeof(QreCli.QreToolListOutput))]
+[JsonSerializable(typeof(QreCli.QreToolRegisterOutput))]
 [JsonSerializable(typeof(QreCli.QreToolDescriptor))]
 [JsonSerializable(typeof(QreCli.QrePolicyCheckOutput))]
 [JsonSerializable(typeof(QreCli.QreReplaySummary))]

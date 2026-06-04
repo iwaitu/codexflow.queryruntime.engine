@@ -1,0 +1,19 @@
+{
+  "name": "demo_echo_tool",
+  "description": "Echo a message and report the workspace directory name.",
+  "transport": "stdio",
+  "command": "python3",
+  "args": ["examples/ExternalTools/echo_tool.py"],
+  "capabilities": ["read_fs"],
+  "timeoutSeconds": 30,
+  "maxOutputBytes": 200000,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "Message to echo."
+      }
+    }
+  }
+}

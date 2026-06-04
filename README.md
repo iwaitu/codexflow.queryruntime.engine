@@ -257,6 +257,17 @@ the recorded trace.
 python examples/PythonToolDoctor/doctor.py /path/to/repo
 ```
 
+### Registering New Tools
+
+QRE registers new out-of-process tools through workspace-local manifests under
+`.qre/tools/*.json`. See [examples/ExternalTools](examples/ExternalTools) for a
+minimal stdio tool, manifest, discovery command, and `--required-tool` smoke.
+
+```bash
+qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
+qre tool list --workspace . --profile readonly --external --json
+```
+
 ## Verify tools and capability policy
 
 The `verify` profile adds controlled local command execution on top of the

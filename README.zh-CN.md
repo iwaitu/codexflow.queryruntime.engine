@@ -230,6 +230,17 @@ dotnet run -- /path/to/repo
 python examples/PythonToolDoctor/doctor.py /path/to/repo
 ```
 
+### 注册新工具
+
+QRE 通过 workspace-local manifest 注册新的进程外工具，manifest 放在
+`.qre/tools/*.json`。最小 stdio 工具、manifest、发现命令和 `--required-tool`
+smoke 示例见 [examples/ExternalTools](examples/ExternalTools)。
+
+```bash
+qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
+qre tool list --workspace . --profile readonly --external --json
+```
+
 ## verify 工具与 capability policy
 
 `verify` profile 在 readonly 工具之外提供受控的本地命令执行：
