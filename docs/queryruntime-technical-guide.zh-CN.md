@@ -507,6 +507,12 @@ workspace 下可放置：
 .qre/tools/<tool-name>.json
 ```
 
+推荐通过注册命令把 manifest 校验并复制到 workspace-local registry：
+
+```bash
+qre tool register --workspace . --manifest path/to/tool.json
+```
+
 最小 `stdio` manifest 示例：
 
 ```json
@@ -539,6 +545,26 @@ qre tool list --workspace . --profile readonly --external --json
 ```bash
 qre run --workspace . --profile readonly --external "call the external tool"
 ```
+
+对于 Python 项目，普通函数应该适配到这个 manifest surface，而不是在 QRE
+外部拦截 tool call。`examples/PythonFunctionTools` 提供一个最小模式：
+
+```python
+@qre_tool(name="py_count_files", capabilities=["read_fs"])
+def count_files(workspace_path: str, extension: str = ".py") -> dict[str, object]:
+    ...
+```
+
+Python 脚本可为每个 decorated function 生成一个 manifest：
+
+```bash
+python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
+```
+
+运行时模型调用 `py_count_files`，QRE 通过 stdio 启动 Python 进程，发送
+`{ name, workspacePath, arguments }`，接收 `{ "result": ... }`，把 tool event
+记录进 trace，再把结果返回给模型。
 
 当前支持两种 transport：
 

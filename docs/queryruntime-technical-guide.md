@@ -556,6 +556,13 @@ Under the workspace you can place:
 .qre/tools/<tool-name>.json
 ```
 
+The supported registration command copies and validates a manifest into that
+workspace-local registry:
+
+```bash
+qre tool register --workspace . --manifest path/to/tool.json
+```
+
 A minimal `stdio` manifest example:
 
 ```json
@@ -588,6 +595,27 @@ Enable external tools at runtime:
 ```bash
 qre run --workspace . --profile readonly --external "call the external tool"
 ```
+
+For Python projects, ordinary functions should be adapted into this manifest
+surface instead of trying to intercept tool calls outside QRE. The
+`examples/PythonFunctionTools` helper provides a minimal pattern:
+
+```python
+@qre_tool(name="py_count_files", capabilities=["read_fs"])
+def count_files(workspace_path: str, extension: str = ".py") -> dict[str, object]:
+    ...
+```
+
+The Python script can generate one manifest per decorated function:
+
+```bash
+python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
+```
+
+At runtime the model calls `py_count_files`, QRE starts the Python process over
+stdio, sends `{ name, workspacePath, arguments }`, receives `{ "result": ... }`,
+records the tool event in the trace, and returns the result to the model.
 
 Two transports are currently supported:
 

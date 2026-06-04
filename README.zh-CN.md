@@ -47,6 +47,8 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
   drop capabilities、seccomp 等）。
 - **外部工具 manifest**：`.qre/tools/*.json` 可声明 `stdio` 或最小 `mcp-stdio`
   工具，采用 out-of-process、manifest-first 设计，兼容 Native AOT 路径。
+- **Python function tools**：Python 项目可以给普通函数加装饰器，生成 manifest，
+  再注册成 QRE tools；LLM tool-call loop 仍由 QRE 接管。
 - **机器可读输出**：`--json` CLI 输出、`qre trace latest --jsonl`、
   `qre replay latest`，便于脚本、CI 与第三方应用集成。
 - **Thinking 策略**：启用工具或要求 JSON 输出时默认关闭 thinking，提升工具调用
@@ -235,10 +237,17 @@ python examples/PythonToolDoctor/doctor.py /path/to/repo
 QRE 通过 workspace-local manifest 注册新的进程外工具，manifest 放在
 `.qre/tools/*.json`。最小 stdio 工具、manifest、发现命令和 `--required-tool`
 smoke 示例见 [examples/ExternalTools](examples/ExternalTools)。
+Python 项目可参考 [examples/PythonFunctionTools](examples/PythonFunctionTools)，
+用 `@qre_tool` 声明普通函数并生成 manifest 后注册。
 
 ```bash
 qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
 qre tool list --workspace . --profile readonly --external --json
+```
+
+```bash
+python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
 ```
 
 ## verify 工具与 capability policy

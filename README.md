@@ -68,6 +68,9 @@ validation, and replay debugging.
 - **External tool manifests** — declare `stdio` or minimal `mcp-stdio` tools via
   `.qre/tools/*.json`, using an out-of-process, manifest-first design compatible
   with Native AOT.
+- **Python function tools** — Python projects can decorate ordinary functions,
+  generate manifests, and register them as QRE tools without taking over the
+  LLM tool-call loop.
 - **Machine-readable output** — `--json` CLI output, `qre trace latest --jsonl`,
   and `qre replay latest` for scripts, CI, and third-party integration.
 - **Thinking policy** — thinking is disabled by default when tools or JSON output
@@ -262,10 +265,17 @@ python examples/PythonToolDoctor/doctor.py /path/to/repo
 QRE registers new out-of-process tools through workspace-local manifests under
 `.qre/tools/*.json`. See [examples/ExternalTools](examples/ExternalTools) for a
 minimal stdio tool, manifest, discovery command, and `--required-tool` smoke.
+For Python projects, [examples/PythonFunctionTools](examples/PythonFunctionTools)
+shows how `@qre_tool` functions generate manifests and become QRE tools.
 
 ```bash
 qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
 qre tool list --workspace . --profile readonly --external --json
+```
+
+```bash
+python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
 ```
 
 ## Verify tools and capability policy
