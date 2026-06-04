@@ -67,7 +67,7 @@
 - 安全敏感的 write、process、network 和 sandbox capabilities 应通过 policy
   表达，并由 negative cases 测试覆盖。
 
-## 4. P0：Baseline Freeze And Hardening
+## 4. P0：Baseline Freeze And Hardening ✅ 已完成（2026-06-03）
 
 目标：在开始新功能开发前，把当前分支基线变成可重复验证、文档一致、并逐步
 受 CI 保护的稳定起点。
@@ -135,10 +135,25 @@ current-capability acceptance matrix 位于
   输出 event-shaped 内容。
 - 当 credentials/endpoints 存在时，可选运行 gated real-provider test。
 
-## 5. P1：Provider-Neutral Model Adapters
+## 5. P1：Provider-Neutral Model Adapters ✅ 已完成（2026-06-03）
 
 目标：用显式 provider adapters 替代 CLI-local model-family heuristics，并把它们
 放在 QRE 自有的 model adapter surface 下。
+
+状态：截至 2026-06-03，P1 已完成。新增 `CodexFlow.QueryRuntime.Models` 项目
+承载 `IQreModelProvider` adapter 抽象、`QreModelProviderSelector` 和
+`QreModelApiMode` provider-neutral surface（对 `CodexFlow.Core` zero project
+dependency）。CLI 的 `QreVllmChatClientFactory` 和 integration test host 都改为
+委托同一个 selector，silent unknown-model fallback 已移除：未知 `--model` 或
+不兼容的 `--api-mode` 会返回清晰 CLI error（exit 1，不触发 provider 调用）。
+Adapter contract 由 `CodexFlow.QueryRuntime.UnitTests/Models/*` 和
+`Cli/QreCliModelSelectionTests.cs` 覆盖；thinking policy / JSON output 行为仍由
+既有 harness tests 守护。Native AOT publish 在变更后保持 clean（无 trim/AOT
+warning）。OpenAI-compatible 与 Anthropic Messages 的 real-provider smoke 仍是
+gated checkpoint（需外部 credentials/endpoints），保持 non-CI。
+
+§12 的 packaging 开放问题已解决：adapters 先以单一 `CodexFlow.QueryRuntime.Models`
+项目落地，后续可按 provider 再拆分。
 
 范围：
 
@@ -357,13 +372,15 @@ workspace-scoped 且可审计。
 
 合并后的推荐顺序是：
 
-1. P0 baseline freeze and hardening。
-2. P3 Native AOT blocking CI。
-3. P1 provider-neutral model adapters。
-4. P5 repair profile write tools and run-scoped diff。
-5. P2 deterministic replay hardening。
-6. P4 complete Phase 1.6 reverse dependency。
-7. P6 open-source release readiness。
+1. ✅ P0 baseline freeze and hardening。（已完成 2026-06-03）
+2. ◻ P3 Native AOT blocking CI。（AOT CI lane 已存在于 `.github/workflows/ci.yml`
+   的 `aot-smoke` job，会 publish AOT binary 并对产出 binary 跑 smoke；尚需确认
+   该 lane 是否已作为 required/blocking check。）
+3. ✅ P1 provider-neutral model adapters。（已完成 2026-06-03）
+4. ◻ P5 repair profile write tools and run-scoped diff。
+5. ◻ P2 deterministic replay hardening。
+6. ◻ P4 complete Phase 1.6 reverse dependency。
+7. ◻ P6 open-source release readiness。
 
 该顺序是刻意安排的：
 
@@ -386,8 +403,9 @@ workspace-scoped 且可审计。
 - P0 已解决：acceptance matrix 位于
   `docs/queryruntime-harness-open-source-strategy.md`，本文档只链接该 source，
   不重复维护矩阵。
-- Provider adapters 应立即拆成 separate packages，还是先落在当前 QRE project
-  graph 中，后续再拆分？
+- P1 已解决：Provider adapters 先落在单一 `CodexFlow.QueryRuntime.Models` 项目
+  中（对 Core zero project dependency），后续可按 provider 再拆成 separate
+  packages。
 - 第一个 AOT CI gate 应强制哪些 RIDs？
 - 旧 traces 应自动迁移，还是第一个 public trace version 应以清晰 reason 拒绝
   pre-public traces？

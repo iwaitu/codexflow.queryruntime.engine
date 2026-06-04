@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using CodexFlow.QueryRuntime.Abstractions;
 using CodexFlow.QueryRuntime.Experimental;
+using CodexFlow.QueryRuntime.Models;
 using CodexFlow.QueryRuntime.Sandbox.Docker;
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
 using Microsoft.Extensions.AI;
@@ -173,7 +174,16 @@ internal static class QreCli
             return Fail($"Workspace does not exist: {resolvedWorkspace}");
         }
 
-        var modelClient = CreateModelClient(options.Provider);
+        IExperimentalModelClient? modelClient;
+        try
+        {
+            modelClient = CreateModelClient(options.Provider);
+        }
+        catch (QreModelSelectionException ex)
+        {
+            return Fail(ex.Message);
+        }
+
         if (modelClient == null)
         {
             return Fail(

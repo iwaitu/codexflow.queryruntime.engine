@@ -19,6 +19,7 @@
     <PackageReference Include="VllmChatClient" Version="2.0.21" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.Docker\CodexFlow.QueryRuntime.Sandbox.Docker.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.LocalProcess\CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
   </ItemGroup>

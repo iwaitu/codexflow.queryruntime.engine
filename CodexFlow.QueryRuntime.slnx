@@ -3,6 +3,7 @@
   <Project Path="CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Engine/CodexFlow.QueryRuntime.Engine.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Experimental/CodexFlow.QueryRuntime.Experimental.csproj" />
+  <Project Path="CodexFlow.QueryRuntime.Models/CodexFlow.QueryRuntime.Models.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Sandbox.Docker/CodexFlow.QueryRuntime.Sandbox.Docker.csproj" />
   <Project Path="CodexFlow.QueryRuntime.Sandbox.LocalProcess/CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
   <Project Path="CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj" />
