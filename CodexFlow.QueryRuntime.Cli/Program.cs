@@ -106,6 +106,13 @@ internal static class QreCli
                     }
                     options.Runtime.MaxRounds = maxRounds;
                     break;
+                case "--required-tool":
+                    if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        return Fail("--required-tool requires a tool name.");
+                    }
+                    options.RequiredToolName = args[i];
+                    break;
                 case "--runner":
                     if (++i >= args.Length)
                     {
@@ -231,6 +238,7 @@ internal static class QreCli
                     RequiresStructuredOutput = options.Output.RequestJson,
                     ThinkingPolicy = options.ModelPolicy.ThinkingPolicy,
                     Options = BuildChatOptions(options),
+                    RequiredToolName = options.RequiredToolName,
                     TextDeltaSink = options.Output.Stream
                         ? (delta, _) =>
                         {
@@ -2527,6 +2535,7 @@ internal static class QreCli
         Console.WriteLine("  --docker-image <image>  Docker image for --runner docker. Env fallback: QRE_DOCKER_IMAGE.");
         Console.WriteLine("  --external              Include .qre/tools/*.json stdio tool manifests.");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
+        Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
         Console.WriteLine("  --thinking <mode>       auto, off, on, or preserve. Defaults to auto.");
         Console.WriteLine("  --json-output           Request JSON output and disable thinking by default.");
         Console.WriteLine("  --json                  Print CLI result as JSON.");
@@ -2820,6 +2829,8 @@ internal static class QreCli
         public string? DockerImage { get; set; }
 
         public bool IncludeExternalTools { get; set; }
+
+        public string? RequiredToolName { get; set; }
     }
 
     internal sealed record QreRunOutput(

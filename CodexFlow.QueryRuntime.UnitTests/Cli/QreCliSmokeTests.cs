@@ -386,6 +386,52 @@ public sealed class QreCliSmokeTests
     }
 
     [Fact]
+    public async Task Run_RequiredToolName_IsRecordedInPromptAssemblySnapshot()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var run = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                [
+                    "run",
+                    "--workspace",
+                    workspace.Path,
+                    "--profile",
+                    "readonly",
+                    "--required-tool",
+                    "qre_list_files",
+                    "--response",
+                    "required tool smoke",
+                    "--json",
+                    "inspect the workspace"
+                ],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, run.ExitCode);
+        using var runJson = JsonDocument.Parse(run.StandardOutput);
+        var traceFile = runJson.RootElement.GetProperty("traceFilePath").GetString()!;
+        var traceEvents = File.ReadAllLines(traceFile)
+            .Where(static line => line.Contains("\"Type\":\"model.request\"", StringComparison.Ordinal))
+            .Select(static line => JsonDocument.Parse(line))
+            .ToArray();
+
+        try
+        {
+            var promptAssembly = Assert.Single(traceEvents);
+            Assert.Equal(
+                "qre_list_files",
+                promptAssembly.RootElement.GetProperty("Data").GetProperty("RequiredToolName").GetString());
+        }
+        finally
+        {
+            foreach (var traceEvent in traceEvents)
+            {
+                traceEvent.Dispose();
+            }
+        }
+    }
+
+    [Fact]
     public async Task ToolList_VerifyProfile_PrintsCapabilities()
     {
         using var workspace = TemporaryWorkspace.Create();

@@ -217,6 +217,19 @@ cd examples/RepoDoctor
 dotnet run -- /path/to/repo
 ```
 
+### Python live-provider 工具调用流式示例
+
+[examples/PythonToolDoctor](examples/PythonToolDoctor) 演示 Python 以子进程方式
+调用 `qre`。它默认从 sibling CodexFlow 的 `appsettings.json` 读取 provider
+配置，使用真实 LLM provider 流式输出回复，通过 `--required-tool` 强制一次
+`qre_list_files` 工具调用，并从 recorded trace 中验证该工具调用确实发生。
+
+![PythonToolDoctor live provider tool-call streaming](docs/assets/python-tool-streaming-demo.gif)
+
+```bash
+python examples/PythonToolDoctor/doctor.py /path/to/repo
+```
+
 ## verify 工具与 capability policy
 
 `verify` profile 在 readonly 工具之外提供受控的本地命令执行：

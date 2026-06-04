@@ -243,6 +243,20 @@ cd examples/RepoDoctor
 dotnet run -- /path/to/repo
 ```
 
+### Python live-provider tool-call streaming
+
+[examples/PythonToolDoctor](examples/PythonToolDoctor) shows the same binary-first
+integration style from Python. It reads provider settings from the sibling
+CodexFlow `appsettings.json` by default, streams a real LLM response, forces one
+`qre_list_files` tool call with `--required-tool`, and verifies the tool call from
+the recorded trace.
+
+![PythonToolDoctor live provider tool-call streaming](docs/assets/python-tool-streaming-demo.gif)
+
+```bash
+python examples/PythonToolDoctor/doctor.py /path/to/repo
+```
+
 ## Verify tools and capability policy
 
 The `verify` profile adds controlled local command execution on top of the
