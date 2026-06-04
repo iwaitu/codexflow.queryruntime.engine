@@ -207,7 +207,10 @@ qre run --workspace . --profile readonly --thinking off \
 ### 在 .NET 应用中以子进程调用
 
 完整示例见 [examples/RepoDoctor](examples/RepoDoctor)：把 `qre` 当作本地 Agent
-runtime CLI 调用，解析 `--json` 输出，并跟随做一次 replay。
+runtime CLI 调用，将模型回复流式输出到宿主应用控制台，并跟随做一次 recorded
+replay。
+
+![RepoDoctor streaming qre output](docs/assets/repodoctor-streaming-demo.gif)
 
 ```bash
 cd examples/RepoDoctor
@@ -285,9 +288,12 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 - CLI provider 路径仍依赖 `QreVllmChatClientFactory` 的模型族启发式路由，不是
   完全 provider-neutral 的通用 adapter。
 - replay 已支持 recorded replay，但还不是 benchmark 级 deterministic replay。
+- run-scoped `diff.patch` 只按 repair tools 记录的路径收敛范围；但如果同一个文件
+  在 run 前已经有未提交修改，patch 表达的是从 `HEAD` 到最终文件状态的完整差异，
+  会包含该同文件的 pre-existing delta。
 - sandbox 已有 Docker runner，但 Kubernetes / remote runner 与更多平台矩阵未完成。
-- Native AOT 仅在本地 `osx-arm64` 通过；Linux / Windows publish、签名、发布包与
-  CI 矩阵仍在补齐。
+- Native AOT 已有 blocking `linux-x64` CI lane 和 release packaging workflow；签名
+  与 protected-branch required check 仍需在首个 pre-release 前通过仓库设置核验。
 - `usage.json` 当前是估算 usage（`ceil(chars / 4.0)`），不能作为计费依据。
 - `mcp-stdio` 当前只支持 one-shot `tools/call`，没有完整 initialize lifecycle。
 
@@ -296,7 +302,8 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 - [docs/queryruntime-technical-guide.zh-CN.md](docs/queryruntime-technical-guide.zh-CN.md) — 技术说明（定位、架构、用法、演进路径）。
 - [docs/IQueryRuntimeEngine.zh-CN.md](docs/IQueryRuntimeEngine.zh-CN.md) — 统一执行引擎详细设计。
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — 开源 harness 策略（英文）。
-- [docs/queryruntime-next-development-plan.zh-CN.md](docs/queryruntime-next-development-plan.zh-CN.md) — 后续开发计划。
+- [docs/queryruntime-pre-release-work-plan.zh-CN.md](docs/queryruntime-pre-release-work-plan.zh-CN.md) — pre-release 工作计划。
+- [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md) — 已归档的完成态开发计划。
 - [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — 工具分区矩阵（英文）。
 - [docs/tool-capabilities.md](docs/tool-capabilities.md)、[docs/threat-model.md](docs/threat-model.md)（英文）。
 

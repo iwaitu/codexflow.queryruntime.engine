@@ -40,6 +40,10 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 - `verify` allows build/test artifact writes only for explicitly permitted
   commands and requires approval for push, publish, install, restore,
   destructive, deploy, arbitrary execution, and network-capable commands.
+- `repair` exposes controlled workspace file tools (`qre_write_file` and
+  `qre_apply_patch`) instead of arbitrary shell execution. The tools reject
+  workspace escape, symlink escape, protected `.git` / `.qre` artifacts, and
+  secret-looking paths.
 - Explicit approvals are local CLI policy inputs and must include an operator
   reason. They do not override unknown command classification.
 - Denied or approval-gated `qre sandbox exec` commands produce policy decision
@@ -78,8 +82,7 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 ## Next Hardening Steps
 
 - Add an approval broker for `RequireApproval` decisions.
-- Tighten copy-out policy for future repair/write profiles once those profiles
-  start allowing source modifications beyond build artifacts, especially around
-  deletion propagation and failed-run diagnostic artifacts.
+- Tighten copy-out policy for write-capable runs, especially around deletion
+  propagation and failed-run diagnostic artifacts.
 - Keep expanding command classification through tests before exposing broader
   command execution.

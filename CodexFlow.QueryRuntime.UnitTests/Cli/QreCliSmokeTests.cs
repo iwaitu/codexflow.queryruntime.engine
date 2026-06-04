@@ -309,10 +309,9 @@ public sealed class QreCliSmokeTests
     }
 
     [Theory]
-    [InlineData("--stream", "--stream is reserved")]
     [InlineData("--jsonl-stream", "--jsonl-stream is reserved")]
     [InlineData("--unknown-output-mode", "Unknown qre run option")]
-    public async Task Run_StreamingAndUnknownOptionsDoNotBecomePromptText(
+    public async Task Run_ReservedStreamingAndUnknownOptionsDoNotBecomePromptText(
         string option,
         string expectedError)
     {
@@ -334,6 +333,56 @@ public sealed class QreCliSmokeTests
         Assert.Equal(1, run.ExitCode);
         Assert.Equal(string.Empty, run.StandardOutput);
         Assert.Contains(expectedError, run.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_Stream_PrintsAssistantTextAndMetadata()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var run = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                [
+                    "run",
+                    "--workspace",
+                    workspace.Path,
+                    "--response",
+                    "stream smoke",
+                    "--stream",
+                    "analyze architecture risks"
+                ],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(string.Empty, run.StandardError);
+        Assert.Contains("stream smoke", run.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("run_id:", run.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("trace:", run.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("qre.run.completed", run.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_StreamCannotBeCombinedWithFinalJson()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var run = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                [
+                    "run",
+                    "--workspace",
+                    workspace.Path,
+                    "--response",
+                    "should not run",
+                    "--stream",
+                    "--json",
+                    "analyze architecture risks"
+                ],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, run.ExitCode);
+        Assert.Equal(string.Empty, run.StandardOutput);
+        Assert.Contains("--stream cannot be combined with --json", run.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -607,6 +656,39 @@ public sealed class QreCliSmokeTests
         Assert.DoesNotContain("-base content", patch);
         Assert.DoesNotContain("+final content", patch);
         Assert.DoesNotContain("+staged content", patch);
+    }
+
+    [Fact]
+    public async Task RunScopedDiffPatch_ForSamePathDirtyBaseline_DocumentsHeadToFinalBehavior()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var notesPath = Path.Combine(workspace.Path, "notes.txt");
+        File.WriteAllText(notesPath, "base content" + Environment.NewLine);
+        await RunProcessAsync(
+            "git",
+            ["add", "notes.txt"],
+            workspace.Path,
+            TestContext.Current.CancellationToken);
+        await RunProcessAsync(
+            "git",
+            ["-c", "user.name=QRE Test", "-c", "user.email=qre@example.invalid", "commit", "--no-gpg-sign", "-m", "initial"],
+            workspace.Path,
+            TestContext.Current.CancellationToken);
+
+        File.WriteAllText(notesPath, "base content" + Environment.NewLine + "pre-existing dirty" + Environment.NewLine);
+        File.AppendAllText(notesPath, "repair edit" + Environment.NewLine);
+
+        var runDirectory = Path.Combine(workspace.Path, ".qre", "runs", "same-path-dirty");
+        Directory.CreateDirectory(runDirectory);
+        File.WriteAllText(Path.Combine(runDirectory, "repair-edits.txt"), "notes.txt" + Environment.NewLine);
+
+        await QreCli.WriteRunDiffPatchAsync(runDirectory, workspace.Path, TestContext.Current.CancellationToken);
+
+        var patch = File.ReadAllText(Path.Combine(runDirectory, "diff.patch"));
+        Assert.Equal(1, CountOccurrences(patch, "diff --git a/notes.txt b/notes.txt"));
+        Assert.Contains("+pre-existing dirty", patch, StringComparison.Ordinal);
+        Assert.Contains("+repair edit", patch, StringComparison.Ordinal);
+        Assert.DoesNotContain(".qre/runs", patch);
     }
 
     [Fact]

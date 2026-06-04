@@ -36,6 +36,8 @@ public sealed record QueryRuntimeOutputOptions
     public bool RequestJson { get; set; }
 
     public bool Json { get; set; }
+
+    public bool Stream { get; set; }
 }
 
 public sealed record QueryRuntimeExecutionOptions

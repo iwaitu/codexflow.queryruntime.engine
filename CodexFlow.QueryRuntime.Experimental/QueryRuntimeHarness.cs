@@ -41,6 +41,8 @@ public sealed record ExperimentalQueryRuntimeRequest
     /// per-run query id is seeded from the source trace instead of <see cref="Guid.NewGuid"/>.
     /// </summary>
     public Func<Guid>? QueryIdFactory { get; init; }
+
+    public Func<string, CancellationToken, ValueTask>? TextDeltaSink { get; init; }
 }
 
 public sealed record ExperimentalQueryRuntimeResult(
@@ -144,7 +146,8 @@ public sealed class ExperimentalQueryRuntimeHarness(
                     request.RequiresStructuredOutput,
                     request.ThinkingPolicy),
                 AvailableTools = tools,
-                RequiredToolName = request.RequiredToolName
+                RequiredToolName = request.RequiredToolName,
+                TextDeltaSink = request.TextDeltaSink
             };
 
             var result = await engine.ExecuteAsync(

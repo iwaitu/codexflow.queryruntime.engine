@@ -98,6 +98,43 @@ public sealed class StandaloneQueryRuntimeEngineTests
         Assert.Contains(sink.Events, evt => evt is Qre.TerminatedEvent terminated && terminated.TotalRounds == 2);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_StreamsTextDeltasBeforeFinalResult()
+    {
+        var model = new ScriptedModelClient(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [
+                    new TextContent("first "),
+                    new TextContent("second")
+                ]));
+        var sink = new CapturingEventSink();
+        var deltas = new List<string>();
+        Qre.IQueryRuntimeEngine engine = new Qre.QueryRuntimeEngine(model);
+
+        var result = await engine.ExecuteAsync(
+            new Qre.QueryRuntimeRequest
+            {
+                SessionId = Guid.NewGuid().ToString("N"),
+                InitialMessages = [new ChatMessage(ChatRole.User, "test")],
+                MaxRounds = 1,
+                EnableTools = false,
+                TextDeltaSink = (delta, _) =>
+                {
+                    deltas.Add(delta);
+                    return ValueTask.CompletedTask;
+                }
+            },
+            sink,
+            "run-stream",
+            "/tmp/qre-test/events.jsonl",
+            workspacePath: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(["first ", "second"], deltas);
+        Assert.Equal("first second", result.FinalText);
+    }
+
     private sealed class ScriptedModelClient(params ChatResponseUpdate[] responses) : Qre.IQueryRuntimeModelClient
     {
         private readonly Queue<ChatResponseUpdate> _responses = new(responses);

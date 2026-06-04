@@ -119,6 +119,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          set -euo pipefail
           PUB="CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/${{ matrix.rid }}/publish"
           OUT="qre-${{ matrix.rid }}.tar.gz"
           chmod +x "$PUB/qre"
@@ -135,6 +136,45 @@ jobs:
           Compress-Archive -Path "$pub/qre.exe" -DestinationPath $out -Force
           (Get-FileHash $out -Algorithm SHA256).Hash.ToLower() + "  " + $out | Out-File -Encoding ascii "$out.sha256"
           Get-ChildItem $out, "$out.sha256"
+
+      - name: Smoke packaged artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="qre-${{ matrix.rid }}.tar.gz"
+          SCRATCH="$(mktemp -d)"
+          trap 'rm -rf "$SCRATCH"' EXIT
+          tar -xzf "$OUT" -C "$SCRATCH"
+          chmod +x "$SCRATCH/qre"
+          "$SCRATCH/qre" --version
+          mkdir -p "$SCRATCH/workspace"
+          "$SCRATCH/qre" doctor --workspace "$SCRATCH/workspace" --json
+          "$SCRATCH/qre" run \
+            --workspace "$SCRATCH/workspace" \
+            --profile none \
+            --response "package smoke" \
+            --json \
+            "smoke packaged qre"
+
+      - name: Smoke packaged artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "qre-${{ matrix.rid }}.zip"
+          $scratch = Join-Path $env:RUNNER_TEMP ("qre-package-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          Expand-Archive -Path $out -DestinationPath $scratch -Force
+          $qre = Join-Path $scratch "qre.exe"
+          $workspace = Join-Path $scratch "workspace"
+          New-Item -ItemType Directory -Path $workspace | Out-Null
+          & $qre --version
+          if ($LASTEXITCODE -ne 0) { throw "qre --version failed" }
+          & $qre doctor --workspace $workspace --json
+          if ($LASTEXITCODE -ne 0) { throw "qre doctor failed" }
+          & $qre run --workspace $workspace --profile none --response "package smoke" --json "smoke packaged qre"
+          if ($LASTEXITCODE -ne 0) { throw "qre run failed" }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

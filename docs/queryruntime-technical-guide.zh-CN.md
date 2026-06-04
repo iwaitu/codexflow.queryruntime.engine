@@ -584,35 +584,34 @@ qre run --workspace . --json-output "return a JSON summary"
 当前 `qre run` 输出契约：
 
 - 不带 `--json` 时，CLI 在 run 完成后输出最终 assistant text，然后输出
-  run metadata。它当前不是实时 streaming UI。
+  run metadata。
+- 带 `--stream` 时，CLI 会随着 model client 产出内容实时写出 human-readable
+  assistant text delta，然后输出同样的 run metadata。这个模式面向终端和宿主
+  app，不面向机器解析。
 - 带 `--json` 时，stdout 只输出一条 `qre.run.completed` JSON 对象，供脚本和
   CI 解析。实时文本 delta、trace event 或进度信息不应混入这个 stdout
   contract。
-- 未来 `--stream` 会用于 human-readable assistant text streaming。这个模式
-  不应和 `--json` 的单对象结果混用。
 - 未来 `--jsonl-stream` 会用于 machine-readable event streaming，每一行都应
   是显式 event-shaped JSON，例如包含 event type、sequence、run id 和 payload。
   它不应复用 `--json` 的 final result shape。
 
-当前实现已经把 `--stream` 和 `--jsonl-stream` 作为保留参数处理：它们会明确
-失败，而不是被静默拼入 prompt。等 streaming 实现进入后，需要先补充 contract
-tests，证明 `--json` 仍只输出最终结果，`--jsonl-stream` 才输出 event stream。
+`--stream` 不能和 `--json` 混用；CLI 会 fail fast，避免把 text delta 混进
+single-final-object JSON contract。`--jsonl-stream` 仍是保留参数，会明确失败，
+而不是被静默拼进 prompt。
 
-第三方 Agent 或桌面应用集成时，推荐优先使用未来的 `--jsonl-stream`，而不是
-解析 human-readable `--stream` 输出。外部进程按行读取 stdout，遇到
-`model.text.delta` 事件就实时渲染 assistant 文本，遇到最终
-`qre.run.completed` 事件再保存 run id、trace 路径和最终结果。
+第三方 Agent 或桌面应用集成时，如果 human-readable 终端输出已经足够，可以使用
+`--stream`。需要机器可读进度事件时，仍应等待未来的 `--jsonl-stream`。
 
-目标命令形态：
+当前 human-readable stream 命令形态：
 
 ```bash
 qre run --workspace . \
   --profile readonly \
-  --jsonl-stream \
+  --stream \
   "Analyze this repository and list the top risks."
 ```
 
-目标 JSONL event 形态示例：
+未来 JSONL event 形态示例：
 
 ```jsonl
 {"type":"qre.run.event","eventType":"model.text.delta","seq":12,"runId":"20260603123000123","delta":"Reading repository structure..."}
@@ -621,11 +620,10 @@ qre run --workspace . \
 {"type":"qre.run.completed","finalText":"Reading repository structure... Found the main runtime projects.","runId":"20260603123000123","traceFilePath":"/repo/.qre/runs/20260603123000123/events.jsonl"}
 ```
 
-最小 .NET 调用示例：
+当前 human-readable stream 的最小 .NET 调用示例：
 
 ```csharp
 using System.Diagnostics;
-using System.Text.Json;
 
 var startInfo = new ProcessStartInfo
 {
@@ -640,41 +638,31 @@ startInfo.ArgumentList.Add("--workspace");
 startInfo.ArgumentList.Add("/path/to/repo");
 startInfo.ArgumentList.Add("--profile");
 startInfo.ArgumentList.Add("readonly");
-startInfo.ArgumentList.Add("--jsonl-stream");
+startInfo.ArgumentList.Add("--stream");
 startInfo.ArgumentList.Add("Analyze this repository and list the top risks.");
 
 using var process = Process.Start(startInfo)
     ?? throw new InvalidOperationException("Failed to start qre.");
 
-while (await process.StandardOutput.ReadLineAsync() is { } line)
+var buffer = new char[256];
+while (true)
 {
-    if (string.IsNullOrWhiteSpace(line))
+    var read = await process.StandardOutput.ReadAsync(buffer);
+    if (read == 0)
     {
-        continue;
+        break;
     }
 
-    using var doc = JsonDocument.Parse(line);
-    var root = doc.RootElement;
-    var type = root.GetProperty("type").GetString();
-
-    if (type == "qre.run.event" &&
-        root.GetProperty("eventType").GetString() == "model.text.delta")
-    {
-        Console.Write(root.GetProperty("delta").GetString());
-    }
-    else if (type == "qre.run.completed")
-    {
-        Console.WriteLine();
-        Console.WriteLine($"trace: {root.GetProperty("traceFilePath").GetString()}");
-    }
+    Console.Write(buffer.AsSpan(0, read));
 }
 
 await process.WaitForExitAsync();
 ```
 
-注意：文本 delta 可以实时输出；tool call、policy decision 和 tool result 应保持
-event-shaped 完整记录，不应把尚未组装完成的 partial tool-call payload 暴露给
-第三方消费端。
+注意：当前 `--stream` 输出是 human-readable 文本加最终 run metadata。tool call、
+policy decision 和 tool result 仍通过 trace 获取。未来 machine-readable
+streaming 应使用完整 event-shaped 记录，不应把尚未组装完成的 partial tool-call
+payload 暴露给第三方消费端。
 
 ### 5.7 Thinking 策略
 
@@ -840,6 +828,9 @@ qre diff latest --workspace . --stat --json
 - 覆盖 untracked non-`.qre` files。
 - 不修改真实 `.git/index`。
 - 同一文件同时有 staged 和 unstaged 修改时，patch 表示最终 workspace 状态。
+- 对 repair run，run patch 会收敛到 `repair-edits.txt` 记录的路径。如果其中某个
+  同路径文件在 run 前已经有未提交修改，当前 pre-release 行为是输出该文件从
+  `HEAD` 到最终状态的完整 diff，因此会包含该同文件的 pre-existing delta。
 
 如果当前 workspace 不是 Git 仓库，或者 latest run 没有 `diff.patch`，CLI
 会回退到 `workspace-git-diff` 模式。`--stat` 当前仍读取当前 workspace 的

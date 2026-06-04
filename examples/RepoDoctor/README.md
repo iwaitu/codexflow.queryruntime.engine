@@ -3,9 +3,9 @@
 A minimal, cross-platform example of calling the [`qre`](../../README.md) CLI as a
 local agent runtime from a .NET app.
 
-It runs a read-only analysis over a repository, parses the single-line JSON result
-from `qre run --json`, prints the final text and trace path, then follows up with a
-recorded replay of the same run. The same C# code works on Windows, macOS, and Linux.
+It runs a read-only analysis over a repository, streams the model answer from
+`qre run --stream` to the host app console, then follows up with a recorded replay
+of the same run. The same C# code works on Windows, macOS, and Linux.
 
 ## Prerequisites
 
@@ -46,5 +46,17 @@ dotnet run -- C:\src\my-repo
 
 ## Offline (no LLM key)
 
-To validate that your app parses `qre` output without calling a provider, swap the
-`--profile readonly` flag in [Program.cs](Program.cs) for `--response "offline smoke"`.
+To validate streaming, trace, and replay handling without calling a provider:
+
+```bash
+dotnet run -- --offline /path/to/repo
+```
+
+You can also choose the deterministic response text:
+
+```bash
+dotnet run -- --offline --response "offline smoke" /path/to/repo
+```
+
+`--offline` still exercises the same `qre run --stream` subprocess path; it only
+adds `--response` so no provider key is required.

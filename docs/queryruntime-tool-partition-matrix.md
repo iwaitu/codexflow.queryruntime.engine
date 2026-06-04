@@ -16,16 +16,16 @@ Status legend:
 
 | Tool | Partition | Profile | Capabilities | Status |
 |---|---|---|---|---|
-| `qre_list_files` | `harness-core` | `readonly`, `verify` | `read_fs` | Implemented |
-| `qre_read_file` | `harness-core` | `readonly`, `verify` | `read_fs` | Implemented |
-| `qre_search_files` | `harness-core` | `readonly`, `verify` | `read_fs` | Implemented |
+| `qre_list_files` | `harness-core` | `readonly`, `verify`, `repair` | `read_fs` | Implemented |
+| `qre_read_file` | `harness-core` | `readonly`, `verify`, `repair` | `read_fs` | Implemented |
+| `qre_search_files` | `harness-core` | `readonly`, `verify`, `repair` | `read_fs` | Implemented |
 | `qre_git_status` | `harness-core` | `verify` | `git_read`, `execute_process` | Implemented; trusted local only |
 | `qre_git_diff` | `harness-core` | `verify` | `git_read`, `execute_process` | Implemented; trusted local only |
 | `qre_dotnet_build` | `harness-core` | `verify` | `read_fs`, `write_artifacts`, `execute_process`, `build` | Implemented with `--no-restore` |
 | `qre_dotnet_test` | `harness-core` | `verify` | `read_fs`, `write_artifacts`, `execute_process`, `run_tests`, `build` | Implemented with `--no-restore` |
 | `qre sandbox exec` for known verify commands | `harness-core` | `verify` | command-specific capabilities | Implemented; maps command shape to current verify descriptors and policy |
-| generic command execution | `optional-tool-pack` | `verify`, future `repair` | `execute_process`, plus command-specific capabilities | Not implemented; arbitrary commands still require command schema and approval |
-| file write / patch apply | `harness-core` candidate | future `repair` | `write_fs`, `write_artifacts` | Not implemented |
+| generic command execution | `optional-tool-pack` | `verify` | `execute_process`, plus command-specific capabilities | Limited to known verify commands and explicit-approval checks; arbitrary command execution is not part of `repair` |
+| `qre_write_file` / `qre_apply_patch` | `harness-core` | `repair` | `read_fs`, `write_fs` | Implemented as controlled workspace file tools; denies workspace escape, symlink escape, `.git`, `.qre`, and secret-looking paths |
 
 ## Existing Platform Tool Guidance
 

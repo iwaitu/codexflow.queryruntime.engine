@@ -2,7 +2,11 @@
 
 日期：2026-06-03
 
-英文版：`docs/queryruntime-next-development-plan.md`
+归档状态：P5 完成后，本计划已于 2026-06-04 归档。
+当前活跃的发布稳定计划是 `docs/queryruntime-pre-release-work-plan.zh-CN.md`。
+
+英文版：
+`docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md`
 
 来源说明：本计划来自 Claude Code 对当前 QueryRuntime 分支的最终外部审查，
 并合并了 Antigravity 对该计划文档的后续核查意见。本文档是

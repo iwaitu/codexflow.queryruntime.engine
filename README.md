@@ -233,8 +233,10 @@ qre run --workspace . --profile readonly --thinking off \
 ### Calling `qre` from a .NET app
 
 See [examples/RepoDoctor](examples/RepoDoctor) for a full, cross-platform example:
-it invokes `qre` as a local agent-runtime CLI, parses the `--json` output, and then
-follows up with a replay.
+it invokes `qre` as a local agent-runtime CLI, streams the model answer to the
+host app console, and then follows up with a recorded replay.
+
+![RepoDoctor streaming qre output](docs/assets/repodoctor-streaming-demo.gif)
 
 ```bash
 cd examples/RepoDoctor
@@ -323,11 +325,15 @@ platform:
 - Replay supports recorded replay, but is not yet benchmark-grade deterministic
   replay (deterministic IDs, clock injection, and cross-version trace migration are
   still hardening items).
+- Run-scoped `diff.patch` is scoped to paths edited by repair tools, but if one of
+  those same files already had uncommitted changes before the run, the patch
+  represents `HEAD` to the final file state, including that pre-existing same-file
+  delta.
 - The sandbox has a Docker runner, but Kubernetes / remote runners and a broader
   platform matrix are not done.
-- Native AOT is validated locally on `osx-arm64`; Linux/Windows publish, signing,
-  release packaging, and the CI matrix are being filled in (see
-  [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+- Native AOT has a blocking `linux-x64` CI lane and release packaging workflow, but
+  signing and protected-branch required-check configuration are repository settings
+  that must be verified before the first pre-release.
 - `usage.json` is an *estimate* (`ceil(chars / 4.0)`), not a billing source of truth.
 - `mcp-stdio` currently supports only a one-shot `tools/call`, without a full
   initialize lifecycle.
@@ -337,7 +343,8 @@ platform:
 - [docs/queryruntime-technical-guide.md](docs/queryruntime-technical-guide.md) — technical guide (positioning, architecture, usage, roadmap).
 - [docs/IQueryRuntimeEngine.md](docs/IQueryRuntimeEngine.md) — unified execution engine design.
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — open-source harness strategy.
-- [docs/queryruntime-next-development-plan.md](docs/queryruntime-next-development-plan.md) — development plan ([中文](docs/queryruntime-next-development-plan.zh-CN.md)).
+- [docs/queryruntime-pre-release-work-plan.md](docs/queryruntime-pre-release-work-plan.md) — pre-release work plan ([中文](docs/queryruntime-pre-release-work-plan.zh-CN.md)).
+- [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md) — archived completed development plan.
 - [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — tool partition matrix.
 - [docs/tool-capabilities.md](docs/tool-capabilities.md), [docs/threat-model.md](docs/threat-model.md).
 

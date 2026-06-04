@@ -637,40 +637,37 @@ qre run --workspace . --json-output "return a JSON summary"
 The current `qre run` output contract:
 
 - Without `--json`, the CLI outputs the final assistant text after the run
-  completes, then outputs run metadata. It is currently not a real-time streaming
-  UI.
+  completes, then outputs run metadata.
+- With `--stream`, the CLI writes human-readable assistant text deltas as the
+  model client produces them, then writes the same run metadata. This mode is for
+  terminals and host apps, not machine parsing.
 - With `--json`, stdout outputs only one `qre.run.completed` JSON object for scripts
   and CI to parse. Real-time text deltas, trace events, or progress info should not
   be mixed into this stdout contract.
-- In the future, `--stream` will be used for human-readable assistant-text
-  streaming. This mode should not be mixed with `--json`'s single-object result.
 - In the future, `--jsonl-stream` will be used for machine-readable event
   streaming, where each line should be explicit event-shaped JSON, e.g. containing
   event type, sequence, run id, and payload. It should not reuse `--json`'s
   final-result shape.
 
-The current implementation already treats `--stream` and `--jsonl-stream` as
-reserved arguments: they fail explicitly rather than being silently concatenated
-into the prompt. When streaming lands, contract tests must be added first, proving
-`--json` still outputs only the final result and `--jsonl-stream` outputs the event
-stream.
+`--stream` cannot be combined with `--json`; the CLI fails fast instead of mixing
+text deltas into the single-final-object JSON contract. `--jsonl-stream` remains
+reserved and fails explicitly rather than being silently concatenated into the
+prompt.
 
-For third-party agents or desktop-app integration, prefer the future
-`--jsonl-stream` over parsing the human-readable `--stream` output. The external
-process reads stdout line by line, rendering assistant text in real time on a
-`model.text.delta` event, and saving the run id, trace path, and final result on the
-final `qre.run.completed` event.
+For third-party agents or desktop-app integration, `--stream` is suitable when a
+human-readable terminal surface is enough. Prefer the future `--jsonl-stream` for
+machine-readable progress events.
 
-Target command shape:
+Current human-readable stream command shape:
 
 ```bash
 qre run --workspace . \
   --profile readonly \
-  --jsonl-stream \
+  --stream \
   "Analyze this repository and list the top risks."
 ```
 
-Target JSONL event shape example:
+Future JSONL event shape example:
 
 ```jsonl
 {"type":"qre.run.event","eventType":"model.text.delta","seq":12,"runId":"20260603123000123","delta":"Reading repository structure..."}
@@ -679,11 +676,10 @@ Target JSONL event shape example:
 {"type":"qre.run.completed","finalText":"Reading repository structure... Found the main runtime projects.","runId":"20260603123000123","traceFilePath":"/repo/.qre/runs/20260603123000123/events.jsonl"}
 ```
 
-A minimal .NET invocation example:
+A minimal .NET invocation example for the current human-readable stream:
 
 ```csharp
 using System.Diagnostics;
-using System.Text.Json;
 
 var startInfo = new ProcessStartInfo
 {
@@ -698,41 +694,32 @@ startInfo.ArgumentList.Add("--workspace");
 startInfo.ArgumentList.Add("/path/to/repo");
 startInfo.ArgumentList.Add("--profile");
 startInfo.ArgumentList.Add("readonly");
-startInfo.ArgumentList.Add("--jsonl-stream");
+startInfo.ArgumentList.Add("--stream");
 startInfo.ArgumentList.Add("Analyze this repository and list the top risks.");
 
 using var process = Process.Start(startInfo)
     ?? throw new InvalidOperationException("Failed to start qre.");
 
-while (await process.StandardOutput.ReadLineAsync() is { } line)
+var buffer = new char[256];
+while (true)
 {
-    if (string.IsNullOrWhiteSpace(line))
+    var read = await process.StandardOutput.ReadAsync(buffer);
+    if (read == 0)
     {
-        continue;
+        break;
     }
 
-    using var doc = JsonDocument.Parse(line);
-    var root = doc.RootElement;
-    var type = root.GetProperty("type").GetString();
-
-    if (type == "qre.run.event" &&
-        root.GetProperty("eventType").GetString() == "model.text.delta")
-    {
-        Console.Write(root.GetProperty("delta").GetString());
-    }
-    else if (type == "qre.run.completed")
-    {
-        Console.WriteLine();
-        Console.WriteLine($"trace: {root.GetProperty("traceFilePath").GetString()}");
-    }
+    Console.Write(buffer.AsSpan(0, read));
 }
 
 await process.WaitForExitAsync();
 ```
 
-Note: text deltas can be output in real time; tool calls, policy decisions, and tool
-results should keep complete event-shaped records, and a not-yet-assembled partial
-tool-call payload should not be exposed to the third-party consumer.
+Note: current `--stream` output is human-readable text plus final run metadata. Tool
+calls, policy decisions, and tool results remain available through the trace. Future
+machine-readable streaming should use complete event-shaped records, and a
+not-yet-assembled partial tool-call payload should not be exposed to third-party
+consumers.
 
 ### 5.7 Thinking policy
 
@@ -910,6 +897,10 @@ generated through a temporary Git index:
 - Does not modify the real `.git/index`.
 - When a file has both staged and unstaged modifications, the patch represents the
   final workspace state.
+- For repair runs, the run patch is narrowed to paths recorded in
+  `repair-edits.txt`. If one of those same paths already had uncommitted changes
+  before the run, the current pre-release behavior is to emit the full `HEAD` to
+  final-state diff for that file, including the pre-existing same-file delta.
 
 If the current workspace is not a Git repo, or the latest run has no `diff.patch`,
 the CLI falls back to `workspace-git-diff` mode. `--stat` currently still reads the

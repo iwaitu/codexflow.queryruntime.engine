@@ -2,7 +2,12 @@
 
 Date: 2026-06-03
 
-Chinese version: `docs/queryruntime-next-development-plan.zh-CN.md`
+Archive status: completed and archived on 2026-06-04 after P5 completion.
+The active release stabilization plan is
+`docs/queryruntime-pre-release-work-plan.md`.
+
+Chinese version:
+`docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md`
 
 Source review: this plan is derived from the external Claude Code final review
 of the current QueryRuntime branch, then merged with the follow-up Antigravity

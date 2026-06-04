@@ -87,6 +87,10 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
                         {
                             case TextContent textContent:
                                 textParts.Add(textContent.Text);
+                                if (!string.IsNullOrEmpty(textContent.Text) && request.TextDeltaSink != null)
+                                {
+                                    await request.TextDeltaSink(textContent.Text, ct).ConfigureAwait(false);
+                                }
                                 break;
                             case FunctionCallContent functionCall:
                                 functionCalls.Add(functionCall);

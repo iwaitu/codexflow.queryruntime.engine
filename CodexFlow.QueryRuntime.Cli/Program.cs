@@ -142,7 +142,8 @@ internal static class QreCli
                     options.Output.Json = true;
                     break;
                 case "--stream":
-                    return Fail("--stream is reserved for the future human-readable streaming mode and is not implemented yet. Use qre run without --stream for stable final output.");
+                    options.Output.Stream = true;
+                    break;
                 case "--jsonl-stream":
                     return Fail("--jsonl-stream is reserved for the future machine-readable streaming event mode and is not implemented yet. Use --json for the final result object.");
                 case "--external":
@@ -166,6 +167,10 @@ internal static class QreCli
         if (string.IsNullOrWhiteSpace(prompt))
         {
             return Fail("qre run requires a prompt.");
+        }
+        if (options.Output.Json && options.Output.Stream)
+        {
+            return Fail("--stream cannot be combined with --json. Use --stream for human-readable text or --json for the final result object.");
         }
 
         var resolvedWorkspace = Path.GetFullPath(options.Workspace);
@@ -213,6 +218,7 @@ internal static class QreCli
 
         try
         {
+            var wroteStreamText = false;
             var harness = new ExperimentalQueryRuntimeHarness(modelClient);
             var result = await harness.RunAsync(
                 new ExperimentalQueryRuntimeRequest
@@ -224,7 +230,15 @@ internal static class QreCli
                     ToolProfile = options.ToolProfile,
                     RequiresStructuredOutput = options.Output.RequestJson,
                     ThinkingPolicy = options.ModelPolicy.ThinkingPolicy,
-                    Options = BuildChatOptions(options)
+                    Options = BuildChatOptions(options),
+                    TextDeltaSink = options.Output.Stream
+                        ? (delta, _) =>
+                        {
+                            Console.Write(delta);
+                            wroteStreamText = true;
+                            return ValueTask.CompletedTask;
+                        }
+                        : null
                 },
                 ct).ConfigureAwait(false);
             await AppendRunRunnerConfigurationTraceAsync(
@@ -262,8 +276,18 @@ internal static class QreCli
             }
             else
             {
-                Console.WriteLine(result.FinalText);
-                Console.WriteLine();
+                if (options.Output.Stream)
+                {
+                    if (wroteStreamText && !result.FinalText.EndsWith('\n'))
+                    {
+                        Console.WriteLine();
+                    }
+                }
+                else
+                {
+                    Console.WriteLine(result.FinalText);
+                    Console.WriteLine();
+                }
                 Console.WriteLine($"run_id: {result.RunId}");
                 Console.WriteLine($"termination: {result.TerminationReason}");
                 Console.WriteLine($"runner: {runnerName}");
@@ -1384,7 +1408,7 @@ internal static class QreCli
             ct).ConfigureAwait(false);
     }
 
-    private static async Task WriteRunDiffPatchAsync(
+    internal static async Task WriteRunDiffPatchAsync(
         string runDirectory,
         string workspacePath,
         CancellationToken ct)
@@ -1397,7 +1421,7 @@ internal static class QreCli
         await File.WriteAllTextAsync(diffPath, diff ?? string.Empty, ct).ConfigureAwait(false);
     }
 
-    private static async Task<IReadOnlyList<string>> TryReadRunEditedPathsAsync(
+    internal static async Task<IReadOnlyList<string>> TryReadRunEditedPathsAsync(
         string runDirectory,
         CancellationToken ct)
     {
@@ -1418,7 +1442,7 @@ internal static class QreCli
             .ToArray();
     }
 
-    private static async Task<string?> TryReadGitDiffPatchAsync(
+    internal static async Task<string?> TryReadGitDiffPatchAsync(
         string workspacePath,
         IReadOnlyList<string> editedPaths,
         CancellationToken ct)
@@ -1497,7 +1521,7 @@ internal static class QreCli
         }
     }
 
-    private static async Task<IReadOnlyList<string>?> TryReadGitWorkspaceFilesForPatchAsync(
+    internal static async Task<IReadOnlyList<string>?> TryReadGitWorkspaceFilesForPatchAsync(
         string workspacePath,
         IReadOnlyList<string> editedPaths,
         CancellationToken ct)
@@ -2506,7 +2530,7 @@ internal static class QreCli
         Console.WriteLine("  --thinking <mode>       auto, off, on, or preserve. Defaults to auto.");
         Console.WriteLine("  --json-output           Request JSON output and disable thinking by default.");
         Console.WriteLine("  --json                  Print CLI result as JSON.");
-        Console.WriteLine("  --stream                Reserved for future human-readable text streaming.");
+        Console.WriteLine("  --stream                Stream human-readable assistant text as it is produced.");
         Console.WriteLine("  --jsonl-stream          Reserved for future machine-readable event streaming.");
     }
 

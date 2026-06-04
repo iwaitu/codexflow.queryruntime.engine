@@ -41,6 +41,8 @@ public sealed record QueryRuntimeRequest
     public IReadOnlyList<AIFunction> AvailableTools { get; init; } = [];
 
     public string? RequiredToolName { get; init; }
+
+    public Func<string, CancellationToken, ValueTask>? TextDeltaSink { get; init; }
 }
 
 public sealed record QueryRuntimeResult(
