@@ -1,0 +1,19 @@
+# Approved Native AOT / trim warnings for CodexFlow.QueryRuntime.Cli
+#
+# scripts/qre-aot-gate.sh fails the AOT publish if it observes any IL2xxx /
+# IL3xxx / trim warning that is NOT listed here. This file is the explicit
+# allowlist that turns "no unapproved trim/AOT warnings" (P3 acceptance
+# criterion) into an enforceable gate.
+#
+# Format: one normalized warning per line. A normalized warning is the publish
+# log line with everything up to and including "warning " removed and the
+# trailing " [/path/to/project.csproj]" suffix stripped, e.g.:
+#
+#   IL2026: Members attributed with RequiresUnreferencedCode may break ...
+#
+# Lines starting with '#' and blank lines are ignored.
+#
+# As of 2026-06-04 the local osx-arm64 AOT publish is warning-free, so this
+# allowlist is intentionally empty. Add an entry here (with a short rationale
+# comment) only after reviewing that a given warning is safe on the QRE public
+# IO paths.

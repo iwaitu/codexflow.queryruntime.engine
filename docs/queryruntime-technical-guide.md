@@ -1220,8 +1220,11 @@ hardening before it can serve as a production-grade security promise.
 
 ## 8. Native AOT and Cross-Platform Publishing
 
-**Today**: Native AOT has passed publish and smoke on the local `osx-arm64` path; a
-cross-platform release / CI matrix is still Planned.
+**Today**: Native AOT has passed publish and smoke on the local `osx-arm64` path,
+and a CI `aot` lane is configured to publish and smoke the real native `qre`
+across a `linux-x64` (blocking) + `osx-arm64` (non-blocking, being stabilized)
+RID matrix with an unapproved-trim/AOT-warning gate. A full cross-platform
+blocking release matrix is still being promoted lane by lane.
 
 One long-term goal of the project is to compile `qre` into a cross-platform native
 binary, lowering install and cold-start cost. Target platforms include:
@@ -1250,6 +1253,14 @@ Current status:
 - The local `osx-arm64` AOT publish has passed, and the published native `qre` has
   validated `--version`, `run --response ... --json`, `tool list --json`,
   `trace latest --jsonl`, `diff latest --json`, and `replay latest --json`.
+- CI is configured to run the same publish + smoke through
+  `scripts/qre-aot-gate.sh` (publish with `PublishAot=true` and fail on any
+  unapproved trim/AOT warning, checked against
+  `scripts/qre-aot-approved-warnings.txt`) and `scripts/qre-aot-smoke.sh` (native
+  `qre --version`, offline `run`, `tool list`, recorded `replay latest`, and a
+  strict `replay latest --strict` determinism check over two isolated workspace
+  copies of one source trace). `scripts/queryruntime-baseline-gate.sh
+  --include-aot` runs the identical scripts locally.
 - The Native AOT `qre` has validated real-provider calls. Both an OpenAI-compatible
   `chat-completions` endpoint and an Anthropic Messages endpoint can be used for
   smoke; Anthropic Messages thinking-off behavior requires `VllmChatClient` 2.0.21 or
@@ -1257,7 +1268,10 @@ Current status:
 - External tool schema uses a manifest-first design; `inputSchema` is exposed
   directly by an explicit `AIFunction` implementation, not depending on external
   delegate reflection.
-- Equivalent publish and smoke still need to be validated on Linux / Windows runners.
+- The CI `aot` lane now validates equivalent publish + smoke on `linux-x64`
+  (blocking) and `osx-arm64` (non-blocking until stabilized); `win-x64` /
+  `linux-arm64` / `osx-x64` are still release-only (release.yml) and not yet part
+  of the blocking CI smoke matrix.
 - `AIFunction` tool schema generation may depend on reflection and needs a separate
   audit before more built-in tool packs enter the AOT CLI.
 - Dynamic plugin loading conflicts with AOT; prefer out-of-process plugin models such

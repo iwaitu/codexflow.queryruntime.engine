@@ -34,9 +34,27 @@ jobs:
           dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj \
             --configuration Release --no-build --logger "console;verbosity=normal"
 
-  aot-smoke:
-    name: Native AOT smoke (linux-x64)
-    runs-on: ubuntu-latest
+  aot:
+    name: Native AOT (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    # P3 Native AOT lane: publishes the real `qre` binary, fails on unapproved
+    # trim/AOT warnings (scripts/qre-aot-gate.sh), and smokes the produced native
+    # binary (scripts/qre-aot-smoke.sh) instead of a framework-dependent CLI.
+    #
+    # linux-x64 is the proven, blocking RID. osx-arm64 runs non-blocking
+    # (continue-on-error) until it is observed stable on CI, then flip
+    # `blocking: true` to gate merges on it as well.
+    continue-on-error: ${{ !matrix.blocking }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            blocking: true
+          - os: macos-14
+            rid: osx-arm64
+            blocking: false
     steps:
       - uses: actions/checkout@v4
 
@@ -45,20 +63,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install AOT toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
-
-      - name: Publish Native AOT
+      - name: Install AOT toolchain (Linux)
+        if: runner.os == 'Linux'
         run: |
-          dotnet publish CodexFlow.QueryRuntime.Cli \
-            -c Release -r linux-x64 \
-            -p:PublishAot=true -p:SelfContained=true
+          if ! command -v clang >/dev/null 2>&1 || ! dpkg -s zlib1g-dev >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang zlib1g-dev
+          fi
+
+      - name: Publish Native AOT + trim/AOT warning gate
+        run: |
+          set -euo pipefail
+          scripts/qre-aot-gate.sh ${{ matrix.rid }} Release | tee /tmp/qre-aot-gate.log
+          QRE_BINARY="$(grep -m1 '^qre_binary=' /tmp/qre-aot-gate.log | sed 's/^qre_binary=//')"
+          test -n "$QRE_BINARY"
+          printf 'QRE_BINARY=%s\n' "$QRE_BINARY" >> "$GITHUB_ENV"
 
       - name: Smoke test the native binary
-        run: |
-          BIN="CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/linux-x64/publish/qre"
-          "$BIN" --version
-          mkdir -p /tmp/qre-smoke
-          "$BIN" run --workspace /tmp/qre-smoke --response "offline smoke" --json "analyze this repo"
-          "$BIN" tool list --workspace /tmp/qre-smoke --profile readonly --json
-          "$BIN" replay latest --workspace /tmp/qre-smoke --json
+        run: scripts/qre-aot-smoke.sh "$QRE_BINARY"

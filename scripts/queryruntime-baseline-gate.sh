@@ -2,7 +2,31 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RID="${QRE_AOT_RID:-osx-arm64}"
+
+detect_native_rid() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "${os}" in
+    Darwin) os="osx" ;;
+    Linux) os="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) os="win" ;;
+    *) echo "Unsupported OS for default Native AOT RID: ${os}" >&2; exit 1 ;;
+  esac
+
+  case "${arch}" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64) arch="x64" ;;
+    *) echo "Unsupported architecture for default Native AOT RID: ${arch}" >&2; exit 1 ;;
+  esac
+
+  printf '%s-%s\n' "${os}" "${arch}"
+}
+
+export DOTNET_CLI_UI_LANGUAGE="${DOTNET_CLI_UI_LANGUAGE:-en}"
+
+RID="${QRE_AOT_RID:-$(detect_native_rid)}"
 CONFIGURATION="${QRE_CONFIGURATION:-Release}"
 INCLUDE_AOT=false
 INCLUDE_DOCKER=false
@@ -19,7 +43,7 @@ Options:
   --include-docker       Run gated Docker sandbox integration tests.
   --include-real-provider
                          Run gated live provider integration tests.
-  --rid <rid>            Native AOT RID. Defaults to QRE_AOT_RID or osx-arm64.
+  --rid <rid>            Native AOT RID. Defaults to QRE_AOT_RID or host RID.
   -h, --help             Show this help.
 
 Default gate:
@@ -90,19 +114,20 @@ run git diff --check
 run dotnet test CodexFlow.QueryRuntime.slnx --no-restore
 
 if [[ "${INCLUDE_AOT}" == "true" ]]; then
-  run dotnet publish CodexFlow.QueryRuntime.Cli \
-    -c "${CONFIGURATION}" \
-    -r "${RID}" \
-    -p:PublishAot=true \
-    -p:SelfContained=true
+  # Reuse the same publish + trim/AOT warning gate and native smoke that the
+  # P3 CI lane runs, so the local baseline check and CI stay in lockstep.
+  run "${ROOT_DIR}/scripts/qre-aot-gate.sh" "${RID}" "${CONFIGURATION}"
 
   QRE_BIN="${ROOT_DIR}/CodexFlow.QueryRuntime.Cli/bin/${CONFIGURATION}/net10.0/${RID}/publish/qre"
-  if [[ ! -x "${QRE_BIN}" ]]; then
-    echo "Published qre binary was not found or is not executable: ${QRE_BIN}" >&2
+  if [[ "${RID}" == win-* ]]; then
+    QRE_BIN="${QRE_BIN}.exe"
+  fi
+  if [[ ! -f "${QRE_BIN}" ]]; then
+    echo "Published qre binary was not found: ${QRE_BIN}" >&2
     exit 1
   fi
 
-  run "${QRE_BIN}" --version
+  run "${ROOT_DIR}/scripts/qre-aot-smoke.sh" "${QRE_BIN}"
 fi
 
 if [[ "${INCLUDE_DOCKER}" == "true" ]]; then

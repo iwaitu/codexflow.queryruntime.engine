@@ -260,6 +260,22 @@ Suggested tests:
 Objective: promote Native AOT from local proof to CI-protected release
 constraint.
 
+Status: in progress as of 2026-06-04. The CI `aot` lane is configured to publish
+the real `CodexFlow.QueryRuntime.Cli` with `-p:PublishAot=true` across a RID matrix
+(`linux-x64`, `osx-arm64`) on matching native runners, fails on unapproved
+trim/AOT warnings via `scripts/qre-aot-gate.sh` (allowlist
+`scripts/qre-aot-approved-warnings.txt`, currently empty), and smokes the
+produced native binary via `scripts/qre-aot-smoke.sh`
+(`qre --version`, offline `qre run`, `qre tool list`, recorded `qre replay
+latest`, and a strict `qre replay latest --strict` determinism check that
+replays a byte-identical source trace in two isolated workspaces and asserts an
+identical `replayDigest` with no provider calls or tool executions). The same
+scripts back the local `--include-aot` baseline gate. `linux-x64` is blocking;
+`osx-arm64` is non-blocking (`continue-on-error`) until it is observed stable on
+CI, then it flips to blocking. The local `osx-arm64` publish + gate + smoke is
+warning-free and green. Remaining: confirm Linux/macOS CI behavior, then promote
+`osx-arm64` (and optionally `win-x64`) to blocking.
+
 Scope:
 
 - Add a CI lane that publishes `CodexFlow.QueryRuntime.Cli` with
@@ -406,7 +422,7 @@ Suggested tests:
 The consolidated recommended sequence is:
 
 1. P0 baseline freeze and hardening. (complete 2026-06-03)
-2. P3 Native AOT blocking CI.
+2. P3 Native AOT blocking CI. (in progress 2026-06-04)
 3. P1 provider-neutral model adapters. (complete 2026-06-03)
 4. P5 repair profile write tools and run-scoped diff.
 5. P2 deterministic replay hardening. (complete 2026-06-03)
