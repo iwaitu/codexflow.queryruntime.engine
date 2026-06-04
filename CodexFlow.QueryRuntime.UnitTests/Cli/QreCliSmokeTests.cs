@@ -359,6 +359,27 @@ public sealed class QreCliSmokeTests
     }
 
     [Fact]
+    public async Task ToolList_RepairProfile_PrintsWriteTools()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var result = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["tool", "list", "--workspace", workspace.Path, "--profile", "repair", "--json"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, result.ExitCode);
+        using var json = JsonDocument.Parse(result.StandardOutput);
+        var tools = json.RootElement.GetProperty("tools").EnumerateArray().ToArray();
+        Assert.Contains(tools, tool =>
+            tool.GetProperty("name").GetString() == "qre_write_file" &&
+            tool.GetProperty("capabilities").EnumerateArray().Any(capability => capability.GetString() == "write_fs"));
+        Assert.Contains(tools, tool =>
+            tool.GetProperty("name").GetString() == "qre_apply_patch" &&
+            tool.GetProperty("capabilities").EnumerateArray().Any(capability => capability.GetString() == "write_fs"));
+    }
+
+    [Fact]
     public async Task RerunLatest_ReusesRecordedPromptAndProfile()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -476,7 +497,7 @@ public sealed class QreCliSmokeTests
     }
 
     [Fact]
-    public async Task Run_WritesDiffPatchIncludingUntrackedGitFiles()
+    public async Task Run_DoesNotWritePreExistingUntrackedFilesToRunScopedDiffPatch()
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "new-file.txt"), "untracked content" + Environment.NewLine);
@@ -500,13 +521,13 @@ public sealed class QreCliSmokeTests
         using var runJson = JsonDocument.Parse(run.StandardOutput);
         var runDirectory = runJson.RootElement.GetProperty("runDirectory").GetString()!;
         var patch = File.ReadAllText(Path.Combine(runDirectory, "diff.patch"));
-        Assert.Contains("new-file.txt", patch);
-        Assert.Contains("+untracked content", patch);
+        Assert.DoesNotContain("new-file.txt", patch);
+        Assert.DoesNotContain("+untracked content", patch);
         Assert.DoesNotContain(".qre/runs", patch);
     }
 
     [Fact]
-    public async Task Run_WritesDiffPatchIncludingStagedGitChanges()
+    public async Task Run_DoesNotWritePreExistingStagedGitChangesToRunScopedDiffPatch()
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "staged-file.txt"), "staged content" + Environment.NewLine);
@@ -535,12 +556,12 @@ public sealed class QreCliSmokeTests
         using var runJson = JsonDocument.Parse(run.StandardOutput);
         var runDirectory = runJson.RootElement.GetProperty("runDirectory").GetString()!;
         var patch = File.ReadAllText(Path.Combine(runDirectory, "diff.patch"));
-        Assert.Contains("staged-file.txt", patch);
-        Assert.Contains("+staged content", patch);
+        Assert.DoesNotContain("staged-file.txt", patch);
+        Assert.DoesNotContain("+staged content", patch);
     }
 
     [Fact]
-    public async Task Run_WritesDiffPatchAsFinalWorkspaceStateForMixedStagedAndUnstagedChanges()
+    public async Task Run_DoesNotWritePreExistingMixedGitChangesToRunScopedDiffPatch()
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "notes.txt"), "base content" + Environment.NewLine);
@@ -582,9 +603,9 @@ public sealed class QreCliSmokeTests
         using var runJson = JsonDocument.Parse(run.StandardOutput);
         var runDirectory = runJson.RootElement.GetProperty("runDirectory").GetString()!;
         var patch = File.ReadAllText(Path.Combine(runDirectory, "diff.patch"));
-        Assert.Equal(1, CountOccurrences(patch, "diff --git a/notes.txt b/notes.txt"));
-        Assert.Contains("-base content", patch);
-        Assert.Contains("+final content", patch);
+        Assert.Equal(0, CountOccurrences(patch, "diff --git a/notes.txt b/notes.txt"));
+        Assert.DoesNotContain("-base content", patch);
+        Assert.DoesNotContain("+final content", patch);
         Assert.DoesNotContain("+staged content", patch);
     }
 

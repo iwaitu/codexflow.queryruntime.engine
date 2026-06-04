@@ -208,41 +208,39 @@ public sealed class ExperimentalCapabilityPolicyTests
     }
 
     [Fact]
-    public void Evaluate_RepairRequiresApproval()
+    public void Evaluate_AllowsRepairWriteFileTool()
     {
         var decision = new ExperimentalCapabilityPolicy().Evaluate(
             new QueryRuntimeCapabilityRequest
             {
                 Profile = QueryRuntimeToolProfile.Repair,
-                ToolName = "qre_apply_patch",
-                Capabilities = CapabilitySet(QueryRuntimeCapabilities.WriteArtifacts),
+                ToolName = "qre_write_file",
+                Capabilities = CapabilitySet(QueryRuntimeCapabilities.ReadFileSystem, QueryRuntimeCapabilities.WriteFileSystem),
                 Command = [],
                 WorkspacePath = "/workspace",
                 Network = SandboxNetworkPolicy.Deny,
                 Mounts = SandboxMountPolicy.WorkspaceReadWrite
             });
 
-        Assert.Equal(QueryRuntimeCapabilityDecisionKind.RequireApproval, decision.Kind);
+        Assert.Equal(QueryRuntimeCapabilityDecisionKind.Allow, decision.Kind);
     }
 
     [Fact]
-    public void Evaluate_RepairRequiresApprovalEvenWithExplicitApproval()
+    public void Evaluate_RepairDeniesProcessCommandTools()
     {
         var decision = new ExperimentalCapabilityPolicy().Evaluate(
             new QueryRuntimeCapabilityRequest
             {
                 Profile = QueryRuntimeToolProfile.Repair,
                 ToolName = "qre_apply_patch",
-                Capabilities = CapabilitySet(QueryRuntimeCapabilities.WriteArtifacts),
-                Command = [],
-                ExplicitApproval = true,
-                ApprovalReason = "operator approved",
+                Capabilities = CapabilitySet(QueryRuntimeCapabilities.ReadFileSystem, QueryRuntimeCapabilities.WriteFileSystem),
+                Command = ["sh", "-c", "echo x > file.txt"],
                 WorkspacePath = "/workspace",
                 Network = SandboxNetworkPolicy.Deny,
                 Mounts = SandboxMountPolicy.WorkspaceReadWrite
             });
 
-        Assert.Equal(QueryRuntimeCapabilityDecisionKind.RequireApproval, decision.Kind);
+        Assert.Equal(QueryRuntimeCapabilityDecisionKind.Deny, decision.Kind);
     }
 
     [Fact]

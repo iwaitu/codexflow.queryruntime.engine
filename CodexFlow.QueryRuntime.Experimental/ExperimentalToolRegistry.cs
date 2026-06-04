@@ -12,6 +12,7 @@ public sealed class ExperimentalToolRegistry : IToolRegistry
             "none" => [],
             "readonly" => ReadOnly(profile),
             "verify" => [.. ReadOnly(profile), .. Verify(profile)],
+            "repair" => [.. ReadOnly(profile), .. Repair(profile)],
             _ => []
         };
     }
@@ -72,6 +73,21 @@ public sealed class ExperimentalToolRegistry : IToolRegistry
                     QueryRuntimeCapabilities.WriteArtifacts,
                     QueryRuntimeCapabilities.ExecuteProcess,
                     QueryRuntimeCapabilities.Build),
+                profile)
+        ];
+
+    private static IReadOnlyList<QueryRuntimeToolDescriptor> Repair(QueryRuntimeToolProfile profile)
+        =>
+        [
+            new(
+                "qre_write_file",
+                "Write UTF-8 text to a workspace file.",
+                CapabilitySet(QueryRuntimeCapabilities.ReadFileSystem, QueryRuntimeCapabilities.WriteFileSystem),
+                profile),
+            new(
+                "qre_apply_patch",
+                "Apply a targeted text replacement patch to a workspace file.",
+                CapabilitySet(QueryRuntimeCapabilities.ReadFileSystem, QueryRuntimeCapabilities.WriteFileSystem),
                 profile)
         ];
 

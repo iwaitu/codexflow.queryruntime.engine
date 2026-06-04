@@ -953,8 +953,8 @@ Phase 1 third-slice progress as of 2026-06-02:
     command shape is one of the supported commands.
   - `qre_dotnet_test` must include `--no-restore`.
   - non-denied network policy is rejected.
-  - `repair` returns `RequireApproval` because write tools are not implemented
-    in this slice.
+  - `repair` now exposes controlled workspace file write/patch tools; arbitrary
+    process execution remains outside the repair tool surface.
 - Completed: `ExperimentalVerifyToolPack` now evaluates the capability policy
   before calling `ISandboxRunner`. A deny or approval-required decision throws
   before the local process runner is invoked.
@@ -1173,7 +1173,7 @@ Phase 1 completion checklist as of 2026-06-02:
 | Tool partition matrix | Complete for Phase 1 | `docs/queryruntime-tool-partition-matrix.md` |
 | Readonly profile | Complete | file list/read/search tools, readonly CLI smoke, real-provider readonly tool test |
 | Verify profile | Complete for trusted local | git status/diff, dotnet build/test, `policy check`, and `sandbox exec` |
-| Repair profile | Declared, intentionally deferred | Phase 1 declares `repair` but returns `RequireApproval`; write tools move to a later phase |
+| Repair profile | MVP implemented | `qre_write_file` and `qre_apply_patch` provide controlled workspace-scoped edits with path, symlink, protected-artifact, and secret-looking path guards |
 | Trace/replay | Complete for Phase 1 | JSONL trace, run manifest, latest trace summary, replay summary |
 | Diff | Complete for current QRE slice | `diff latest` reads run-scoped `diff.patch` first and falls back to workspace git diff |
 | Provider compatibility | Complete for configured provider | gated real LLM tests pass 5/5 against `deepseek-v4-pro` / `AnthropicMessages`, including thinking-off |

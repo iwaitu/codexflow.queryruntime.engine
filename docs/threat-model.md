@@ -28,7 +28,8 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 
 ## Current Controls
 
-- Tool profiles: `none`, `readonly`, `verify`, and declared-but-gated `repair`.
+- Tool profiles: `none`, `readonly`, `verify`, and controlled file-edit
+  `repair`.
 - Network policy defaults to `deny` for local sandbox jobs.
 - Sandbox environments are built from an allowlist through
   `TrustedLocalSandboxEnvironment`.

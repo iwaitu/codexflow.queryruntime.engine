@@ -58,16 +58,12 @@ internal static class ExperimentalWorkspacePath
 
             current = Path.Combine(current, segment);
             var linkTarget = TryGetLinkTarget(current);
-            if (string.IsNullOrWhiteSpace(linkTarget))
+            if (linkTarget == null)
             {
                 continue;
             }
 
-            var linkParent = Path.GetDirectoryName(current) ?? workspaceRoot;
-            var target = Path.IsPathFullyQualified(linkTarget)
-                ? Path.GetFullPath(linkTarget)
-                : Path.GetFullPath(Path.Combine(linkParent, linkTarget));
-            if (!IsUnderRoot(workspaceRoot, target))
+            if (!IsUnderRoot(workspaceRoot, linkTarget))
             {
                 throw new InvalidOperationException("Symlink traversal outside workspace is not allowed.");
             }
@@ -78,15 +74,25 @@ internal static class ExperimentalWorkspacePath
     {
         try
         {
-            if (Directory.Exists(path))
+            FileSystemInfo info = Directory.Exists(path)
+                ? new DirectoryInfo(path)
+                : new FileInfo(path);
+
+            if (string.IsNullOrWhiteSpace(info.LinkTarget))
             {
-                return new DirectoryInfo(path).LinkTarget;
+                return null;
             }
 
-            if (File.Exists(path))
+            var finalTarget = info.ResolveLinkTarget(returnFinalTarget: true);
+            if (finalTarget != null)
             {
-                return new FileInfo(path).LinkTarget;
+                return finalTarget.FullName;
             }
+
+            var linkParent = Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory();
+            return Path.IsPathFullyQualified(info.LinkTarget)
+                ? Path.GetFullPath(info.LinkTarget)
+                : Path.GetFullPath(Path.Combine(linkParent, info.LinkTarget));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -96,7 +102,7 @@ internal static class ExperimentalWorkspacePath
     }
 
     private static StringComparison GetComparison()
-        => OperatingSystem.IsWindows()
+        => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 }

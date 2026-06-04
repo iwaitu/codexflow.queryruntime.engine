@@ -248,8 +248,8 @@ Current CLI configuration objects:
 - `QueryRuntimeProviderOptions`: provider endpoint, key, model, api mode, or static
   response.
 - `QueryRuntimeToolProfile`: the tool profile, currently supporting `none`,
-  `readonly`, and `verify`; `repair` is declared as a target profile but has no
-  write tools wired up yet.
+  `readonly`, `verify`, and `repair`; `repair` exposes controlled workspace
+  write tools with run-scoped diff artifact generation.
 - `QueryRuntimeModelPolicyOptions`: the model execution policy, currently mainly the
   thinking policy.
 - `QueryRuntimeOutputOptions`: distinguishes model JSON output from CLI JSON output.
@@ -468,17 +468,20 @@ Verify tools pass through `ExperimentalCapabilityPolicy` before execution:
 - `qre_dotnet_build` can only run `dotnet build ... --no-restore`.
 - The network policy must be `deny`.
 - The `readonly` profile does not allow process execution.
-- `repair` currently returns `RequireApproval` because write tools are not yet
-  implemented.
+- `repair` exposes controlled file tools (`qre_write_file`, `qre_apply_patch`)
+  rather than arbitrary shell execution. Those tools use canonical workspace path
+  checks, reject symlink escape, deny `.git` / `.qre` and secret-looking paths,
+  require a read-write workspace mount in policy, and emit `policy.decision`
+  trace records before writing.
 
 This is still an application-layer policy, not OS-level isolation.
 `LocalProcessSandboxRunner` does not actually block a process's network access or
 mount behavior; those require a Docker/Kubernetes/VM runner to become a trusted
 execution boundary.
 
-When the verify-profile tools are built by the harness based on the profile, policy
-evaluation is written to the same `.qre/runs/<run-id>/events.jsonl`, with event type
-`policy.decision`.
+When the verify or repair profile tools are built by the harness based on the
+profile, policy evaluation is written to the same
+`.qre/runs/<run-id>/events.jsonl`, with event type `policy.decision`.
 
 You can also query the policy decision directly without executing tools:
 

@@ -354,6 +354,17 @@ Scope:
 - Preserve approval records for risky operations.
 - Prefer Docker sandbox execution when repair work is untrusted.
 
+Status: MVP implemented as of 2026-06-04. `--profile repair` now exposes
+`qre_write_file` and `qre_apply_patch` as controlled workspace file tools. The
+tools use canonical workspace path resolution, reject path traversal and symlink
+escape, deny protected `.git` / `.qre` artifacts and secret-looking paths, emit
+`policy.decision` records through the same trace sink, and record successful
+repair edits in the run directory. Run finalization writes `diff.patch` only for
+paths recorded as repair edits, so unrelated dirty worktree changes that existed
+before the run are not swept into the run-scoped patch. Remaining hardening:
+same-path pre-existing dirty baselines, richer patch formats beyond targeted text
+replacement, and Docker repair smoke.
+
 Acceptance criteria:
 
 - `qre run --profile repair` can modify files inside the workspace.
@@ -375,9 +386,10 @@ Main risks:
 
 Suggested tests:
 
-- Workspace write allow/deny tests.
-- Patch apply tests with path traversal attempts.
-- Run-scoped diff tests in dirty worktrees.
+- Workspace write allow/deny tests. (covered in MVP)
+- Patch apply tests with path traversal attempts. (covered in MVP)
+- Run-scoped diff tests in dirty worktrees. (covered for unrelated pre-existing
+  dirty worktree changes)
 - Docker repair smoke once write tools exist.
 
 ## 10. P6: Phase 4 Open-Source Release Readiness
@@ -424,7 +436,7 @@ The consolidated recommended sequence is:
 1. P0 baseline freeze and hardening. (complete 2026-06-03)
 2. P3 Native AOT blocking CI. (in progress 2026-06-04)
 3. P1 provider-neutral model adapters. (complete 2026-06-03)
-4. P5 repair profile write tools and run-scoped diff.
+4. P5 repair profile write tools and run-scoped diff. (complete 2026-06-04)
 5. P2 deterministic replay hardening. (complete 2026-06-03)
 6. P4 complete Phase 1.6 reverse dependency.
 7. P6 open-source release readiness.

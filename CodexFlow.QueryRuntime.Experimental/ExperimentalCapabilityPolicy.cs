@@ -16,6 +16,10 @@ public sealed class ExperimentalCapabilityPolicy : IQueryRuntimeCapabilityPolicy
         QueryRuntimeCapabilities.RunTests,
         QueryRuntimeCapabilities.Build);
 
+    private static readonly IReadOnlySet<string> RepairCapabilities = CapabilitySet(
+        QueryRuntimeCapabilities.ReadFileSystem,
+        QueryRuntimeCapabilities.WriteFileSystem);
+
     public QueryRuntimeCapabilityDecision Evaluate(QueryRuntimeCapabilityRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -33,8 +37,29 @@ public sealed class ExperimentalCapabilityPolicy : IQueryRuntimeCapabilityPolicy
                 : QueryRuntimeCapabilityDecision.Deny("none profile cannot execute tools."),
             "readonly" => EvaluateReadOnly(request),
             "verify" => EvaluateVerify(request),
-            "repair" => QueryRuntimeCapabilityDecision.RequireApproval("repair profile is declared but not implemented in the experimental policy."),
+            "repair" => EvaluateRepair(request),
             _ => QueryRuntimeCapabilityDecision.Deny($"Unknown profile: {request.Profile.Name}")
+        };
+    }
+
+    private static QueryRuntimeCapabilityDecision EvaluateRepair(QueryRuntimeCapabilityRequest request)
+    {
+        var capabilityDecision = EvaluateCapabilitySet(request, RepairCapabilities, allowCommands: false);
+        if (capabilityDecision.Kind != QueryRuntimeCapabilityDecisionKind.Allow)
+        {
+            return capabilityDecision;
+        }
+
+        if (!string.Equals(request.Mounts.Mode, SandboxMountPolicy.WorkspaceReadWrite.Mode, StringComparison.OrdinalIgnoreCase))
+        {
+            return QueryRuntimeCapabilityDecision.Deny("repair file tools require a read-write workspace mount.");
+        }
+
+        return request.ToolName switch
+        {
+            "qre_write_file" or "qre_apply_patch" when request.Command.Count == 0
+                => QueryRuntimeCapabilityDecision.Allow("repair workspace file tool allowed"),
+            _ => QueryRuntimeCapabilityDecision.Deny($"Tool is not allowed in repair profile: {request.ToolName}")
         };
     }
 

@@ -124,7 +124,7 @@ internal static class QreCli
                 case "--tools":
                     if (++i >= args.Length)
                     {
-                        return Fail($"{args[i - 1]} requires none, readonly, or verify.");
+                        return Fail($"{args[i - 1]} requires none, readonly, verify, or repair.");
                     }
                     options.ToolProfile = new QueryRuntimeToolProfile(args[i]);
                     break;
@@ -315,6 +315,7 @@ internal static class QreCli
             "none" => [],
             "readonly" or "read-only" or "read" => ExperimentalReadOnlyToolPack.Create(resolvedWorkspace),
             "verify" => [.. ExperimentalReadOnlyToolPack.Create(resolvedWorkspace), .. ExperimentalVerifyToolPack.Create(resolvedWorkspace, sandboxRunner)],
+            "repair" => [.. ExperimentalReadOnlyToolPack.Create(resolvedWorkspace), .. ExperimentalRepairToolPack.Create(resolvedWorkspace)],
             _ => null
         };
         if (tools == null)
@@ -465,7 +466,7 @@ internal static class QreCli
                 case "--tools":
                     if (++i >= args.Length)
                     {
-                        return Fail($"{args[i - 1]} requires none, readonly, or verify.");
+                        return Fail($"{args[i - 1]} requires none, readonly, verify, or repair.");
                     }
                     toolsMode = args[i];
                     break;
@@ -957,7 +958,7 @@ internal static class QreCli
                 case "--tools":
                     if (++i >= args.Length)
                     {
-                        return Fail($"{args[i - 1]} requires none, readonly, or verify.");
+                        return Fail($"{args[i - 1]} requires none, readonly, verify, or repair.");
                     }
                     profileOverride = args[i];
                     break;
@@ -1389,11 +1390,38 @@ internal static class QreCli
         CancellationToken ct)
     {
         var diffPath = Path.Combine(runDirectory, "diff.patch");
-        var diff = await TryReadGitDiffPatchAsync(workspacePath, ct).ConfigureAwait(false);
+        var editedPaths = await TryReadRunEditedPathsAsync(runDirectory, ct).ConfigureAwait(false);
+        var diff = editedPaths.Count == 0
+            ? string.Empty
+            : await TryReadGitDiffPatchAsync(workspacePath, editedPaths, ct).ConfigureAwait(false);
         await File.WriteAllTextAsync(diffPath, diff ?? string.Empty, ct).ConfigureAwait(false);
     }
 
-    private static async Task<string?> TryReadGitDiffPatchAsync(string workspacePath, CancellationToken ct)
+    private static async Task<IReadOnlyList<string>> TryReadRunEditedPathsAsync(
+        string runDirectory,
+        CancellationToken ct)
+    {
+        var editsPath = Path.Combine(runDirectory, "repair-edits.txt");
+        if (!File.Exists(editsPath))
+        {
+            return [];
+        }
+
+        var lines = await File.ReadAllLinesAsync(editsPath, ct).ConfigureAwait(false);
+        return lines
+            .Select(static line => line.Trim().Replace('\\', '/'))
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .Where(static line => !line.Equals(".qre", StringComparison.OrdinalIgnoreCase) &&
+                !line.StartsWith(".qre/", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static async Task<string?> TryReadGitDiffPatchAsync(
+        string workspacePath,
+        IReadOnlyList<string> editedPaths,
+        CancellationToken ct)
     {
         var insideWorkTree = await TryRunGitForStdoutAsync(
             workspacePath,
@@ -1433,7 +1461,7 @@ internal static class QreCli
                 return null;
             }
 
-            var files = await TryReadGitWorkspaceFilesForPatchAsync(workspacePath, ct).ConfigureAwait(false);
+            var files = await TryReadGitWorkspaceFilesForPatchAsync(workspacePath, editedPaths, ct).ConfigureAwait(false);
             if (files == null)
             {
                 return null;
@@ -1471,8 +1499,16 @@ internal static class QreCli
 
     private static async Task<IReadOnlyList<string>?> TryReadGitWorkspaceFilesForPatchAsync(
         string workspacePath,
+        IReadOnlyList<string> editedPaths,
         CancellationToken ct)
     {
+        if (editedPaths.Count == 0)
+        {
+            return [];
+        }
+
+        var pathComparer = GetFileSystemPathComparer();
+        var edited = new HashSet<string>(editedPaths, pathComparer);
         var stdout = await TryRunGitForStdoutAsync(
             workspacePath,
             ["ls-files", "-z", "--cached", "--modified", "--deleted", "--others", "--exclude-standard"],
@@ -1487,10 +1523,16 @@ internal static class QreCli
             .Split('\0', StringSplitOptions.RemoveEmptyEntries)
             .Where(static path => !path.Equals(".qre", StringComparison.OrdinalIgnoreCase) &&
                 !path.StartsWith(".qre/", StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.Ordinal)
+            .Where(edited.Contains)
+            .Distinct(pathComparer)
             .Order(StringComparer.Ordinal)
             .ToArray();
     }
+
+    private static StringComparer GetFileSystemPathComparer()
+        => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
 
     private const string EmptyGitTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -2455,7 +2497,7 @@ internal static class QreCli
         Console.WriteLine("  --api-key <key>         Provider API key. Env fallback: QRE_API_KEY.");
         Console.WriteLine("  --model <name>          Provider model name. Env fallback: QRE_MODEL.");
         Console.WriteLine("  --api-mode <mode>       chat-completions, responses, or anthropic-messages. Env fallback: QRE_API_MODE.");
-        Console.WriteLine("  --profile <name>        none, readonly, or verify. Defaults to none.");
+        Console.WriteLine("  --profile <name>        none, readonly, verify, or repair. Defaults to none.");
         Console.WriteLine("  --tools <mode>          Backward-compatible alias for --profile.");
         Console.WriteLine("  --runner <name>         local or docker for verify tool execution. Defaults to local.");
         Console.WriteLine("  --docker-image <image>  Docker image for --runner docker. Env fallback: QRE_DOCKER_IMAGE.");
@@ -2477,7 +2519,7 @@ internal static class QreCli
     private static void PrintToolHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre tool list --workspace . --profile readonly|verify [--json] [--external]");
+        Console.WriteLine("  qre tool list --workspace . --profile readonly|verify|repair [--json] [--external]");
     }
 
     private static void PrintPolicyHelp()

@@ -52,7 +52,10 @@ package publish, deploy, git push, Git repository writes, destructive commands,
 arbitrary code execution, shell-wrapped network/install commands, and
 network-capable commands.
 
-`repair` is declared but not implemented. It returns `RequireApproval`.
+`repair` exposes controlled workspace file tools (`qre_write_file` and
+`qre_apply_patch`). It denies workspace escape, symlink escape, protected
+workspace artifacts, and secret-looking paths; it still does not grant arbitrary
+process execution.
 
 ## Explicit Approval
 

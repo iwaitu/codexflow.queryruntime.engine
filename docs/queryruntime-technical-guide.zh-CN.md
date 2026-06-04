@@ -204,8 +204,9 @@ User / CLI
 
 - `QueryRuntimeProviderOptions`：provider endpoint、key、model、api mode
   或静态响应。
-- `QueryRuntimeToolProfile`：工具 profile，当前支持 `none`、`readonly` 和
-  `verify`；`repair` 作为目标 profile 已声明但尚未接写工具。
+- `QueryRuntimeToolProfile`：工具 profile，当前支持 `none`、`readonly`、
+  `verify` 和 `repair`；`repair` 暴露受控 workspace write tools，并生成
+  run-scoped diff artifact。
 - `QueryRuntimeModelPolicyOptions`：模型执行策略，当前主要是 thinking policy。
 - `QueryRuntimeOutputOptions`：区分模型 JSON 输出和 CLI JSON 输出。
 - `QueryRuntimeExecutionOptions`：运行轮数等 runtime 参数。
@@ -415,14 +416,23 @@ verify 工具执行前会经过 `ExperimentalCapabilityPolicy`：
 - `qre_dotnet_build` 只能运行 `dotnet build ... --no-restore`。
 - network policy 必须是 `deny`。
 - `readonly` profile 不允许 process execution。
-- `repair` 目前返回 `RequireApproval`，因为写工具尚未实现。
+- `repair` 暴露受控 file tools（`qre_write_file`、`qre_apply_patch`），不暴露
+  任意 shell execution；这些工具会拒绝 workspace escape、symlink escape、
+  `.git` / `.qre` artifacts 和 secret-looking paths。
 
 这仍是应用层 policy，不是 OS 级隔离。`LocalProcessSandboxRunner` 不会真的
 阻断进程网络访问或 mount 行为；这些需要 Docker/Kubernetes/VM runner 才能
 成为可信执行边界。
 
-当 verify profile 的工具由 harness 根据 profile 构建时，policy 评估会写入
-同一个 `.qre/runs/<run-id>/events.jsonl`，事件类型为 `policy.decision`。
+`repair` profile 现在暴露受控 file tools：`qre_write_file` 和
+`qre_apply_patch`，而不是任意 shell execution。这些工具使用 canonical
+workspace path checks，拒绝 symlink escape，拒绝 `.git` / `.qre` 和
+secret-looking paths，在 policy 中要求 read-write workspace mount，并且会在
+写入前写出 `policy.decision` trace records。
+
+当 verify 或 repair profile 的工具由 harness 根据 profile 构建时，policy 评估
+会写入同一个 `.qre/runs/<run-id>/events.jsonl`，事件类型为
+`policy.decision`。
 
 也可以不执行工具，直接查询 policy decision：
 

@@ -123,9 +123,10 @@ public sealed class ExperimentalQueryRuntimeHarness(
 
         try
         {
+            var runDirectory = JsonlTraceStore.GetRunDirectory(traceFilePath);
             var tools = request.Tools.Count > 0
                 ? request.Tools
-                : ResolveProfileTools(request.ToolProfile, request.WorkspacePath, traceSink);
+                : ResolveProfileTools(request.ToolProfile, request.WorkspacePath, traceSink, runDirectory);
             var toolsEnabled = request.EnableTools && tools.Count > 0;
             var runtimeRequest = new CodexFlow.QueryRuntime.Engine.QueryRuntimeRequest
             {
@@ -203,7 +204,8 @@ public sealed class ExperimentalQueryRuntimeHarness(
     private static IReadOnlyList<AIFunction> ResolveProfileTools(
         QueryRuntimeToolProfile profile,
         string? workspacePath,
-        IQueryRuntimePolicyDecisionSink? policyDecisionSink = null)
+        IQueryRuntimePolicyDecisionSink? policyDecisionSink = null,
+        string? runDirectory = null)
     {
         var profileName = profile.Name.Trim().ToLowerInvariant();
         if (profileName is "none")
@@ -211,7 +213,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
             return [];
         }
 
-        if (profileName is "readonly" or "read-only" or "read" or "verify")
+        if (profileName is "readonly" or "read-only" or "read" or "verify" or "repair")
         {
             if (string.IsNullOrWhiteSpace(workspacePath))
             {
@@ -219,9 +221,12 @@ public sealed class ExperimentalQueryRuntimeHarness(
             }
 
             var workspaceRoot = Path.GetFullPath(workspacePath);
-            return profileName is "verify"
-                ? [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalVerifyToolPack.Create(workspaceRoot, policyDecisionSink: policyDecisionSink)]
-                : ExperimentalReadOnlyToolPack.Create(workspaceRoot);
+            return profileName switch
+            {
+                "verify" => [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalVerifyToolPack.Create(workspaceRoot, policyDecisionSink: policyDecisionSink)],
+                "repair" => [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalRepairToolPack.Create(workspaceRoot, runDirectory, policyDecisionSink: policyDecisionSink)],
+                _ => ExperimentalReadOnlyToolPack.Create(workspaceRoot)
+            };
         }
 
         throw new ArgumentException($"Unsupported QueryRuntime tool profile: {profile.Name}", nameof(profile));

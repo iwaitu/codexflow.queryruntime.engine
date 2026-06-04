@@ -82,6 +82,7 @@ public enum QueryRuntimeCapabilityDecisionKind
 public static class QueryRuntimeCapabilities
 {
     public const string ReadFileSystem = "read_fs";
+    public const string WriteFileSystem = "write_fs";
     public const string WriteArtifacts = "write_artifacts";
     public const string ExecuteProcess = "execute_process";
     public const string GitRead = "git_read";

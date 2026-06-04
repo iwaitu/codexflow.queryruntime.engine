@@ -324,6 +324,16 @@ workspace-scoped 且可审计。
 - 保留 risky operations 的 approval records。
 - 当 repair work 不可信时，优先使用 Docker sandbox execution。
 
+状态：截至 2026-06-04，MVP 已实现。`--profile repair` 现在暴露
+`qre_write_file` 和 `qre_apply_patch` 两个受控 workspace file tools。工具使用
+canonical workspace path resolution，拒绝 path traversal 和 symlink escape，
+拒绝受保护的 `.git` / `.qre` artifacts 与 secret-looking paths，通过同一个
+trace sink 写入 `policy.decision`，并在 run directory 中记录成功的 repair
+edits。Run finalization 只为这些 repair edit paths 写入 `diff.patch`，因此
+run 开始前已经存在的 unrelated dirty worktree changes 不会被扫进 run-scoped
+patch。剩余 hardening：同一路径 pre-existing dirty baseline、更完整的 patch
+format（不仅是 targeted text replacement），以及 Docker repair smoke。
+
 验收标准：
 
 - `qre run --profile repair` 可以修改 workspace 内文件。
@@ -344,9 +354,10 @@ workspace-scoped 且可审计。
 
 建议测试：
 
-- Workspace write allow/deny tests。
-- 带 path traversal attempts 的 patch apply tests。
-- Dirty worktrees 下的 run-scoped diff tests。
+- Workspace write allow/deny tests。（MVP 已覆盖）
+- 带 path traversal attempts 的 patch apply tests。（MVP 已覆盖）
+- Dirty worktrees 下的 run-scoped diff tests。（已覆盖 unrelated pre-existing
+  dirty worktree changes）
 - Write tools 存在后的 Docker repair smoke。
 
 ## 10. P6：Phase 4 Open-Source Release Readiness
@@ -395,7 +406,7 @@ workspace-scoped 且可审计。
    的 `aot-smoke` job，会 publish AOT binary 并对产出 binary 跑 smoke；尚需确认
    该 lane 是否已作为 required/blocking check。）
 3. ✅ P1 provider-neutral model adapters。（已完成 2026-06-03）
-4. ◻ P5 repair profile write tools and run-scoped diff。
+4. ✅ P5 repair profile write tools and run-scoped diff。（已完成 2026-06-04）
 5. ✅ P2 deterministic replay hardening。（已完成 2026-06-03）
 6. ◻ P4 complete Phase 1.6 reverse dependency。
 7. ◻ P6 open-source release readiness。
