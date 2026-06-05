@@ -34,7 +34,7 @@ jobs:
           dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj \
             --configuration Release --no-build --logger "console;verbosity=normal"
 
-      - name: Pack NuGet libraries
+      - name: Pack NuGet package
         run: scripts/qre-pack-nuget.sh Release
 
   aot:

@@ -188,7 +188,7 @@ jobs:
           if-no-files-found: ignore
 
   nuget:
-    name: Pack NuGet libraries
+    name: Pack NuGet package
     needs: metadata
     runs-on: ubuntu-latest
     steps:

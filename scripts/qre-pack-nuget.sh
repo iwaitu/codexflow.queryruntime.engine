@@ -9,6 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 mkdir -p "$OUTPUT_DIR"
+find "$OUTPUT_DIR" -maxdepth 1 \( -name '*.nupkg' -o -name '*.snupkg' \) -delete
 
 PACK_ARGS=(
   --configuration "$CONFIGURATION"
@@ -24,12 +25,7 @@ if [[ -n "$PACKAGE_VERSION" ]]; then
 fi
 
 projects=(
-  CodexFlow.QueryRuntime.Abstractions/CodexFlow.QueryRuntime.Abstractions.csproj
   CodexFlow.QueryRuntime.Engine/CodexFlow.QueryRuntime.Engine.csproj
-  CodexFlow.QueryRuntime.Sandbox.LocalProcess/CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj
-  CodexFlow.QueryRuntime.Sandbox.Docker/CodexFlow.QueryRuntime.Sandbox.Docker.csproj
-  CodexFlow.QueryRuntime.Models/CodexFlow.QueryRuntime.Models.csproj
-  CodexFlow.QueryRuntime.Experimental/CodexFlow.QueryRuntime.Experimental.csproj
 )
 
 dotnet restore CodexFlow.QueryRuntime.slnx

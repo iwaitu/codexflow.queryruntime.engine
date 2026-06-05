@@ -156,8 +156,8 @@ qre --version
 
 ### 方式三：构建 NuGet 类库包
 
-QRE 的 NuGet 输出优先面向类库引用。`qre` CLI 默认通过 native release
-artifacts 分发，不打包成 .NET tool 包。
+QRE 的 NuGet 输出只包含核心 Engine 类库。`qre` CLI 默认通过 native
+release artifacts 分发，不打包成 .NET tool 包。
 
 ```bash
 scripts/qre-pack-nuget.sh Release
@@ -165,17 +165,12 @@ scripts/qre-pack-nuget.sh Release
 
 包会输出到 `artifacts/nuget`：
 
-- `CodexFlow.QueryRuntime.Abstractions`
 - `CodexFlow.QueryRuntime.Engine`
-- `CodexFlow.QueryRuntime.Experimental`
-- `CodexFlow.QueryRuntime.Models`
-- `CodexFlow.QueryRuntime.Sandbox.LocalProcess`
-- `CodexFlow.QueryRuntime.Sandbox.Docker`
 
 可以用 `QRE_PACKAGE_VERSION` 覆盖版本号：
 
 ```bash
-QRE_PACKAGE_VERSION=0.1.0-alpha.2 scripts/qre-pack-nuget.sh Release
+QRE_PACKAGE_VERSION=0.1.1 scripts/qre-pack-nuget.sh Release
 ```
 
 ## 快速开始

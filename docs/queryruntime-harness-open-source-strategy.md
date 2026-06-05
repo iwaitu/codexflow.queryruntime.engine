@@ -1096,7 +1096,7 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 Phase 1 seventh-slice progress as of 2026-06-02:
 
 - Completed: the CLI now supports `--version` / `version`, backed by explicit
-  `0.1.0-alpha.1` package metadata.
+  `0.1.0` package metadata.
 - Completed: the CLI now supports `qre doctor --workspace . --json`, a read-only
   environment diagnostic command that checks workspace existence, `dotnet`,
   `git`, latest trace discovery, and whether the `QRE_API_URL`, `QRE_API_KEY`,

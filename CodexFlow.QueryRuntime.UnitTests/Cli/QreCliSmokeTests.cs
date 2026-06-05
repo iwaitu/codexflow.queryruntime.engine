@@ -14,7 +14,7 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.1.0-alpha.1", result.StandardOutput);
+        Assert.Contains("0.1.0", result.StandardOutput);
     }
 
     [Fact]
