@@ -76,6 +76,12 @@ public sealed record QueryRuntimeHostRequest
     public ChatOptions? Options { get; init; }
 
     /// <summary>
+    /// AOT-safe clone hook for provider-specific <see cref="ChatOptions"/> types.
+    /// When unset, the runtime uses <see cref="ChatOptions.Clone"/>.
+    /// </summary>
+    public Func<ChatOptions, ChatOptions>? OptionsCloneFactory { get; init; }
+
+    /// <summary>
     /// Explicitly enables or disables tools. When unset, tools are enabled when
     /// custom tools are supplied or a non-none tool profile is selected.
     /// </summary>

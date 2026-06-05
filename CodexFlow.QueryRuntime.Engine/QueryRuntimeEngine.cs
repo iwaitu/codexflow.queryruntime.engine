@@ -1,4 +1,3 @@
-using System.Reflection;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Engine;
@@ -263,7 +262,7 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
         IReadOnlyList<AIFunction> tools,
         bool requiredToolSatisfied)
     {
-        var options = CreateRuntimeOptions(request.Options);
+        var options = CreateRuntimeOptions(request.Options, request.OptionsCloneFactory);
         if (request.EnableTools && tools.Count > 0)
         {
             options.Tools = tools.Cast<AITool>().ToList();
@@ -288,54 +287,16 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
         return options;
     }
 
-    private static ChatOptions CreateRuntimeOptions(ChatOptions? options)
+    private static ChatOptions CreateRuntimeOptions(
+        ChatOptions? options,
+        Func<ChatOptions, ChatOptions>? optionsCloneFactory)
     {
         if (options == null)
         {
             return new ChatOptions();
         }
 
-        return options.GetType() == typeof(ChatOptions)
-            ? options.Clone()
-            : CreateDerivedRuntimeOptions(options) ?? options.Clone();
-    }
-
-    private static ChatOptions? CreateDerivedRuntimeOptions(ChatOptions options)
-    {
-        try
-        {
-            if (Activator.CreateInstance(options.GetType()) is not ChatOptions clone)
-            {
-                return null;
-            }
-
-            foreach (var property in options.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
-            {
-                if (!property.CanRead ||
-                    !property.CanWrite ||
-                    property.GetIndexParameters().Length != 0 ||
-                    property.SetMethod?.IsPublic != true)
-                {
-                    continue;
-                }
-
-                property.SetValue(clone, property.GetValue(options));
-            }
-
-            return clone;
-        }
-        catch (MissingMethodException)
-        {
-            return null;
-        }
-        catch (MemberAccessException)
-        {
-            return null;
-        }
-        catch (TargetInvocationException)
-        {
-            return null;
-        }
+        return optionsCloneFactory?.Invoke(options) ?? options.Clone();
     }
 
     private async ValueTask EmitRoundCompletedAsync(

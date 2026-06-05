@@ -159,6 +159,15 @@ public sealed class StandaloneQueryRuntimeEngineTests
                 SessionId = Guid.NewGuid().ToString("N"),
                 InitialMessages = [new ChatMessage(ChatRole.User, "test")],
                 Options = hostOptions,
+                OptionsCloneFactory = static options =>
+                {
+                    var source = Assert.IsType<DerivedChatOptions>(options);
+                    return new DerivedChatOptions
+                    {
+                        Marker = source.Marker,
+                        Temperature = source.Temperature
+                    };
+                },
                 MaxRounds = 1,
                 EnableTools = true,
                 AvailableTools = [tool]

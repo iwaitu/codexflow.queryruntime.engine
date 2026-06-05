@@ -34,6 +34,8 @@ public sealed record QueryRuntimeRequest
 
     public ChatOptions? Options { get; init; }
 
+    public Func<ChatOptions, ChatOptions>? OptionsCloneFactory { get; init; }
+
     public int MaxRounds { get; init; } = 3;
 
     public bool EnableTools { get; init; }

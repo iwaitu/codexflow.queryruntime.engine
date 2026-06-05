@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CodexFlow.QueryRuntime.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -6,7 +7,6 @@ namespace CodexFlow.QueryRuntime.Experimental;
 
 public sealed class ExperimentalToolSearchSession
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly IReadOnlySet<string> WriteIntent = new HashSet<string>(
         ["apply", "commit", "create", "delete", "edit", "modify", "patch", "remove", "revert", "update", "write"],
         StringComparer.OrdinalIgnoreCase);
@@ -102,18 +102,17 @@ public sealed class ExperimentalToolSearchSession
     {
         if (string.IsNullOrWhiteSpace(query))
         {
-            return JsonSerializer.Serialize(
+            return Serialize(
                 new ToolSearchResponse(
                     0,
                     query ?? string.Empty,
                     [],
-                    "Provide a non-empty query, for example tool_search({\"query\":\"git diff\"})."),
-                JsonOptions);
+                    "Provide a non-empty query, for example tool_search({\"query\":\"git diff\"})."));
         }
 
         if (TryHandleSelect(query, out var selectedResponse))
         {
-            return JsonSerializer.Serialize(selectedResponse, JsonOptions);
+            return Serialize(selectedResponse);
         }
 
         var effectiveTopK = top_k <= 0 ? _options.TopK : top_k;
@@ -164,8 +163,11 @@ public sealed class ExperimentalToolSearchSession
             results.Count == 0
                 ? "No tools matched. Try a broader capability query such as file, git, test, patch, or search."
                 : "Call one of the activated tools directly if it matches the task.");
-        return JsonSerializer.Serialize(response, JsonOptions);
+        return Serialize(response);
     }
+
+    private static string Serialize(ToolSearchResponse response)
+        => JsonSerializer.Serialize(response, ExperimentalToolSearchJsonContext.Default.ToolSearchResponse);
 
     private bool TryHandleSelect(string query, out ToolSearchResponse response)
     {
@@ -295,13 +297,13 @@ public sealed class ExperimentalToolSearchSession
             QueryRuntimeToolDiscoveryMetadata.FromDescription(tool.Description),
             loading);
 
-    private sealed record ToolSearchResponse(
+    internal sealed record ToolSearchResponse(
         int Found,
         string Query,
         IReadOnlyList<ToolSearchToolResult> Tools,
         string NextStepHint);
 
-    private sealed record ToolSearchToolResult(
+    internal sealed record ToolSearchToolResult(
         string Name,
         double Score,
         bool Activated,
@@ -317,3 +319,8 @@ public sealed class ExperimentalToolSearchSession
         string Risk,
         string Reason);
 }
+
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
+[JsonSerializable(typeof(ExperimentalToolSearchSession.ToolSearchResponse))]
+[JsonSerializable(typeof(ExperimentalToolSearchSession.ToolSearchToolResult))]
+internal sealed partial class ExperimentalToolSearchJsonContext : JsonSerializerContext;

@@ -30,6 +30,8 @@ public sealed record ExperimentalQueryRuntimeRequest
 
     public ChatOptions? Options { get; init; }
 
+    public Func<ChatOptions, ChatOptions>? OptionsCloneFactory { get; init; }
+
     public string? RequiredToolName { get; init; }
 
     public bool RequiresStructuredOutput { get; init; }
@@ -127,7 +129,8 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 ToolSearch = request.ToolSearch,
                 ToolProfile = request.ToolProfile,
                 Tools = request.Tools,
-                Options = ResolveHostOptions(request.Options, request.Output.RequestJson),
+                Options = ResolveHostOptions(request.Options, request.OptionsCloneFactory, request.Output.RequestJson),
+                OptionsCloneFactory = request.OptionsCloneFactory,
                 RequiredToolName = request.RequiredToolName,
                 RequiresStructuredOutput = request.Output.RequestJson,
                 ThinkingPolicy = request.ModelPolicy.ThinkingPolicy,
@@ -210,6 +213,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
                     toolsEnabled,
                     request.RequiresStructuredOutput,
                     request.ThinkingPolicy),
+                OptionsCloneFactory = request.OptionsCloneFactory ?? QreModelExecutionPolicy.CloneOptions,
                 AvailableTools = tools,
                 ToolProvider = toolProvider,
                 RequiredToolName = request.RequiredToolName,
@@ -333,14 +337,19 @@ public sealed class ExperimentalQueryRuntimeHarness(
         };
     }
 
-    private static ChatOptions? ResolveHostOptions(ChatOptions? options, bool requestJson)
+    private static ChatOptions? ResolveHostOptions(
+        ChatOptions? options,
+        Func<ChatOptions, ChatOptions>? optionsCloneFactory,
+        bool requestJson)
     {
         if (!requestJson)
         {
             return options;
         }
 
-        var runtimeOptions = options?.Clone() ?? new ChatOptions();
+        var runtimeOptions = options == null
+            ? new ChatOptions()
+            : optionsCloneFactory?.Invoke(options) ?? QreModelExecutionPolicy.CloneOptions(options);
         runtimeOptions.ResponseFormat ??= ChatResponseFormat.Json;
         return runtimeOptions;
     }

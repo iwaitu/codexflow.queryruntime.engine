@@ -5,6 +5,14 @@ namespace CodexFlow.QueryRuntime.Experimental;
 
 public static class QreModelExecutionPolicy
 {
+    public static ChatOptions CloneOptions(ChatOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options is VllmChatOptions
+            ? CopyToVllmOptions(options)
+            : options.Clone();
+    }
+
     public static ChatOptions Apply(
         ChatOptions? options,
         bool toolsEnabled,
@@ -18,7 +26,7 @@ public static class QreModelExecutionPolicy
         if (!shouldDisableThinking && !shouldEnableThinking)
         {
             return options is VllmChatOptions
-                ? CopyToVllmOptions(options)
+                ? CloneOptions(options)
                 : options ?? new ChatOptions();
         }
 
