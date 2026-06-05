@@ -126,8 +126,20 @@ QRE 可发布、可消费，并且不容易被后续改动回归破坏。
 
 目标：在 standalone engine 稳定后，为 CodexFlow 消费 QRE 做准备。
 
+CodexFlow 集成前的安全与 contract 改进项见
+`docs/codexflow-integration-hardening-plan.zh-CN.md`。该计划中的 host
+intervention、stop gate、result metadata、trace path containment 和 package
+source mapping 是继续扩大 CodexFlow 侧整合前的前置条件。
+
 范围：
 
+- 对任何声明“可作为 CodexFlow backend 使用”的 NuGet package 或 release notes，
+  把 CodexFlow integration hardening 作为 blocking milestone。
+- 在 QRE 仓库内完成 `docs/codexflow-integration-hardening-plan.zh-CN.md` 中的
+  H0-H4 与 H6：host intervention contracts、engine tool-intervention
+  execution、before-stop gates、downstream result/event metadata、trace path
+  containment、可复用 downstream adapter tests。
+- 发布 CodexFlow-consumable package 前完成 H5 package source 与 provenance 文档。
 - 定义 CodexFlow 调用 QRE 的 integration contract。
 - Contract 保持 CLI/binary 或 package based。
 - 避免把 `CodexFlow.Core` 或 `CodexFlow.Contracts` reference 重新引回本仓库。
@@ -136,8 +148,15 @@ QRE 可发布、可消费，并且不容易被后续改动回归破坏。
 验收：
 
 - QRE repo 保持 standalone。
-- Integration notes 描述 inputs、outputs、errors 和 artifact locations。
-- CodexFlow-specific migration work 不进入本 release baseline。
+- H0-H4 与 H6 在 `CodexFlow.QueryRuntime.slnx` 中有通过的 unit tests。
+- 作为 downstream adapter test kit 的 test fixtures 或 examples 进入 CI build /
+  validation。
+- Integration notes 描述 inputs、outputs、errors、artifact locations，以及
+  unsupported host semantics 的 fail-closed 行为。
+- 本地和生产 package 消费都有 package-source mapping 指南。
+- Antigravity 复核不再把 hook bypass、stop-gate bypass、trace containment 或
+  package-source mapping 报为 Critical/High blocker。
+- CodexFlow-specific migration code 不进入本 QRE release baseline。
 
 ## 3. Release Candidate Gate
 
@@ -159,6 +178,9 @@ dotnet publish CodexFlow.QueryRuntime.Cli -c Release -r linux-x64 -p:PublishAot=
 
 如果 Docker 可用，还应执行当前 test suite 文档化的 Docker sandbox smoke 和
 repair-profile smoke。
+
+对于声明为 CodexFlow-consumable 的 pre-release package，还必须执行 R5
+host-integration contract tests，并确认 downstream adapter test kit 已进入 CI。
 
 ## 4. 非阻塞后续项
 
@@ -182,6 +204,9 @@ pre-release：
 - README 和文档描述真实支持面与限制。
 - 本 repo 没有对 `CodexFlow.Core` 或 `CodexFlow.Contracts` 的 source-level
   dependency。
+- 任何声明 CodexFlow-consumable 的 package 都包含 host intervention、
+  before-stop gates、result/event metadata、trace path containment 和 downstream
+  adapter test kit。
 - 已知非阻塞缺口已明确记录。
 
 ## 6. Baseline 日志

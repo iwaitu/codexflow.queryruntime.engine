@@ -136,8 +136,22 @@ Acceptance:
 Objective: prepare the path for CodexFlow to consume QRE after the standalone
 engine stabilizes.
 
+The CodexFlow integration hardening prerequisites are tracked in
+`docs/codexflow-integration-hardening-plan.zh-CN.md`. Host intervention,
+stop gates, result metadata, trace path containment, and package source mapping
+are prerequisites before widening the CodexFlow-side integration.
+
 Scope:
 
+- Treat the CodexFlow integration hardening work as a blocking milestone for
+  any NuGet package or release notes that claim CodexFlow backend readiness.
+- Implement H0-H4 and H6 from
+  `docs/codexflow-integration-hardening-plan.zh-CN.md` in the QRE repository:
+  host intervention contracts, engine tool-intervention execution, before-stop
+  gates, downstream result/event metadata, trace path containment, and reusable
+  downstream adapter tests.
+- Complete H5 package-source and provenance documentation before publishing a
+  CodexFlow-consumable package.
 - Define the integration contract for invoking QRE from CodexFlow.
 - Keep the contract CLI/binary or package based.
 - Avoid introducing `CodexFlow.Core` or `CodexFlow.Contracts` references back
@@ -147,8 +161,16 @@ Scope:
 Acceptance:
 
 - QRE repo stays standalone.
-- Integration notes describe inputs, outputs, errors, and artifact locations.
-- CodexFlow-specific migration work is tracked outside this release baseline.
+- H0-H4 and H6 have passing unit tests in `CodexFlow.QueryRuntime.slnx`.
+- Test fixtures or examples used as the downstream adapter test kit are built
+  and validated in CI.
+- Integration notes describe inputs, outputs, errors, artifact locations, and
+  fail-closed behavior for unsupported host semantics.
+- Package-source mapping guidance exists for local and production package
+  consumption.
+- Antigravity re-review no longer reports hook bypass, stop-gate bypass, trace
+  containment, or package-source mapping as Critical/High blockers.
+- CodexFlow-specific migration code remains outside this QRE release baseline.
 
 ## 3. Release Candidate Gate
 
@@ -170,6 +192,10 @@ Then run the produced native binary:
 
 If Docker is available, also run the Docker sandbox smoke and repair-profile
 smoke documented by the current test suite.
+
+For a pre-release package advertised as CodexFlow-consumable, also run the R5
+host-integration contract tests and confirm the downstream adapter test kit is
+included in CI.
 
 ## 4. Non-Blocking Follow-Ups
 
@@ -193,6 +219,9 @@ The pre-release is ready when:
 - README and docs describe the real supported surface and limitations.
 - No source-level dependency on `CodexFlow.Core` or `CodexFlow.Contracts`
   exists in this repo.
+- Any package described as CodexFlow-consumable includes host intervention,
+  before-stop gates, result/event metadata, trace path containment, and the
+  downstream adapter test kit.
 - Known non-blocking gaps are explicitly documented.
 
 ## 6. Baseline Log
