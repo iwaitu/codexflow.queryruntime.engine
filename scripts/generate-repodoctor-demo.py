@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the RepoDoctor streaming demo GIF for README.md."""
+"""Generate the RepoDoctor live-provider custom-tool demo GIF for README.md."""
 
 from __future__ import annotations
 
@@ -17,9 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSET_DIR = ROOT / "docs" / "assets"
 GIF_PATH = ASSET_DIR / "repodoctor-streaming-demo.gif"
 DISPLAY_WORKSPACE = "/repo"
-OFFLINE_RESPONSE = (
-    "RepoDoctor streams the model answer as it arrives, then keeps the trace so "
-    "the same run can be replayed without another provider call."
+DEFAULT_APPSETTINGS = ROOT.parent / "codexflow" / "CodexFlow" / "appsettings.json"
+DEFAULT_PROVIDER_SECTION = "VllmAgent"
+REQUIRED_TOOL = "repodoctor_workspace_summary"
+DEFAULT_PROMPT = (
+    "Use the RepoDoctor custom tool result to stream exactly three concise bullets "
+    "about the repository risks."
 )
 
 
@@ -27,9 +30,10 @@ def main() -> None:
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     workspace = Path(tempfile.mkdtemp(prefix="repodoctor-demo-"))
     try:
-        (workspace / "README.md").write_text("# Demo repository\n\nA tiny repo for RepoDoctor.\n", encoding="utf-8")
+        write_demo_workspace(workspace)
         qre_bin = resolve_qre_binary()
         output = run_repodoctor(qre_bin, workspace)
+        verify_required_tool_call(output)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
@@ -53,6 +57,43 @@ def resolve_qre_binary() -> str:
     return str(binary)
 
 
+def write_demo_workspace(workspace: Path) -> None:
+    (workspace / "src").mkdir()
+    (workspace / "tests").mkdir()
+    (workspace / "README.md").write_text(
+        "# Demo repository\n\nA tiny repo for RepoDoctor live-provider tool-call recording.\n",
+        encoding="utf-8",
+    )
+    (workspace / "src" / "DemoService.cs").write_text(
+        textwrap.dedent(
+            """
+            namespace Demo;
+
+            public sealed class DemoService
+            {
+                public string Describe() => "demo";
+            }
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (workspace / "tests" / "DemoServiceTests.cs").write_text(
+        textwrap.dedent(
+            """
+            namespace Demo.Tests;
+
+            public sealed class DemoServiceTests
+            {
+                public bool Smoke() => new DemoService().Describe() == "demo";
+            }
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def run_repodoctor(qre_bin: str, workspace: Path) -> str:
     result = subprocess.run(
         [
@@ -61,11 +102,14 @@ def run_repodoctor(qre_bin: str, workspace: Path) -> str:
             "--project",
             str(ROOT / "examples" / "RepoDoctor" / "RepoDoctor.csproj"),
             "--",
-            "--offline",
             "--qre",
             qre_bin,
-            "--response",
-            OFFLINE_RESPONSE,
+            "--appsettings",
+            str(DEFAULT_APPSETTINGS),
+            "--provider-section",
+            DEFAULT_PROVIDER_SECTION,
+            "--prompt",
+            DEFAULT_PROMPT,
             str(workspace),
         ],
         cwd=ROOT,
@@ -77,14 +121,22 @@ def run_repodoctor(qre_bin: str, workspace: Path) -> str:
     return result.stdout
 
 
+def verify_required_tool_call(output: str) -> None:
+    if f"invoked tool: {REQUIRED_TOOL}" not in output:
+        raise RuntimeError(f"Expected {REQUIRED_TOOL} invocation was not found in RepoDoctor output.")
+
+
 def normalize_transcript(output: str) -> list[tuple[str, str]]:
     lines: list[tuple[str, str]] = [
-        ("cmd", "$ dotnet run --project examples/RepoDoctor -- --offline /repo"),
+        ("cmd", "$ dotnet run --project examples/RepoDoctor -- /repo"),
     ]
+    streaming = False
     for raw in output.splitlines():
         text = raw.replace(str(ROOT), "").replace(str(Path(tempfile.gettempdir())), "/tmp")
         if text.startswith("workspace:"):
             text = f"workspace: {DISPLAY_WORKSPACE}"
+        elif text.startswith("provider:"):
+            text = f"provider: /codexflow/CodexFlow/appsettings.json#{DEFAULT_PROVIDER_SECTION}"
         if text.startswith("trace:") and "/.qre/runs/" in text:
             text = f"trace: {DISPLAY_WORKSPACE}/.qre/runs/<run-id>/events.jsonl"
         elif text.startswith("run_directory:") and "/.qre/runs/" in text:
@@ -95,11 +147,15 @@ def normalize_transcript(output: str) -> list[tuple[str, str]]:
             kind = "title"
         elif text.startswith("Streaming model answer"):
             kind = "section"
+            streaming = True
         elif text.startswith("Recorded replay"):
             kind = "section"
+            streaming = False
         elif text.startswith("run_id:") or text.startswith("termination:") or text.startswith("runner:") or text.startswith("tools:") or text.startswith("trace:") or text.startswith("run_directory:") or text.startswith("finalText:"):
             kind = "meta"
-        elif text == OFFLINE_RESPONSE:
+        elif text.startswith("provider:") or text.startswith("model:") or text.startswith("api_mode:") or text.startswith("registered tool:"):
+            kind = "meta"
+        elif streaming and text:
             kind = "stream"
 
         lines.append((kind, text))

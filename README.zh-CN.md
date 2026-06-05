@@ -209,8 +209,11 @@ qre run --workspace . --profile readonly --thinking off \
 ### 在 .NET 应用中以子进程调用
 
 完整示例见 [examples/RepoDoctor](examples/RepoDoctor)：把 `qre` 当作本地 Agent
-runtime CLI 调用，将模型回复流式输出到宿主应用控制台，并跟随做一次 recorded
-replay。
+runtime CLI 调用，注册一个自定义 .NET stdio 工具，通过
+`qre tool invoke` 调用该工具，再将真实 provider 的模型回复流式输出到宿主应用
+控制台，并跟随做一次 recorded replay。
+如果没有设置 `QRE_API_URL` / `QRE_API_KEY` / `QRE_MODEL`，它会默认读取 sibling
+CodexFlow appsettings 中的 `VllmAgent` provider 配置。
 
 ![RepoDoctor streaming qre output](docs/assets/repodoctor-streaming-demo.gif)
 
@@ -218,6 +221,10 @@ replay。
 cd examples/RepoDoctor
 dotnet run -- /path/to/repo
 ```
+
+使用 `dotnet run -- --offline /path/to/repo` 可以在没有 LLM key 的情况下验证
+子进程、streaming、trace 与 replay 路径。offline 模式使用静态模型回复，因此
+真正的自定义工具调用验证应使用 live provider 模式。
 
 ### Python live-provider 工具调用流式示例
 

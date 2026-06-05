@@ -356,7 +356,7 @@ internal static class QreCli
         }
 
         return includeExternal
-            ? [.. tools, .. ExternalStdioToolPack.Create(resolvedWorkspace)]
+            ? [.. ExternalStdioToolPack.Create(resolvedWorkspace), .. tools]
             : tools;
     }
 
@@ -473,8 +473,109 @@ internal static class QreCli
         {
             "list" => ToolList(args[1..]),
             "register" => ToolRegister(args[1..]),
+            "invoke" => ToolInvoke(args[1..]),
             _ => Fail($"Unknown tool command: {args[0]}")
         };
+    }
+
+    private static int ToolInvoke(string[] args)
+    {
+        var workspace = Directory.GetCurrentDirectory();
+        string? name = null;
+        var argumentsJson = "{}";
+        var json = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--workspace":
+                case "-w":
+                    if (++i >= args.Length)
+                    {
+                        return Fail("--workspace requires a path.");
+                    }
+                    workspace = args[i];
+                    break;
+                case "--name":
+                case "-n":
+                    if (++i >= args.Length)
+                    {
+                        return Fail("--name requires a tool name.");
+                    }
+                    name = args[i];
+                    break;
+                case "--arguments":
+                case "--args":
+                    if (++i >= args.Length)
+                    {
+                        return Fail("--arguments requires a JSON object.");
+                    }
+                    argumentsJson = args[i];
+                    break;
+                case "--json":
+                    json = true;
+                    break;
+                default:
+                    return Fail($"Unknown tool invoke option: {args[i]}");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return Fail("--name is required.");
+        }
+
+        var resolvedWorkspace = Path.GetFullPath(workspace);
+        if (!Directory.Exists(resolvedWorkspace))
+        {
+            return Fail($"Workspace does not exist: {resolvedWorkspace}");
+        }
+
+        Dictionary<string, object?> arguments;
+        try
+        {
+            arguments = ParseToolArguments(argumentsJson);
+        }
+        catch (JsonException ex)
+        {
+            return Fail($"--arguments must be a JSON object: {ex.Message}");
+        }
+
+        var tool = ExternalStdioToolPack.Create(resolvedWorkspace)
+            .FirstOrDefault(tool => string.Equals(tool.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (tool == null)
+        {
+            return Fail($"External tool is not registered: {name}");
+        }
+
+        string resultText;
+        try
+        {
+            var result = tool.InvokeAsync(new AIFunctionArguments(arguments), CancellationToken.None)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            resultText = FormatToolResult(result);
+        }
+        catch (Exception ex)
+        {
+            return Fail($"Tool invocation failed: {ex.Message}");
+        }
+
+        if (json)
+        {
+            WriteJson(new QreToolInvokeOutput(
+                "qre.tool.invoked",
+                resolvedWorkspace,
+                tool.Name,
+                arguments,
+                resultText));
+            return 0;
+        }
+
+        Console.WriteLine(resultText);
+        return 0;
     }
 
     private static int ToolRegister(string[] args)
@@ -736,6 +837,42 @@ internal static class QreCli
            value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    private static Dictionary<string, object?> ParseToolArguments(string argumentsJson)
+    {
+        using var doc = JsonDocument.Parse(argumentsJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("root value is not an object.");
+        }
+
+        var arguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in doc.RootElement.EnumerateObject())
+        {
+            arguments[property.Name] = property.Value.ValueKind switch
+            {
+                JsonValueKind.String => property.Value.GetString(),
+                JsonValueKind.Number when property.Value.TryGetInt32(out var integer) => integer,
+                JsonValueKind.Number when property.Value.TryGetInt64(out var integer) => integer,
+                JsonValueKind.Number when property.Value.TryGetDouble(out var number) => number,
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => property.Value.Clone()
+            };
+        }
+
+        return arguments;
+    }
+
+    private static string FormatToolResult(object? result)
+        => result switch
+        {
+            null => string.Empty,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString() ?? string.Empty,
+            JsonElement element => element.GetRawText(),
+            _ => result.ToString() ?? string.Empty
+        };
 
     private static int? TryGetJsonInt(JsonElement root, string propertyName)
         => root.ValueKind == JsonValueKind.Object &&
@@ -2576,6 +2713,7 @@ internal static class QreCli
             QreTraceJsonlEvent output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreTraceJsonlEvent),
             QreToolListOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolListOutput),
             QreToolRegisterOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolRegisterOutput),
+            QreToolInvokeOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolInvokeOutput),
             QrePolicyCheckOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QrePolicyCheckOutput),
             QreReplaySummary output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreReplaySummary),
             QreStrictReplayOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreStrictReplayOutput),
@@ -2665,6 +2803,7 @@ internal static class QreCli
         Console.WriteLine("Usage:");
         Console.WriteLine("  qre tool list --workspace . --profile readonly|verify|repair [--json] [--external]");
         Console.WriteLine("  qre tool register --workspace . --manifest tool.json [--json] [--force]");
+        Console.WriteLine("  qre tool invoke --workspace . --name tool_name --arguments '{\"key\":\"value\"}' [--json]");
     }
 
     private static void PrintPolicyHelp()
@@ -3003,6 +3142,13 @@ internal static class QreCli
         IReadOnlySet<string> Capabilities,
         bool Overwritten);
 
+    internal sealed record QreToolInvokeOutput(
+        string Type,
+        string WorkspacePath,
+        string ToolName,
+        IReadOnlyDictionary<string, object?> Arguments,
+        string Result);
+
     internal sealed record QrePolicyCheckOutput(
         string Type,
         string Profile,
@@ -3253,6 +3399,7 @@ internal static class QreCli
 [JsonSerializable(typeof(QreCli.QreTraceJsonlEvent))]
 [JsonSerializable(typeof(QreCli.QreToolListOutput))]
 [JsonSerializable(typeof(QreCli.QreToolRegisterOutput))]
+[JsonSerializable(typeof(QreCli.QreToolInvokeOutput))]
 [JsonSerializable(typeof(QreCli.QreToolDescriptor))]
 [JsonSerializable(typeof(QreCli.QrePolicyCheckOutput))]
 [JsonSerializable(typeof(QreCli.QreReplaySummary))]

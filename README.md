@@ -236,8 +236,11 @@ qre run --workspace . --profile readonly --thinking off \
 ### Calling `qre` from a .NET app
 
 See [examples/RepoDoctor](examples/RepoDoctor) for a full, cross-platform example:
-it invokes `qre` as a local agent-runtime CLI, streams the model answer to the
-host app console, and then follows up with a recorded replay.
+it invokes `qre` as a local agent-runtime CLI, registers a custom .NET stdio
+tool, invokes that tool through `qre tool invoke`, streams a real-provider model
+answer to the host app console, and then follows up with a recorded replay.
+If `QRE_API_URL` / `QRE_API_KEY` / `QRE_MODEL` are not set, it reads the
+`VllmAgent` provider section from the sibling CodexFlow appsettings file.
 
 ![RepoDoctor streaming qre output](docs/assets/repodoctor-streaming-demo.gif)
 
@@ -245,6 +248,11 @@ host app console, and then follows up with a recorded replay.
 cd examples/RepoDoctor
 dotnet run -- /path/to/repo
 ```
+
+Use `dotnet run -- --offline /path/to/repo` to validate the subprocess,
+streaming, trace, and replay path without an LLM key. Offline mode uses a static
+model response, so live provider mode is the path that exercises the required
+custom tool invocation.
 
 ### Python live-provider tool-call streaming
 

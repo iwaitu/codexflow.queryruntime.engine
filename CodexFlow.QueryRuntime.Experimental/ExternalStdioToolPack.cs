@@ -11,9 +11,28 @@ public static class ExternalStdioToolPack
 {
     public static IReadOnlyList<AIFunction> Create(string workspacePath)
         => LoadManifests(workspacePath)
-            .Select(manifest => new ExternalStdioAIFunction(workspacePath, manifest))
-            .Cast<AIFunction>()
+            .Select(manifest => CreateFunction(workspacePath, manifest))
             .ToArray();
+
+    private static AIFunction CreateFunction(string workspacePath, ExternalStdioToolManifest manifest)
+    {
+        var invoker = new ExternalStdioAIFunction(workspacePath, manifest);
+        return AIFunctionFactory.Create(
+            (
+                string extension = "",
+                int max_files = 1000,
+                string message = "",
+                string path = "",
+                string pattern = "",
+                CancellationToken cancellationToken = default)
+                => invoker.InvokeAsync(extension, max_files, message, path, pattern, cancellationToken).AsTask().GetAwaiter().GetResult(),
+            new AIFunctionFactoryOptions
+            {
+                Name = manifest.Name,
+                Description = manifest.Description ?? "External stdio tool.",
+                MarshalResult = static (result, _, _) => ValueTask.FromResult(result)
+            });
+    }
 
     public static IReadOnlyList<QueryRuntimeToolDescriptor> ListDescriptors(
         QueryRuntimeToolProfile profile,
@@ -50,17 +69,40 @@ public static class ExternalStdioToolPack
 
 internal sealed class ExternalStdioAIFunction(
     string workspacePath,
-    ExternalStdioToolManifest manifest) : AIFunction
+    ExternalStdioToolManifest manifest)
 {
     private readonly string _workspacePath = Path.GetFullPath(workspacePath);
 
-    public override string Name => manifest.Name;
+    public ValueTask<string> InvokeAsync(
+        string extension = "",
+        int maxFiles = 1000,
+        string message = "",
+        string path = "",
+        string pattern = "",
+        CancellationToken cancellationToken = default)
+    {
+        var arguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        AddIfPresent(arguments, "extension", extension);
+        AddIfPresent(arguments, "maxFiles", maxFiles);
+        AddIfPresent(arguments, "message", message);
+        AddIfPresent(arguments, "path", path);
+        AddIfPresent(arguments, "pattern", pattern);
 
-    public override string Description => manifest.Description ?? "External stdio tool.";
+        return InvokeExternalAsync(new AIFunctionArguments(arguments), cancellationToken);
+    }
 
-    public override JsonElement JsonSchema => manifest.InputSchema;
+    private static void AddIfPresent(IDictionary<string, object?> arguments, string name, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            arguments[name] = value;
+        }
+    }
 
-    protected override async ValueTask<object?> InvokeCoreAsync(
+    private static void AddIfPresent(IDictionary<string, object?> arguments, string name, int value)
+        => arguments[name] = value;
+
+    private async ValueTask<string> InvokeExternalAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
