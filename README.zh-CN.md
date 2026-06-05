@@ -239,6 +239,19 @@ dotnet run -- /path/to/repo
 python examples/PythonToolDoctor/doctor.py /path/to/repo
 ```
 
+### Node.js live-provider 工具示例
+
+[examples/NodeFunctionTools](examples/NodeFunctionTools) 演示如何把 Node.js
+函数变成 QRE stdio 工具。录制示例会生成 Node manifest，注册
+`node_count_files`，通过 QRE 调用该工具，然后把工具结果交给真实 LLM provider
+流式生成回答。
+
+![Node.js QRE tool live provider demo](docs/assets/node-tool-streaming-demo.gif)
+
+```bash
+python scripts/generate-node-tool-demo.py
+```
+
 ### 注册新工具
 
 QRE 通过 workspace-local manifest 注册新的进程外工具，manifest 放在
@@ -246,6 +259,8 @@ QRE 通过 workspace-local manifest 注册新的进程外工具，manifest 放�
 smoke 示例见 [examples/ExternalTools](examples/ExternalTools)。
 Python 项目可参考 [examples/PythonFunctionTools](examples/PythonFunctionTools)，
 用 `@qre_tool` 声明普通函数并生成 manifest 后注册。
+Node.js 项目可参考 [examples/NodeFunctionTools](examples/NodeFunctionTools)，
+用原生 ESM 和显式 JSON schema 走同样的 manifest 生成与注册流程。
 
 ```bash
 qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
@@ -255,6 +270,11 @@ qre tool list --workspace . --profile readonly --external --json
 ```bash
 python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
 qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
+```
+
+```bash
+node examples/NodeFunctionTools/repo_tools.mjs --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/node_count_files.json
 ```
 
 ## verify 工具与 capability policy

@@ -268,6 +268,19 @@ the recorded trace.
 python examples/PythonToolDoctor/doctor.py /path/to/repo
 ```
 
+### Node.js live-provider tool demo
+
+[examples/NodeFunctionTools](examples/NodeFunctionTools) shows how Node.js
+functions become QRE stdio tools. The recorded demo generates Node manifests,
+registers `node_count_files`, invokes it through QRE, then streams a real LLM
+provider answer using that tool result.
+
+![Node.js QRE tool live provider demo](docs/assets/node-tool-streaming-demo.gif)
+
+```bash
+python scripts/generate-node-tool-demo.py
+```
+
 ### Registering New Tools
 
 QRE registers new out-of-process tools through workspace-local manifests under
@@ -275,6 +288,8 @@ QRE registers new out-of-process tools through workspace-local manifests under
 minimal stdio tool, manifest, discovery command, and `--required-tool` smoke.
 For Python projects, [examples/PythonFunctionTools](examples/PythonFunctionTools)
 shows how `@qre_tool` functions generate manifests and become QRE tools.
+For Node.js projects, [examples/NodeFunctionTools](examples/NodeFunctionTools)
+shows the same flow using native ESM and explicit JSON schemas.
 
 ```bash
 qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
@@ -284,6 +299,11 @@ qre tool list --workspace . --profile readonly --external --json
 ```bash
 python examples/PythonFunctionTools/repo_tools.py --manifest-dir .qre/generated-tools
 qre tool register --workspace . --manifest .qre/generated-tools/py_count_files.json
+```
+
+```bash
+node examples/NodeFunctionTools/repo_tools.mjs --manifest-dir .qre/generated-tools
+qre tool register --workspace . --manifest .qre/generated-tools/node_count_files.json
 ```
 
 ## Verify tools and capability policy

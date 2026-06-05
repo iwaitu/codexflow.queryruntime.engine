@@ -21,11 +21,12 @@ public static class ExternalStdioToolPack
             (
                 string extension = "",
                 int max_files = 1000,
+                int max_chars = 4000,
                 string message = "",
                 string path = "",
                 string pattern = "",
                 CancellationToken cancellationToken = default)
-                => invoker.InvokeAsync(extension, max_files, message, path, pattern, cancellationToken).AsTask().GetAwaiter().GetResult(),
+                => invoker.InvokeAsync(extension, max_files, max_chars, message, path, pattern, cancellationToken).AsTask().GetAwaiter().GetResult(),
             new AIFunctionFactoryOptions
             {
                 Name = manifest.Name,
@@ -76,6 +77,7 @@ internal sealed class ExternalStdioAIFunction(
     public ValueTask<string> InvokeAsync(
         string extension = "",
         int maxFiles = 1000,
+        int maxChars = 4000,
         string message = "",
         string path = "",
         string pattern = "",
@@ -84,6 +86,7 @@ internal sealed class ExternalStdioAIFunction(
         var arguments = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         AddIfPresent(arguments, "extension", extension);
         AddIfPresent(arguments, "maxFiles", maxFiles);
+        AddIfPresent(arguments, "maxChars", maxChars);
         AddIfPresent(arguments, "message", message);
         AddIfPresent(arguments, "path", path);
         AddIfPresent(arguments, "pattern", pattern);
