@@ -1,4 +1,5 @@
 using System.Text;
+using CodexFlow.QueryRuntime.Abstractions;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Experimental;
@@ -13,7 +14,7 @@ public static class ExperimentalReadOnlyToolPack
     public static IReadOnlyList<AIFunction> Create(string workspacePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
-        var workspaceRoot = ExperimentalWorkspacePath.NormalizeRoot(workspacePath);
+        var workspaceRoot = QueryRuntimePathSafety.NormalizeRoot(workspacePath);
         if (!Directory.Exists(workspaceRoot))
         {
             throw new DirectoryNotFoundException($"Workspace does not exist: {workspaceRoot}");
@@ -149,7 +150,9 @@ public static class ExperimentalReadOnlyToolPack
 
     private static string ResolveWorkspacePath(string workspaceRoot, string? path)
     {
-        return ExperimentalWorkspacePath.ResolveUnderRoot(workspaceRoot, path);
+        var target = QueryRuntimePathSafety.ResolveUnderRoot(workspaceRoot, path);
+        QueryRuntimePathSafety.RejectProtectedWorkspacePath(workspaceRoot, target, "read by read-only tools");
+        return target;
     }
 
     private static IEnumerable<string> EnumerateCandidateFiles(string workspaceRoot, string root)

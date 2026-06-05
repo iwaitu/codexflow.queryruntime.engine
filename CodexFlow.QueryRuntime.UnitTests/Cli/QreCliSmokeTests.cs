@@ -97,6 +97,8 @@ public sealed class QreCliSmokeTests
         using var runJson = JsonDocument.Parse(run.StandardOutput);
         Assert.Equal("qre.run.completed", runJson.RootElement.GetProperty("type").GetString());
         Assert.Equal("cli contract smoke", runJson.RootElement.GetProperty("finalText").GetString());
+        Assert.Equal("NoToolCalls", runJson.RootElement.GetProperty("termination").GetString());
+        Assert.Equal("NoToolCalls", runJson.RootElement.GetProperty("terminationReason").GetString());
         Assert.Equal("readonly", runJson.RootElement.GetProperty("profile").GetString());
         Assert.Equal("local", runJson.RootElement.GetProperty("runner").GetString());
         using var manifestJson = JsonDocument.Parse(File.ReadAllText(
@@ -304,6 +306,11 @@ public sealed class QreCliSmokeTests
         using var json = JsonDocument.Parse(lines[0]);
         Assert.Equal("qre.run.completed", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("single json smoke", json.RootElement.GetProperty("finalText").GetString());
+        Assert.Equal(1, json.RootElement.GetProperty("zeroToolCallRounds").GetInt32());
+        Assert.Equal(0, json.RootElement.GetProperty("continuationCount").GetInt32());
+        Assert.Equal(0, json.RootElement.GetProperty("writeToolCalls").GetInt32());
+        Assert.Equal(JsonValueKind.Array, json.RootElement.GetProperty("executedToolNames").ValueKind);
+        Assert.Empty(json.RootElement.GetProperty("executedToolNames").EnumerateArray());
         Assert.False(json.RootElement.TryGetProperty("eventType", out _));
         Assert.False(json.RootElement.TryGetProperty("delta", out _));
     }
@@ -421,6 +428,7 @@ public sealed class QreCliSmokeTests
             Assert.Equal(
                 "qre_list_files",
                 promptAssembly.RootElement.GetProperty("Data").GetProperty("RequiredToolName").GetString());
+            Assert.False(promptAssembly.RootElement.GetProperty("Data").GetProperty("RequiredToolSatisfied").GetBoolean());
         }
         finally
         {

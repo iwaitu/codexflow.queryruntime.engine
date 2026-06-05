@@ -33,7 +33,7 @@ public static class ExperimentalVerifyToolPack
         IQueryRuntimePolicyDecisionSink? policyDecisionSink = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
-        var workspaceRoot = ExperimentalWorkspacePath.NormalizeRoot(workspacePath);
+        var workspaceRoot = QueryRuntimePathSafety.NormalizeRoot(workspacePath);
         if (!Directory.Exists(workspaceRoot))
         {
             throw new DirectoryNotFoundException($"Workspace does not exist: {workspaceRoot}");
@@ -288,7 +288,7 @@ public static class ExperimentalVerifyToolPack
 
     private static string ResolveWorkspacePath(string workspaceRoot, string? path)
     {
-        return ExperimentalWorkspacePath.ResolveUnderRoot(workspaceRoot, path);
+        return QueryRuntimePathSafety.ResolveUnderRoot(workspaceRoot, path);
     }
 
     private static IReadOnlySet<string> CapabilitySet(params string[] capabilities)

@@ -1,4 +1,6 @@
 using CodexFlow.QueryRuntime.Experimental;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using Qre = CodexFlow.QueryRuntime.Abstractions;
 using EngineModelRequest = CodexFlow.QueryRuntime.Engine.QueryRuntimeModelRequest;
@@ -72,6 +74,11 @@ public sealed class QueryRuntimeContractTests
         Assert.Equal("codexflow-session-1", result.SessionId);
         Assert.Equal("host done", result.FinalText);
         Assert.Equal(1, result.TotalToolCalls);
+        Assert.Contains(result.FinalMessages, message => message.Role == ChatRole.Tool);
+        Assert.Contains(
+            result.FinalMessages,
+            message => message.Role == ChatRole.Assistant &&
+                       ReadText(message) == "host done");
         Assert.Equal(1, toolCalls);
         Assert.Equal(["host done"], streamed);
         Assert.Equal(2, modelClient.Requests[0].Messages.Count);
@@ -145,6 +152,60 @@ public sealed class QueryRuntimeContractTests
         Assert.Equal(ChatResponseFormat.Json, runtimeOptions?.ResponseFormat);
         Assert.Single(runtimeOptions?.Tools ?? []);
     }
+
+    [Fact]
+    public void HostSecurityDecisions_AreSerializableForTraceAndAdapterLogs()
+    {
+        var toolDecision = Qre.QueryRuntimeToolInterventionDecision.BlockWithFeedback(
+            "Blocked by host policy.",
+            "write tools require scope approval",
+            "tool_blocked");
+        var stopDecision = Qre.QueryRuntimeStopDecision.RequireTool(
+            "verify_state",
+            "Run verify_state before final answer.",
+            "required verification missing",
+            "verification_incomplete");
+
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(new JsonStringEnumConverter());
+        var toolJson = JsonSerializer.Serialize(toolDecision, options);
+        var stopJson = JsonSerializer.Serialize(stopDecision, options);
+
+        Assert.Contains("BlockWithFeedback", toolJson, StringComparison.Ordinal);
+        Assert.Contains("tool_blocked", toolJson, StringComparison.Ordinal);
+        Assert.Contains("RequireTool", stopJson, StringComparison.Ordinal);
+        Assert.Contains("verify_state", stopJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PathSafety_ExposesReusableContainmentAndProtectedPathChecks()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var safeFile = Path.Combine(workspace.Path, "src", "file.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(safeFile)!);
+        File.WriteAllText(safeFile, "ok");
+
+        var resolved = Qre.QueryRuntimePathSafety.ResolveUnderRoot(workspace.Path, "src/file.txt");
+
+        Assert.Equal(safeFile, resolved);
+        Assert.True(Qre.QueryRuntimePathSafety.IsUnderRoot(workspace.Path, resolved));
+        Assert.Throws<InvalidOperationException>(() =>
+            Qre.QueryRuntimePathSafety.ResolveUnderRoot(workspace.Path, "../escape.txt"));
+        Assert.Throws<InvalidOperationException>(() =>
+            Qre.QueryRuntimePathSafety.RejectProtectedWorkspacePath(
+                workspace.Path,
+                Qre.QueryRuntimePathSafety.ResolveUnderRoot(workspace.Path, ".git/config"),
+                "read"));
+        Assert.True(Qre.QueryRuntimePathSafety.IsSecretLookingSegment(".env"));
+    }
+
+    private static string ReadText(ChatMessage message)
+        => string.Concat(message.Contents.Select(static content => content switch
+        {
+            TextContent text => text.Text,
+            FunctionResultContent result => result.Result?.ToString() ?? string.Empty,
+            _ => string.Empty
+        }));
 
     private sealed class TemporaryWorkspace : IDisposable
     {

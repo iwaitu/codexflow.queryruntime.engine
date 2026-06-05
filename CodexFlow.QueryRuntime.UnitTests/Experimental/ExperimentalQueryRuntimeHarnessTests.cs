@@ -29,8 +29,12 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
 
         Assert.Equal("run-no-tool", result.RunId);
         Assert.Equal("experimental response", result.FinalText);
+        Assert.Equal(1, result.ZeroToolCallRounds);
+        Assert.Equal(0, result.ContinuationCount);
+        Assert.Equal(0, result.WriteToolCalls);
         Assert.True(File.Exists(result.TraceFilePath));
         var runDirectory = Path.GetDirectoryName(result.TraceFilePath)!;
+        Assert.Equal(runDirectory, result.RunDirectory);
         var manifestPath = Path.Combine(runDirectory, "manifest.json");
         var runJsonPath = Path.Combine(runDirectory, "run.json");
         var artifactsPath = Path.Combine(runDirectory, "artifacts");
@@ -49,6 +53,98 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Assert.Equal("run-no-tool", manifest.RootElement.GetProperty("RunId").GetString());
         Assert.Equal("completed", manifest.RootElement.GetProperty("Status").GetString());
         Assert.Equal(result.TraceFilePath, manifest.RootElement.GetProperty("TraceFilePath").GetString());
+        Assert.Equal(runDirectory, manifest.RootElement.GetProperty("RunDirectory").GetString());
+        Assert.Equal(1, manifest.RootElement.GetProperty("ZeroToolCallRounds").GetInt32());
+        Assert.Equal(0, manifest.RootElement.GetProperty("ContinuationCount").GetInt32());
+        Assert.Equal(0, manifest.RootElement.GetProperty("WriteToolCalls").GetInt32());
+
+        var completed = records.Single(record => record.RootElement.GetProperty("Type").GetString() == "run.completed");
+        Assert.Equal(1, completed.RootElement.GetProperty("ZeroToolCallRounds").GetInt32());
+        Assert.Equal(0, completed.RootElement.GetProperty("ContinuationCount").GetInt32());
+        Assert.Equal(0, completed.RootElement.GetProperty("WriteToolCalls").GetInt32());
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsRunIdPathTraversal()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var harness = new ExperimentalQueryRuntimeHarness(new StaticExperimentalModelClient("should not run"));
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await harness.RunAsync(
+                new ExperimentalQueryRuntimeRequest
+                {
+                    Prompt = "test",
+                    WorkspacePath = workspace.Path,
+                    RunId = "../escape",
+                    MaxRounds = 1
+                },
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("RunId must be a single safe path segment", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(".git/qre")]
+    [InlineData("secret-traces")]
+    public async Task RunAsync_RejectsUnsafeTraceRootSegments(string traceRoot)
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var harness = new ExperimentalQueryRuntimeHarness(new StaticExperimentalModelClient("should not run"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await harness.RunAsync(
+                new ExperimentalQueryRuntimeRequest
+                {
+                    Prompt = "test",
+                    WorkspacePath = workspace.Path,
+                    TraceRoot = traceRoot,
+                    RunId = "safe-run",
+                    MaxRounds = 1
+                },
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsTraceRootSymlinkEscape()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var traceRoot = Path.Combine(workspace.Path, "trace-root");
+        var outside = Path.Combine(Path.GetTempPath(), $"qre-trace-outside-{Guid.NewGuid():N}");
+        var runsLink = Path.Combine(traceRoot, "runs");
+        Directory.CreateDirectory(traceRoot);
+        Directory.CreateDirectory(outside);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(runsLink, outside);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            var harness = new ExperimentalQueryRuntimeHarness(new StaticExperimentalModelClient("should not run"));
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await harness.RunAsync(
+                    new ExperimentalQueryRuntimeRequest
+                    {
+                        Prompt = "test",
+                        WorkspacePath = workspace.Path,
+                        TraceRoot = traceRoot,
+                        RunId = "safe-run",
+                        MaxRounds = 1
+                    },
+                    TestContext.Current.CancellationToken));
+
+            Assert.Contains("Symlink traversal outside workspace", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeletePathIfExists(runsLink);
+            DeletePathIfExists(outside);
+        }
     }
 
     [Fact]
@@ -77,6 +173,9 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
 
         Assert.Equal("done", result.FinalText);
         Assert.Equal(1, result.TotalToolCalls);
+        Assert.Equal(0, result.WriteToolCalls);
+        Assert.Equal(["workspace_info"], result.ExecutedToolNames);
+        Assert.Equal(["workspace_info"], result.SuccessfulToolNames);
 
         var records = ReadJsonl(result.TraceFilePath);
         Assert.Contains(records, record => record.RootElement.GetProperty("Type").GetString() == "tool.call.requested");
@@ -946,6 +1045,20 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
 
     private static string ReadText(ChatMessage message)
         => string.Concat(message.Contents.OfType<TextContent>().Select(static content => content.Text));
+
+    private static void DeletePathIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+            return;
+        }
+
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+        }
+    }
 
     private sealed class ScriptedExperimentalModelClient(params IReadOnlyList<AIContent>[] steps) : IExperimentalModelClient
     {

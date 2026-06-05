@@ -63,6 +63,27 @@ public sealed class ExperimentalReadOnlyToolPackTests
         }
     }
 
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".qre/runs/events.jsonl")]
+    [InlineData(".env")]
+    public async Task ReadFile_RejectsProtectedAndSecretLookingPaths(string path)
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var target = System.IO.Path.Combine(workspace.Path, path);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, "sensitive");
+        var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await InvokeAsync(tools, "qre_read_file", new()
+            {
+                ["path"] = path
+            }));
+
+        Assert.Contains("cannot be read", ex.Message, StringComparison.Ordinal);
+    }
+
     private static async Task<string> InvokeAsync(
         IReadOnlyList<AIFunction> tools,
         string name,

@@ -91,6 +91,23 @@ public sealed record QueryRuntimeHostRequest
 
     public string? RequiredToolName { get; init; }
 
+    /// <summary>
+    /// Names of host tools that should be counted as workspace-write calls in
+    /// runtime metadata. Built-in profiles derive this from tool capabilities.
+    /// </summary>
+    public IReadOnlySet<string> WriteToolNames { get; init; } = EmptyStringSet.Value;
+
+    /// <summary>
+    /// Optional host policy hook for pre-tool allow/block/fail-closed decisions and
+    /// post-tool audit or critique.
+    /// </summary>
+    public IQueryRuntimeToolIntervention? ToolIntervention { get; init; }
+
+    /// <summary>
+    /// Optional host verification gate called before QRE accepts a terminal answer.
+    /// </summary>
+    public IQueryRuntimeStopGate? StopGate { get; init; }
+
     public Func<string, CancellationToken, ValueTask>? TextDeltaSink { get; init; }
 
     public TimeProvider? TimeProvider { get; init; }
@@ -106,7 +123,30 @@ public sealed record QueryRuntimeResult(
     string TerminationReason,
     int TotalRounds,
     int TotalToolCalls,
-    long TotalDurationMs);
+    long TotalDurationMs)
+{
+    public string? TerminalDetailCode { get; init; }
+
+    public int ZeroToolCallRounds { get; init; }
+
+    public int ContinuationCount { get; init; }
+
+    public string? LastFunctionCall { get; init; }
+
+    public int WriteToolCalls { get; init; }
+
+    public string? RunDirectory { get; init; }
+
+    public string? RequiredToolName { get; init; }
+
+    public bool RequiredToolSatisfied { get; init; }
+
+    public IReadOnlyList<string> ExecutedToolNames { get; init; } = [];
+
+    public IReadOnlyList<string> SuccessfulToolNames { get; init; } = [];
+
+    public IReadOnlyList<ChatMessage> FinalMessages { get; init; } = [];
+}
 
 public interface IModelClient
 {

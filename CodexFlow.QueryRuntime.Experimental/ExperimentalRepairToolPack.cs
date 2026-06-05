@@ -21,7 +21,7 @@ public static class ExperimentalRepairToolPack
         IQueryRuntimePolicyDecisionSink? policyDecisionSink = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
-        var workspaceRoot = ExperimentalWorkspacePath.NormalizeRoot(workspacePath);
+        var workspaceRoot = QueryRuntimePathSafety.NormalizeRoot(workspacePath);
         if (!Directory.Exists(workspaceRoot))
         {
             throw new DirectoryNotFoundException($"Workspace does not exist: {workspaceRoot}");
@@ -161,38 +161,9 @@ public static class ExperimentalRepairToolPack
 
     private static string ResolveWritablePath(string workspaceRoot, string path)
     {
-        var target = ExperimentalWorkspacePath.ResolveUnderRoot(workspaceRoot, path);
-        var relative = Path.GetRelativePath(workspaceRoot, target);
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (segments.Any(static segment =>
-                segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
-                segment.Equals(".qre", StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new InvalidOperationException("Protected workspace artifacts cannot be modified by repair tools.");
-        }
-
-        if (segments.Any(IsSecretLookingSegment))
-        {
-            throw new InvalidOperationException("Secret-looking paths cannot be modified by repair tools.");
-        }
-
+        var target = QueryRuntimePathSafety.ResolveUnderRoot(workspaceRoot, path);
+        QueryRuntimePathSafety.RejectProtectedWorkspacePath(workspaceRoot, target, "modified by repair tools");
         return target;
-    }
-
-    private static bool IsSecretLookingSegment(string segment)
-    {
-        if (string.IsNullOrWhiteSpace(segment))
-        {
-            return false;
-        }
-
-        var name = segment.Trim().ToLowerInvariant();
-        return name is ".env" or ".env.local" or ".netrc" or "id_rsa" or "id_dsa" or "id_ecdsa" or "id_ed25519" ||
-               name.Contains("secret", StringComparison.Ordinal) ||
-               name.Contains("token", StringComparison.Ordinal) ||
-               name.Contains("credential", StringComparison.Ordinal) ||
-               name.EndsWith(".pem", StringComparison.Ordinal) ||
-               name.EndsWith(".key", StringComparison.Ordinal);
     }
 
     private static async Task RecordEditedPathAsync(string workspaceRoot, string? runDirectory, string target)

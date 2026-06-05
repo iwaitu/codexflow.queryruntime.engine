@@ -54,6 +54,13 @@ public sealed record QueryRuntimeOutputOptions
 public sealed record QueryRuntimeExecutionOptions
 {
     public int MaxRounds { get; set; } = 3;
+
+    /// <summary>
+    /// Maximum number of host-requested continuation rounds allowed after a terminal
+    /// candidate. QRE fails closed when the stop gate still requires more work after
+    /// this limit or after <see cref="MaxRounds"/> is reached.
+    /// </summary>
+    public int MaxStopGateContinuations { get; set; } = 1;
 }
 
 public enum QreThinkingPolicy

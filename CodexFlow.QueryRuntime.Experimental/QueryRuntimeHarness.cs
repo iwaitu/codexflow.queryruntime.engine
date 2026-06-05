@@ -34,6 +34,14 @@ public sealed record ExperimentalQueryRuntimeRequest
 
     public string? RequiredToolName { get; init; }
 
+    public IReadOnlySet<string> WriteToolNames { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    public IQueryRuntimeToolIntervention? ToolIntervention { get; init; }
+
+    public IQueryRuntimeStopGate? StopGate { get; init; }
+
+    public int MaxStopGateContinuations { get; init; } = 1;
+
     public bool RequiresStructuredOutput { get; init; }
 
     public QreThinkingPolicy ThinkingPolicy { get; init; } = QreThinkingPolicy.Auto;
@@ -61,7 +69,30 @@ public sealed record ExperimentalQueryRuntimeResult(
     string TerminationReason,
     int TotalRounds,
     int TotalToolCalls,
-    long TotalDurationMs);
+    long TotalDurationMs)
+{
+    public string? TerminalDetailCode { get; init; }
+
+    public int ZeroToolCallRounds { get; init; }
+
+    public int ContinuationCount { get; init; }
+
+    public string? LastFunctionCall { get; init; }
+
+    public int WriteToolCalls { get; init; }
+
+    public string? RunDirectory { get; init; }
+
+    public string? RequiredToolName { get; init; }
+
+    public bool RequiredToolSatisfied { get; init; }
+
+    public IReadOnlyList<string> ExecutedToolNames { get; init; } = [];
+
+    public IReadOnlyList<string> SuccessfulToolNames { get; init; } = [];
+
+    public IReadOnlyList<ChatMessage> FinalMessages { get; init; } = [];
+}
 
 public interface IExperimentalQueryRuntimeHarness
 {
@@ -87,6 +118,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 RunId = request.RunId,
                 TraceRoot = request.TraceRoot,
                 MaxRounds = request.Execution.MaxRounds,
+                MaxStopGateContinuations = request.Execution.MaxStopGateContinuations,
                 EnableTools = !request.ToolProfile.IsNone,
                 ToolSearch = request.ToolSearch,
                 ToolProfile = request.ToolProfile,
@@ -106,7 +138,20 @@ public sealed class ExperimentalQueryRuntimeHarness(
             result.TerminationReason,
             result.TotalRounds,
             result.TotalToolCalls,
-            result.TotalDurationMs);
+            result.TotalDurationMs)
+        {
+            TerminalDetailCode = result.TerminalDetailCode,
+            ZeroToolCallRounds = result.ZeroToolCallRounds,
+            ContinuationCount = result.ContinuationCount,
+            LastFunctionCall = result.LastFunctionCall,
+            WriteToolCalls = result.WriteToolCalls,
+            RunDirectory = result.RunDirectory,
+            RequiredToolName = result.RequiredToolName,
+            RequiredToolSatisfied = result.RequiredToolSatisfied,
+            ExecutedToolNames = result.ExecutedToolNames,
+            SuccessfulToolNames = result.SuccessfulToolNames,
+            FinalMessages = result.FinalMessages
+        };
     }
 
     async Task<CodexFlow.QueryRuntime.Abstractions.QueryRuntimeResult> CodexFlow.QueryRuntime.Abstractions.IQueryRuntimeHostEngine.RunAsync(
@@ -125,6 +170,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 SessionId = request.SessionId,
                 TraceRoot = request.TraceRoot,
                 MaxRounds = request.Execution.MaxRounds,
+                MaxStopGateContinuations = request.Execution.MaxStopGateContinuations,
                 EnableTools = request.EnableTools ?? (request.Tools.Count > 0 || !request.ToolProfile.IsNone),
                 ToolSearch = request.ToolSearch,
                 ToolProfile = request.ToolProfile,
@@ -132,6 +178,9 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 Options = ResolveHostOptions(request.Options, request.OptionsCloneFactory, request.Output.RequestJson),
                 OptionsCloneFactory = request.OptionsCloneFactory,
                 RequiredToolName = request.RequiredToolName,
+                WriteToolNames = request.WriteToolNames,
+                ToolIntervention = request.ToolIntervention,
+                StopGate = request.StopGate,
                 RequiresStructuredOutput = request.Output.RequestJson,
                 ThinkingPolicy = request.ModelPolicy.ThinkingPolicy,
                 TextDeltaSink = request.TextDeltaSink,
@@ -148,7 +197,20 @@ public sealed class ExperimentalQueryRuntimeHarness(
             result.TerminationReason,
             result.TotalRounds,
             result.TotalToolCalls,
-            result.TotalDurationMs);
+            result.TotalDurationMs)
+        {
+            TerminalDetailCode = result.TerminalDetailCode,
+            ZeroToolCallRounds = result.ZeroToolCallRounds,
+            ContinuationCount = result.ContinuationCount,
+            LastFunctionCall = result.LastFunctionCall,
+            WriteToolCalls = result.WriteToolCalls,
+            RunDirectory = result.RunDirectory,
+            RequiredToolName = result.RequiredToolName,
+            RequiredToolSatisfied = result.RequiredToolSatisfied,
+            ExecutedToolNames = result.ExecutedToolNames,
+            SuccessfulToolNames = result.SuccessfulToolNames,
+            FinalMessages = result.FinalMessages
+        };
     }
 
     public async Task<ExperimentalQueryRuntimeResult> RunAsync(
@@ -164,10 +226,8 @@ public sealed class ExperimentalQueryRuntimeHarness(
         var sessionId = string.IsNullOrWhiteSpace(request.SessionId)
             ? $"qre-{runId}"
             : request.SessionId!;
-        var traceRoot = string.IsNullOrWhiteSpace(request.TraceRoot)
-            ? ResolveDefaultTraceRoot(request.WorkspacePath)
-            : request.TraceRoot!;
-        var traceFilePath = Path.Combine(traceRoot, "runs", runId, "events.jsonl");
+        var traceRoot = ResolveTraceRoot(request.WorkspacePath, request.TraceRoot);
+        var traceFilePath = ResolveTraceFilePath(traceRoot, runId);
         var started = ExperimentalRunStartedRecord.Create(runId, sessionId, request.WorkspacePath, prompt);
 
         await using var traceSink = await JsonlTraceEventSink.CreateAsync(traceFilePath, started, ct).ConfigureAwait(false);
@@ -176,6 +236,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
         try
         {
             var runDirectory = JsonlTraceStore.GetRunDirectory(traceFilePath);
+            var descriptors = ResolveProfileToolDescriptors(request.ToolProfile, request.WorkspacePath);
             var tools = request.Tools.Count > 0
                 ? request.Tools
                 : ResolveProfileTools(request.ToolProfile, request.WorkspacePath, traceSink, runDirectory);
@@ -185,16 +246,13 @@ public sealed class ExperimentalQueryRuntimeHarness(
             if (request.ToolSearch.Enabled && request.EnableTools)
             {
                 var toolSearchOptions = ResolveToolSearchOptions(request.ToolSearch, request.RequiredToolName);
-                var descriptors = request.Tools.Count > 0
+                var activeDescriptors = request.Tools.Count > 0
                     ? ExperimentalToolSearchSession.CreateDescriptors(request.ToolProfile, tools)
-                    : ExperimentalToolSearchSession.CreateDescriptors(
-                        request.ToolProfile,
-                        tools,
-                        ResolveProfileToolDescriptors(request.ToolProfile, request.WorkspacePath));
+                    : ExperimentalToolSearchSession.CreateDescriptors(request.ToolProfile, tools, descriptors);
                 var toolSearchSession = new ExperimentalToolSearchSession(
                     request.ToolProfile,
                     tools,
-                    descriptors,
+                    activeDescriptors,
                     toolSearchOptions);
                 toolSearchCatalog = toolSearchSession.GetCapabilityCatalog();
                 toolProvider = _ => toolSearchSession.GetActiveTools();
@@ -217,6 +275,10 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 AvailableTools = tools,
                 ToolProvider = toolProvider,
                 RequiredToolName = request.RequiredToolName,
+                WriteToolNames = ResolveWriteToolNames(request, descriptors),
+                ToolIntervention = request.ToolIntervention,
+                StopGate = request.StopGate,
+                MaxStopGateContinuations = request.MaxStopGateContinuations,
                 TextDeltaSink = request.TextDeltaSink
             };
 
@@ -247,7 +309,20 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 result.TerminationReason.ToString(),
                 result.TotalRounds,
                 result.TotalToolCalls,
-                result.TotalDurationMs);
+                result.TotalDurationMs)
+            {
+                TerminalDetailCode = result.TerminalDetailCode,
+                ZeroToolCallRounds = result.ZeroToolCallRounds,
+                ContinuationCount = result.ContinuationCount,
+                LastFunctionCall = result.LastFunctionCall,
+                WriteToolCalls = result.WriteToolCalls,
+                RunDirectory = result.RunDirectory,
+                RequiredToolName = result.RequiredToolName,
+                RequiredToolSatisfied = result.RequiredToolSatisfied,
+                ExecutedToolNames = result.ExecutedToolNames,
+                SuccessfulToolNames = result.SuccessfulToolNames,
+                FinalMessages = result.FinalMessages
+            };
         }
         catch (Exception ex)
         {
@@ -362,6 +437,59 @@ public sealed class ExperimentalQueryRuntimeHarness(
         return Path.Combine(Path.GetFullPath(root), ".qre");
     }
 
+    private static string ResolveTraceRoot(string? workspacePath, string? traceRoot)
+    {
+        if (string.IsNullOrWhiteSpace(traceRoot))
+        {
+            return ResolveDefaultTraceRoot(workspacePath);
+        }
+
+        var basePath = string.IsNullOrWhiteSpace(workspacePath)
+            ? Directory.GetCurrentDirectory()
+            : workspacePath!;
+        var fullTraceRoot = Path.IsPathFullyQualified(traceRoot)
+            ? Path.GetFullPath(traceRoot)
+            : Path.GetFullPath(Path.Combine(basePath, traceRoot));
+        RejectTraceRootSegments(fullTraceRoot);
+        return fullTraceRoot;
+    }
+
+    private static string ResolveTraceFilePath(string traceRoot, string runId)
+    {
+        ValidateRunId(runId);
+        return QueryRuntimePathSafety.ResolveUnderRoot(
+            traceRoot,
+            Path.Combine("runs", runId, "events.jsonl"));
+    }
+
+    private static void ValidateRunId(string runId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        if (runId is "." or ".." ||
+            runId.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0 ||
+            runId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            QueryRuntimePathSafety.IsSecretLookingSegment(runId))
+        {
+            throw new ArgumentException("RunId must be a single safe path segment.", nameof(runId));
+        }
+    }
+
+    private static void RejectTraceRootSegments(string traceRoot)
+    {
+        foreach (var segment in traceRoot.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (segment.Equals(".git", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Trace root cannot be inside a .git directory.");
+            }
+
+            if (QueryRuntimePathSafety.IsSecretLookingSegment(segment))
+            {
+                throw new InvalidOperationException("Trace root cannot contain secret-looking path segments.");
+            }
+        }
+    }
+
     private static IReadOnlyList<AIFunction> ResolveProfileTools(
         QueryRuntimeToolProfile profile,
         string? workspacePath,
@@ -405,5 +533,20 @@ public sealed class ExperimentalQueryRuntimeHarness(
         }
 
         return descriptors;
+    }
+
+    private static IReadOnlySet<string> ResolveWriteToolNames(
+        ExperimentalQueryRuntimeRequest request,
+        IReadOnlyList<QueryRuntimeToolDescriptor> descriptors)
+    {
+        if (request.WriteToolNames.Count > 0)
+        {
+            return request.WriteToolNames;
+        }
+
+        return descriptors
+            .Where(static descriptor => descriptor.Capabilities.Contains(QueryRuntimeCapabilities.WriteFileSystem))
+            .Select(static descriptor => descriptor.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 }

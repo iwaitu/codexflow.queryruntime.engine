@@ -189,6 +189,15 @@ public sealed record ExperimentalRunCompletedRecord(
     int TotalRounds,
     int TotalToolCalls,
     long TotalDurationMs,
+    string? TerminalDetailCode,
+    int ZeroToolCallRounds,
+    int ContinuationCount,
+    int WriteToolCalls,
+    string? LastFunctionCall,
+    string? RequiredToolName,
+    bool RequiredToolSatisfied,
+    IReadOnlyList<string> ExecutedToolNames,
+    IReadOnlyList<string> SuccessfulToolNames,
     DateTimeOffset Timestamp)
 {
     public static ExperimentalRunCompletedRecord Create(string runId, string sessionId, EngineQueryRuntimeResult result)
@@ -200,6 +209,15 @@ public sealed record ExperimentalRunCompletedRecord(
             result.TotalRounds,
             result.TotalToolCalls,
             result.TotalDurationMs,
+            result.TerminalDetailCode,
+            result.ZeroToolCallRounds,
+            result.ContinuationCount,
+            result.WriteToolCalls,
+            result.LastFunctionCall,
+            result.RequiredToolName,
+            result.RequiredToolSatisfied,
+            result.ExecutedToolNames,
+            result.SuccessfulToolNames,
             DateTimeOffset.UtcNow);
 }
 
@@ -257,6 +275,13 @@ public sealed record ExperimentalRunManifest(
     int TotalRounds,
     int TotalToolCalls,
     long TotalDurationMs,
+    string? TerminalDetailCode,
+    int ZeroToolCallRounds,
+    int ContinuationCount,
+    int WriteToolCalls,
+    string? LastFunctionCall,
+    string? RequiredToolName,
+    bool RequiredToolSatisfied,
     DateTimeOffset Timestamp)
 {
     public static ExperimentalRunManifest Completed(
@@ -280,6 +305,13 @@ public sealed record ExperimentalRunManifest(
             result.TotalRounds,
             result.TotalToolCalls,
             result.TotalDurationMs,
+            result.TerminalDetailCode,
+            result.ZeroToolCallRounds,
+            result.ContinuationCount,
+            result.WriteToolCalls,
+            result.LastFunctionCall,
+            result.RequiredToolName,
+            result.RequiredToolSatisfied,
             DateTimeOffset.UtcNow);
 
     public static ExperimentalRunManifest Failed(
@@ -303,6 +335,13 @@ public sealed record ExperimentalRunManifest(
             0,
             0,
             0,
+            null,
+            0,
+            0,
+            0,
+            null,
+            null,
+            false,
             DateTimeOffset.UtcNow);
 }
 
@@ -335,6 +374,8 @@ internal sealed record TraceRecord(
             ToolCallRequestedEvent => "tool.call.requested",
             ToolExecutionStartedEvent => "tool.execution.started",
             ToolExecutionCompletedEvent => "tool.execution.completed",
+            PolicyInterventionDecisionEvent => "policy.intervention.decision",
+            StopGateDecisionEvent => "stop.gate.decision",
             RoundStartedEvent => "round.started",
             RoundCompletedEvent => "round.completed",
             TerminatedEvent => "runtime.terminated",
@@ -350,7 +391,8 @@ internal sealed record TraceRecord(
                 ("MessageCount", evt.MessageCount),
                 ("ToolCallsAllowed", evt.ToolCallsAllowed),
                 ("ToolNames", StringArray(evt.ToolNames)),
-                ("RequiredToolName", evt.RequiredToolName)),
+                ("RequiredToolName", evt.RequiredToolName),
+                ("RequiredToolSatisfied", evt.RequiredToolSatisfied)),
             ModelResponseSampledEvent evt => Obj(
                 ("Round", evt.Round),
                 ("AssistantTextLength", evt.AssistantTextLength),
@@ -374,6 +416,22 @@ internal sealed record TraceRecord(
                 ("Success", evt.Success),
                 ("ResultLength", evt.ResultLength),
                 ("Result", evt.Result)),
+            PolicyInterventionDecisionEvent evt => Obj(
+                ("Round", evt.Round),
+                ("ToolName", evt.ToolName),
+                ("CallId", evt.CallId),
+                ("Decision", evt.Decision),
+                ("Reason", evt.Reason),
+                ("DetailCode", evt.DetailCode),
+                ("Feedback", evt.Feedback)),
+            StopGateDecisionEvent evt => Obj(
+                ("Round", evt.Round),
+                ("Decision", evt.Decision),
+                ("RequiredToolName", evt.RequiredToolName),
+                ("Reason", evt.Reason),
+                ("DetailCode", evt.DetailCode),
+                ("Feedback", evt.Feedback),
+                ("ContinuationCount", evt.ContinuationCount)),
             RoundStartedEvent evt => Obj(("Round", evt.Round), ("MaxRounds", evt.MaxRounds)),
             RoundCompletedEvent evt => Obj(
                 ("Round", evt.Round),
@@ -386,7 +444,13 @@ internal sealed record TraceRecord(
                 ("TotalRounds", evt.TotalRounds),
                 ("TotalToolCalls", evt.TotalToolCalls),
                 ("TotalDurationMs", evt.TotalDurationMs),
-                ("DetailCode", evt.DetailCode)),
+                ("DetailCode", evt.DetailCode),
+                ("ZeroToolCallRounds", evt.ZeroToolCallRounds),
+                ("ContinuationCount", evt.ContinuationCount),
+                ("WriteToolCalls", evt.WriteToolCalls),
+                ("LastFunctionCall", evt.LastFunctionCall),
+                ("RequiredToolName", evt.RequiredToolName),
+                ("RequiredToolSatisfied", evt.RequiredToolSatisfied)),
             ErrorEvent evt => Obj(
                 ("ErrorType", evt.ErrorType),
                 ("Message", evt.Message),

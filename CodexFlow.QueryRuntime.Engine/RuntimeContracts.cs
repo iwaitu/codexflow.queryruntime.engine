@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using HostContracts = CodexFlow.QueryRuntime.Abstractions;
 
 namespace CodexFlow.QueryRuntime.Engine;
 
@@ -46,6 +47,14 @@ public sealed record QueryRuntimeRequest
 
     public string? RequiredToolName { get; init; }
 
+    public IReadOnlySet<string> WriteToolNames { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    public HostContracts.IQueryRuntimeToolIntervention? ToolIntervention { get; init; }
+
+    public HostContracts.IQueryRuntimeStopGate? StopGate { get; init; }
+
+    public int MaxStopGateContinuations { get; init; } = 1;
+
     public Func<string, CancellationToken, ValueTask>? TextDeltaSink { get; init; }
 }
 
@@ -61,13 +70,37 @@ public sealed record QueryRuntimeResult(
     QueryTerminationReason TerminationReason,
     int TotalRounds,
     int TotalToolCalls,
-    long TotalDurationMs);
+    long TotalDurationMs)
+{
+    public string? TerminalDetailCode { get; init; }
+
+    public int ZeroToolCallRounds { get; init; }
+
+    public int ContinuationCount { get; init; }
+
+    public string? LastFunctionCall { get; init; }
+
+    public int WriteToolCalls { get; init; }
+
+    public string? RunDirectory { get; init; }
+
+    public string? RequiredToolName { get; init; }
+
+    public bool RequiredToolSatisfied { get; init; }
+
+    public IReadOnlyList<string> ExecutedToolNames { get; init; } = [];
+
+    public IReadOnlyList<string> SuccessfulToolNames { get; init; } = [];
+
+    public IReadOnlyList<ChatMessage> FinalMessages { get; init; } = [];
+}
 
 public enum QueryTerminationReason
 {
     NoToolCalls = 0,
     MaxRounds = 1,
-    Error = 2
+    Error = 2,
+    FailClosed = 3
 }
 
 public interface IQueryRuntimeEventSink
@@ -87,7 +120,9 @@ public enum QueryRuntimeEventType
     RoundStarted = 5,
     RoundCompleted = 6,
     Terminated = 7,
-    Error = 8
+    Error = 8,
+    PolicyInterventionDecision = 9,
+    StopGateDecision = 10
 }
 
 public abstract record QueryRuntimeEvent(
@@ -105,7 +140,8 @@ public sealed record PromptAssemblySnapshotEvent(
     int MessageCount,
     bool ToolCallsAllowed,
     IReadOnlyList<string> ToolNames,
-    string? RequiredToolName)
+    string? RequiredToolName,
+    bool RequiredToolSatisfied)
     : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
 
 public sealed record ModelResponseSampledEvent(
@@ -159,6 +195,34 @@ public sealed record ToolExecutionCompletedEvent(
     string Result)
     : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
 
+public sealed record PolicyInterventionDecisionEvent(
+    long Seq,
+    Guid QueryId,
+    string SessionId,
+    DateTimeOffset Timestamp,
+    int Round,
+    string ToolName,
+    string CallId,
+    string Decision,
+    string? Reason,
+    string? DetailCode,
+    string? Feedback)
+    : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
+
+public sealed record StopGateDecisionEvent(
+    long Seq,
+    Guid QueryId,
+    string SessionId,
+    DateTimeOffset Timestamp,
+    int Round,
+    string Decision,
+    string? RequiredToolName,
+    string? Reason,
+    string? DetailCode,
+    string? Feedback,
+    int ContinuationCount)
+    : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
+
 public sealed record RoundStartedEvent(
     long Seq,
     Guid QueryId,
@@ -189,7 +253,13 @@ public sealed record TerminatedEvent(
     int TotalRounds,
     int TotalToolCalls,
     long TotalDurationMs,
-    string? DetailCode)
+    string? DetailCode,
+    int ZeroToolCallRounds,
+    int ContinuationCount,
+    int WriteToolCalls,
+    string? LastFunctionCall,
+    string? RequiredToolName,
+    bool RequiredToolSatisfied)
     : QueryRuntimeEvent(Seq, QueryId, SessionId, Timestamp);
 
 public sealed record ErrorEvent(

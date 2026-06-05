@@ -292,7 +292,18 @@ internal static class QreCli
                     Path.Combine(JsonlTraceStore.GetRunDirectory(result.TraceFilePath), "manifest.json"),
                     result.TotalRounds,
                     result.TotalToolCalls,
-                    result.TotalDurationMs));
+                    result.TotalDurationMs)
+                {
+                    TerminalDetailCode = result.TerminalDetailCode,
+                    ZeroToolCallRounds = result.ZeroToolCallRounds,
+                    ContinuationCount = result.ContinuationCount,
+                    WriteToolCalls = result.WriteToolCalls,
+                    LastFunctionCall = result.LastFunctionCall,
+                    RequiredToolName = result.RequiredToolName,
+                    RequiredToolSatisfied = result.RequiredToolSatisfied,
+                    ExecutedToolNames = result.ExecutedToolNames,
+                    SuccessfulToolNames = result.SuccessfulToolNames
+                });
             }
             else
             {
@@ -314,6 +325,7 @@ internal static class QreCli
                 Console.WriteLine($"tools: {(tools.Count == 0 ? "none" : string.Join(',', tools.Select(tool => tool.Name)))}");
                 Console.WriteLine($"trace: {result.TraceFilePath}");
                 Console.WriteLine($"run_directory: {JsonlTraceStore.GetRunDirectory(result.TraceFilePath)}");
+                Console.WriteLine($"write_tool_calls: {result.WriteToolCalls}");
             }
 
             return 0;
@@ -2454,7 +2466,18 @@ internal static class QreCli
             Path.Combine(JsonlTraceStore.GetRunDirectory(result.TraceFilePath), "manifest.json"),
             result.TotalRounds,
             result.TotalToolCalls,
-            result.TotalDurationMs);
+            result.TotalDurationMs)
+        {
+            TerminalDetailCode = result.TerminalDetailCode,
+            ZeroToolCallRounds = result.ZeroToolCallRounds,
+            ContinuationCount = result.ContinuationCount,
+            WriteToolCalls = result.WriteToolCalls,
+            LastFunctionCall = result.LastFunctionCall,
+            RequiredToolName = result.RequiredToolName,
+            RequiredToolSatisfied = result.RequiredToolSatisfied,
+            ExecutedToolNames = result.ExecutedToolNames,
+            SuccessfulToolNames = result.SuccessfulToolNames
+        };
         await FinalizeRunArtifactsAsync(
             result.TraceFilePath,
             Path.GetFullPath(workspace),
@@ -2538,7 +2561,18 @@ internal static class QreCli
             Path.Combine(JsonlTraceStore.GetRunDirectory(result.TraceFilePath), "manifest.json"),
             result.TotalRounds,
             result.TotalToolCalls,
-            result.TotalDurationMs);
+            result.TotalDurationMs)
+        {
+            TerminalDetailCode = result.TerminalDetailCode,
+            ZeroToolCallRounds = result.ZeroToolCallRounds,
+            ContinuationCount = result.ContinuationCount,
+            WriteToolCalls = result.WriteToolCalls,
+            LastFunctionCall = result.LastFunctionCall,
+            RequiredToolName = result.RequiredToolName,
+            RequiredToolSatisfied = result.RequiredToolSatisfied,
+            ExecutedToolNames = result.ExecutedToolNames,
+            SuccessfulToolNames = result.SuccessfulToolNames
+        };
         await FinalizeRunArtifactsAsync(
             result.TraceFilePath,
             Path.GetFullPath(workspace),
@@ -3115,7 +3149,28 @@ internal static class QreCli
         string ManifestPath,
         int TotalRounds,
         int TotalToolCalls,
-        long TotalDurationMs);
+        long TotalDurationMs)
+    {
+        public string TerminationReason => Termination;
+
+        public string? TerminalDetailCode { get; init; }
+
+        public int ZeroToolCallRounds { get; init; }
+
+        public int ContinuationCount { get; init; }
+
+        public int WriteToolCalls { get; init; }
+
+        public string? LastFunctionCall { get; init; }
+
+        public string? RequiredToolName { get; init; }
+
+        public bool RequiredToolSatisfied { get; init; }
+
+        public IReadOnlyList<string> ExecutedToolNames { get; init; } = [];
+
+        public IReadOnlyList<string> SuccessfulToolNames { get; init; } = [];
+    }
 
     internal sealed record QreTraceLatestOutput(
         string Type,
@@ -3221,7 +3276,26 @@ internal static class QreCli
         string ManifestPath,
         int TotalRounds,
         int TotalToolCalls,
-        long TotalDurationMs);
+        long TotalDurationMs)
+    {
+        public string? TerminalDetailCode { get; init; }
+
+        public int ZeroToolCallRounds { get; init; }
+
+        public int ContinuationCount { get; init; }
+
+        public int WriteToolCalls { get; init; }
+
+        public string? LastFunctionCall { get; init; }
+
+        public string? RequiredToolName { get; init; }
+
+        public bool RequiredToolSatisfied { get; init; }
+
+        public IReadOnlyList<string> ExecutedToolNames { get; init; } = [];
+
+        public IReadOnlyList<string> SuccessfulToolNames { get; init; } = [];
+    }
 
     internal sealed record QreReplayStep(
         string Kind,

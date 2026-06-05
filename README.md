@@ -277,25 +277,31 @@ export PATH="$PWD/CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publi
 qre --version
 ```
 
-### Option 3: Build the NuGet library package
+### Option 3: Build the NuGet library packages
 
-QRE's NuGet output is the core Engine library. The `qre` CLI is distributed
-through the native release artifacts; it is not packed as a .NET tool package by
-default.
+QRE's NuGet output is the host-facing Abstractions library and the core Engine
+library. The `qre` CLI is distributed through the native release artifacts; it
+is not packed as a .NET tool package by default.
 
 ```bash
 scripts/qre-pack-nuget.sh Release
 ```
 
-The package is written to `artifacts/nuget`:
+The packages are written to `artifacts/nuget`:
 
+- `CodexFlow.QueryRuntime.Abstractions`
 - `CodexFlow.QueryRuntime.Engine`
+- `SHA256SUMS` with package checksums
 
 Override the package version with `QRE_PACKAGE_VERSION`:
 
 ```bash
 QRE_PACKAGE_VERSION=0.1.2 scripts/qre-pack-nuget.sh Release
 ```
+
+Downstream consumers should use package source mapping so
+`CodexFlow.QueryRuntime.*` resolves only from the intended local or production
+feed. See [docs/package-source-provenance.md](docs/package-source-provenance.md).
 
 ## Quickstart
 
