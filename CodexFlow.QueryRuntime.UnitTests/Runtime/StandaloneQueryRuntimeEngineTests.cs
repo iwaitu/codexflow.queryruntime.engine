@@ -95,6 +95,8 @@ public sealed class StandaloneQueryRuntimeEngineTests
         Assert.Equal(Qre.QueryTerminationReason.NoToolCalls, result.TerminationReason);
         Assert.Equal(2, result.TotalRounds);
         Assert.Equal(2, result.TotalToolCalls);
+        Assert.Single(model.Requests[0].Messages);
+        Assert.Equal(3, model.Requests[1].Messages.Count);
         Assert.Contains(sink.Events, evt => evt is Qre.TerminatedEvent terminated && terminated.TotalRounds == 2);
     }
 
@@ -135,6 +137,82 @@ public sealed class StandaloneQueryRuntimeEngineTests
         Assert.Equal("first second", result.FinalText);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_CopiesDerivedChatOptionsWithoutMutatingHostInstance()
+    {
+        var tool = AIFunctionFactory.Create(
+            () => "tool-result",
+            new AIFunctionFactoryOptions { Name = "custom_tool" });
+        var hostOptions = new DerivedChatOptions
+        {
+            Marker = "provider-specific",
+            Temperature = 0.2f
+        };
+        var model = new ScriptedModelClient(
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")]));
+        var sink = new CapturingEventSink();
+        Qre.IQueryRuntimeEngine engine = new Qre.QueryRuntimeEngine(model);
+
+        await engine.ExecuteAsync(
+            new Qre.QueryRuntimeRequest
+            {
+                SessionId = Guid.NewGuid().ToString("N"),
+                InitialMessages = [new ChatMessage(ChatRole.User, "test")],
+                Options = hostOptions,
+                MaxRounds = 1,
+                EnableTools = true,
+                AvailableTools = [tool]
+            },
+            sink,
+            "run-derived-options",
+            "/tmp/qre-test/events.jsonl",
+            workspacePath: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(hostOptions.Tools);
+        Assert.Null(hostOptions.ToolMode);
+        var runtimeOptions = Assert.IsType<DerivedChatOptions>(Assert.Single(model.Requests).Options);
+        Assert.NotSame(hostOptions, runtimeOptions);
+        Assert.Equal("provider-specific", runtimeOptions.Marker);
+        Assert.Single(runtimeOptions.Tools ?? []);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReturnsFailureToolResultForUnavailableToolCall()
+    {
+        var model = new ScriptedModelClient(
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("call-missing", "missing_tool", new Dictionary<string, object?>())]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")]));
+        var sink = new CapturingEventSink();
+        Qre.IQueryRuntimeEngine engine = new Qre.QueryRuntimeEngine(model);
+
+        var result = await engine.ExecuteAsync(
+            new Qre.QueryRuntimeRequest
+            {
+                SessionId = Guid.NewGuid().ToString("N"),
+                InitialMessages = [new ChatMessage(ChatRole.User, "test")],
+                MaxRounds = 2,
+                EnableTools = true
+            },
+            sink,
+            "run-missing-tool",
+            "/tmp/qre-test/events.jsonl",
+            workspacePath: null,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("done", result.FinalText);
+        Assert.Equal(0, result.TotalToolCalls);
+        Assert.Contains(model.Requests[1].Messages, message => message.Role == ChatRole.Tool && message.Contents.Count == 1);
+        Assert.Contains(
+            sink.Events,
+            evt => evt is Qre.ToolExecutionCompletedEvent completed &&
+                   completed.ToolName == "missing_tool" &&
+                   !completed.Success &&
+                   completed.Result.Contains("not currently available", StringComparison.Ordinal));
+    }
+
     private sealed class ScriptedModelClient(params ChatResponseUpdate[] responses) : Qre.IQueryRuntimeModelClient
     {
         private readonly Queue<ChatResponseUpdate> _responses = new(responses);
@@ -153,6 +231,11 @@ public sealed class StandaloneQueryRuntimeEngineTests
 
     private static string ReadText(ChatMessage message)
         => string.Concat(message.Contents.OfType<TextContent>().Select(static content => content.Text));
+
+    private sealed class DerivedChatOptions : ChatOptions
+    {
+        public string? Marker { get; set; }
+    }
 
     private sealed class CapturingEventSink : Qre.IQueryRuntimeEventSink
     {

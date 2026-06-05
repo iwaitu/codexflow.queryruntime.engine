@@ -112,12 +112,54 @@ var traceFilePath = Path.Combine(workspacePath, ".qre", "runs", runId, "events.j
 
 ## Facade 接口
 
-项目中还保留了一个更小的 facade 接口：
-`CodexFlow.QueryRuntime.Abstractions.IQueryRuntimeEngine`：
+`CodexFlow.QueryRuntime.Abstractions` 中现在有两个 facade contract。
+
+`IQueryRuntimeHostEngine` 是面向“作为类库嵌入”的宿主接口，用于让 QRE 替代已有
+in-process runtime。它可以接收已组装好的 `ChatMessage` 历史、自定义
+`AIFunction` 工具、required tool、provider `ChatOptions`、trace 位置、workspace
+路径，以及流式文本回调：
+
+```csharp
+public interface IQueryRuntimeHostEngine : IQueryRuntimeEngine
+{
+    Task<QueryRuntimeResult> RunAsync(
+        QueryRuntimeHostRequest request,
+        CancellationToken ct = default);
+}
+```
+
+示例：
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+Qre.IQueryRuntimeHostEngine runtime =
+    new ExperimentalQueryRuntimeHarness(
+        new ChatClientExperimentalModelClient(chatClient));
+
+var result = await runtime.RunAsync(
+    new Qre.QueryRuntimeHostRequest
+    {
+        InitialMessages = history,
+        WorkspacePath = workspacePath,
+        RunId = runId,
+        SessionId = sessionId,
+        Tools = customTools,
+        RequiredToolName = "repo_context",
+        Execution = new Qre.QueryRuntimeExecutionOptions { MaxRounds = 4 },
+        Options = chatOptions,
+        TextDeltaSink = (delta, ct) => StreamToClientAsync(delta, ct)
+    },
+    ct);
+```
+
+`IQueryRuntimeEngine` 仍然保留为更小的 CLI-style prompt facade：
 
 ```csharp
 Task<QueryRuntimeResult> RunAsync(QueryRuntimeRequest request, CancellationToken ct = default);
 ```
 
-该 facade 用于 experimental harness 和 CLI 风格的 prompt flow，不是 engine 层的多消息 contract。如果要在 .NET 应用中按消息数组管理多轮历史，应使用
+CodexFlow 这类 in-process 替换场景应优先使用 `IQueryRuntimeHostEngine`。只有在
+宿主需要直接控制 event sink 和 trace file 参数时，才使用更底层的
 `CodexFlow.QueryRuntime.Engine.IQueryRuntimeEngine`。

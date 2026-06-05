@@ -117,14 +117,55 @@ var traceFilePath = Path.Combine(workspacePath, ".qre", "runs", runId, "events.j
 
 ## Facade Interface
 
-There is also a smaller facade interface in
-`CodexFlow.QueryRuntime.Abstractions.IQueryRuntimeEngine`:
+There are two facade contracts in `CodexFlow.QueryRuntime.Abstractions`.
+
+`IQueryRuntimeHostEngine` is the library-facing contract for applications that
+want QRE to replace an existing in-process runtime. It accepts pre-assembled
+`ChatMessage` history, custom `AIFunction` tools, required-tool steering,
+provider `ChatOptions`, trace location, workspace path, and streaming text
+deltas:
+
+```csharp
+public interface IQueryRuntimeHostEngine : IQueryRuntimeEngine
+{
+    Task<QueryRuntimeResult> RunAsync(
+        QueryRuntimeHostRequest request,
+        CancellationToken ct = default);
+}
+```
+
+Example:
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+Qre.IQueryRuntimeHostEngine runtime =
+    new ExperimentalQueryRuntimeHarness(
+        new ChatClientExperimentalModelClient(chatClient));
+
+var result = await runtime.RunAsync(
+    new Qre.QueryRuntimeHostRequest
+    {
+        InitialMessages = history,
+        WorkspacePath = workspacePath,
+        RunId = runId,
+        SessionId = sessionId,
+        Tools = customTools,
+        RequiredToolName = "repo_context",
+        Execution = new Qre.QueryRuntimeExecutionOptions { MaxRounds = 4 },
+        Options = chatOptions,
+        TextDeltaSink = (delta, ct) => StreamToClientAsync(delta, ct)
+    },
+    ct);
+```
+
+`IQueryRuntimeEngine` remains the smaller CLI-style prompt facade:
 
 ```csharp
 Task<QueryRuntimeResult> RunAsync(QueryRuntimeRequest request, CancellationToken ct = default);
 ```
 
-That facade is used by the experimental harness and CLI-style prompt flow. It is
-not the engine-level multi-message contract. Use
-`CodexFlow.QueryRuntime.Engine.IQueryRuntimeEngine` when integrating QRE into a
-.NET application that already manages conversation history as a message list.
+Use `IQueryRuntimeHostEngine` for CodexFlow-style in-process replacement work.
+Use `CodexFlow.QueryRuntime.Engine.IQueryRuntimeEngine` only when the host needs
+the lower-level event-sink and trace-file control surface directly.

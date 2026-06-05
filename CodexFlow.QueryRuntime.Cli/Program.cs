@@ -156,6 +156,17 @@ internal static class QreCli
                 case "--external":
                     options.IncludeExternalTools = true;
                     break;
+                case "--tool-search":
+                    options.ToolSearch.Enabled = true;
+                    break;
+                case "--tool-search-top-k":
+                    if (++i >= args.Length || !int.TryParse(args[i], out var toolSearchTopK) || toolSearchTopK <= 0)
+                    {
+                        return Fail("--tool-search-top-k requires a positive integer.");
+                    }
+                    options.ToolSearch.Enabled = true;
+                    options.ToolSearch.TopK = toolSearchTopK;
+                    break;
                 case "--help":
                 case "-h":
                     PrintRunHelp();
@@ -234,6 +245,7 @@ internal static class QreCli
                     WorkspacePath = resolvedWorkspace,
                     MaxRounds = options.Runtime.MaxRounds,
                     EnableTools = tools.Count > 0,
+                    ToolSearch = options.ToolSearch,
                     ToolProfile = options.ToolProfile,
                     RequiresStructuredOutput = options.Output.RequestJson,
                     ThinkingPolicy = options.ModelPolicy.ThinkingPolicy,
@@ -2783,6 +2795,8 @@ internal static class QreCli
         Console.WriteLine("  --runner <name>         local or docker for verify tool execution. Defaults to local.");
         Console.WriteLine("  --docker-image <image>  Docker image for --runner docker. Env fallback: QRE_DOCKER_IMAGE.");
         Console.WriteLine("  --external              Include .qre/tools/*.json stdio tool manifests.");
+        Console.WriteLine("  --tool-search           Start with tool_search and lazy-activate profile tools.");
+        Console.WriteLine("  --tool-search-top-k <n> Max search hits to activate. Defaults to 5.");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
         Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
         Console.WriteLine("  --thinking <mode>       auto, off, on, or preserve. Defaults to auto.");
@@ -3074,6 +3088,8 @@ internal static class QreCli
         public QueryRuntimeOutputOptions Output { get; } = new();
 
         public QueryRuntimeExecutionOptions Runtime { get; } = new();
+
+        public QueryRuntimeToolSearchOptions ToolSearch { get; } = new();
 
         public string Runner { get; set; } = "local";
 

@@ -68,6 +68,9 @@ validation, and replay debugging.
 - **External tool manifests** — declare `stdio` or minimal `mcp-stdio` tools via
   `.qre/tools/*.json`, using an out-of-process, manifest-first design compatible
   with Native AOT.
+- **Lazy tool activation** — opt into `tool_search` so the model starts with a
+  small always-on tool surface, searches capabilities, and activates deferred
+  tools for later rounds.
 - **Python function tools** — Python projects can decorate ordinary functions,
   generate manifests, and register them as QRE tools without taking over the
   LLM tool-call loop.
@@ -97,6 +100,147 @@ Test projects:
 This repo intentionally does **not** include `CodexFlow.Core`. Core-side bridge
 coverage belongs in the original CodexFlow repo, with Core consuming QueryRuntime
 through adapters.
+
+## Embedding as a .NET library
+
+Use `CodexFlow.QueryRuntime.Abstractions.IQueryRuntimeHostEngine` when another
+.NET application needs QRE to replace its existing in-process runtime. This
+contract accepts message history, custom `AIFunction` tools, required-tool
+steering, provider `ChatOptions`, trace/workspace paths, and streaming text
+deltas. The CLI can stay smaller; the host facade is the replacement surface.
+
+Reference the library projects or packages that match the surface you need:
+
+- `CodexFlow.QueryRuntime.Abstractions` for the stable host-facing contracts.
+- `CodexFlow.QueryRuntime.Experimental` for the current ready-to-use harness,
+  trace writer, built-in tool packs, and `IChatClient` adapter.
+- `CodexFlow.QueryRuntime.Models` when the host wants QRE to construct a
+  provider-specific `IChatClient` from endpoint/model settings.
+
+For direct project references during local integration:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="..\codexflow.queryruntime.engine\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
+  <ProjectReference Include="..\codexflow.queryruntime.engine\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
+  <ProjectReference Include="..\codexflow.queryruntime.engine\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />
+</ItemGroup>
+```
+
+Create the runtime from any `Microsoft.Extensions.AI.IChatClient`. The host can
+build the chat client itself, or use `QreModelProviderSelector.CreateDefault()`
+from `CodexFlow.QueryRuntime.Models` to select one of QRE's provider adapters.
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+var chatClient = QreModelProviderSelector.CreateDefault().CreateClient(
+    apiUrl: configuration["QRE_API_URL"]!,
+    apiKey: configuration["QRE_API_KEY"]!,
+    model: configuration["QRE_MODEL"]!,
+    apiMode: configuration["QRE_API_MODE"]);
+
+Qre.IQueryRuntimeHostEngine runtime =
+    new ExperimentalQueryRuntimeHarness(
+        new ChatClientExperimentalModelClient(chatClient));
+```
+
+Then call QRE with the host's existing conversation state and tool surface:
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using Microsoft.Extensions.AI;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+var customTools = new[]
+{
+    AIFunctionFactory.Create(
+        (string path) => repository.ReadContext(path),
+        new AIFunctionFactoryOptions
+        {
+            Name = "repo_context",
+            Description = "Read repository context for a relative path."
+        })
+};
+
+var result = await runtime.RunAsync(
+    new Qre.QueryRuntimeHostRequest
+    {
+        InitialMessages = history,
+        WorkspacePath = workspacePath,
+        RunId = runId,
+        SessionId = sessionId,
+        Tools = customTools,
+        RequiredToolName = "repo_context",
+        Execution = new Qre.QueryRuntimeExecutionOptions { MaxRounds = 4 },
+        Options = chatOptions,
+        TextDeltaSink = (delta, ct) => StreamToClientAsync(delta, ct)
+    },
+    ct);
+```
+
+Important request fields:
+
+- `InitialMessages` is the host-owned multi-turn context. Use it instead of
+  flattening prior turns into one prompt. When ToolSearch is enabled, QRE
+  prepends its own small discovery system message and leaves the host messages
+  intact.
+- `Tools` exposes custom host tools to the model; set `EnableTools = false` to
+  temporarily disable tools while keeping the tool list configured.
+- `ToolProfile` can add QRE's built-in workspace tools (`readonly`, `verify`,
+  `repair`) when the host wants them.
+- `RequiredToolName` forces the model to call a specific tool before normal tool
+  mode resumes. With ToolSearch enabled, that required tool remains visible in
+  the first round so provider APIs receive a declared schema.
+- `Options` passes provider options such as model id, temperature, response
+  format, and provider-specific `VllmChatOptions`. QRE copies per-run options
+  before injecting tools so host-owned options are not mutated.
+- `Output.RequestJson = true` requests provider-level JSON output. `Output.Json`
+  and `Output.Stream` are CLI formatting flags; library hosts should inspect
+  `QueryRuntimeResult` and use `TextDeltaSink`.
+- `TextDeltaSink` receives streamed assistant text deltas for the host UI or API.
+- `TimeProvider` and `QueryIdFactory` are available for deterministic tests and
+  replay-oriented host integrations.
+- `ToolSearch = new QueryRuntimeToolSearchOptions { Enabled = true }` enables
+  lazy activation for the host facade. Set `TopK`, `AlwaysOnToolNames`, or
+  `DeferredToolNames` when the host needs tighter control over the initial tool
+  surface.
+
+For ASP.NET Core dependency injection, register the chat client and host engine
+behind the abstraction:
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+builder.Services.AddSingleton<IChatClient>(sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    return QreModelProviderSelector.CreateDefault().CreateClient(
+        configuration["QRE_API_URL"]!,
+        configuration["QRE_API_KEY"]!,
+        configuration["QRE_MODEL"]!,
+        configuration["QRE_API_MODE"]);
+});
+
+builder.Services.AddScoped<Qre.IQueryRuntimeHostEngine>(sp =>
+    new ExperimentalQueryRuntimeHarness(
+        new ChatClientExperimentalModelClient(sp.GetRequiredService<IChatClient>())));
+```
+
+Use the lower-level `CodexFlow.QueryRuntime.Engine.IQueryRuntimeEngine` only when
+the host needs to own event sinks and trace file creation directly. Use the `qre`
+CLI when you want a subprocess/native-binary workflow instead of an in-process
+library replacement.
+
+See [docs/IQueryRuntimeEngine.md](docs/IQueryRuntimeEngine.md) for the full
+engine and facade contract. See [docs/toolsearch.md](docs/toolsearch.md) for the
+lazy tool activation design.
 
 ## Install
 
@@ -155,6 +299,17 @@ Emits a single `qre.run.completed` JSON object:
 qre run --workspace . --profile readonly --max-rounds 3 \
   "Find the most important runtime entry points and explain them."
 ```
+
+For a smaller initial tool schema, enable lazy activation:
+
+```bash
+qre run --workspace . --profile readonly --tool-search --tool-search-top-k 3 \
+  "Find the files that define the runtime engine."
+```
+
+With `--tool-search`, the first model round sees only `tool_search`. The search
+tool returns scored matches with risk, matched fields, required/optional args,
+and activation status; activated tools are injected on later rounds.
 
 ### 3. Inspect the trace and replay it
 
@@ -405,6 +560,7 @@ platform:
 
 - [docs/queryruntime-technical-guide.md](docs/queryruntime-technical-guide.md) — technical guide (positioning, architecture, usage, roadmap).
 - [docs/IQueryRuntimeEngine.md](docs/IQueryRuntimeEngine.md) — unified execution engine design.
+- [docs/toolsearch.md](docs/toolsearch.md) — lazy tool activation design.
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — open-source harness strategy.
 - [docs/queryruntime-pre-release-work-plan.md](docs/queryruntime-pre-release-work-plan.md) — pre-release work plan ([中文](docs/queryruntime-pre-release-work-plan.zh-CN.md)).
 - [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md) — archived completed development plan.

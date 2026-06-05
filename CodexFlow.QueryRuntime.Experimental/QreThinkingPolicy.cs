@@ -17,7 +17,9 @@ public static class QreModelExecutionPolicy
 
         if (!shouldDisableThinking && !shouldEnableThinking)
         {
-            return options ?? new ChatOptions();
+            return options is VllmChatOptions
+                ? CopyToVllmOptions(options)
+                : options ?? new ChatOptions();
         }
 
         var runtimeOptions = CopyToVllmOptions(options);
@@ -56,6 +58,7 @@ public static class QreModelExecutionPolicy
 
         if (source is VllmChatOptions vllmSource)
         {
+            destination.ThinkingEnabled = vllmSource.ThinkingEnabled;
             destination.EnableSkills = vllmSource.EnableSkills;
             destination.SkillDirectoryPath = vllmSource.SkillDirectoryPath;
             destination.EnableLegacyToolCallTextFallback = vllmSource.EnableLegacyToolCallTextFallback;

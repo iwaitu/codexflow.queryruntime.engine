@@ -33,10 +33,21 @@ public sealed record QueryRuntimeModelPolicyOptions
 
 public sealed record QueryRuntimeOutputOptions
 {
+    /// <summary>
+    /// Requests provider-level JSON response format when supported.
+    /// </summary>
     public bool RequestJson { get; set; }
 
+    /// <summary>
+    /// CLI output formatting flag. Host integrations should inspect
+    /// <see cref="QueryRuntimeResult"/> instead.
+    /// </summary>
     public bool Json { get; set; }
 
+    /// <summary>
+    /// CLI stdout streaming flag. Host integrations should use
+    /// <see cref="QueryRuntimeHostRequest.TextDeltaSink"/> for text deltas.
+    /// </summary>
     public bool Stream { get; set; }
 }
 

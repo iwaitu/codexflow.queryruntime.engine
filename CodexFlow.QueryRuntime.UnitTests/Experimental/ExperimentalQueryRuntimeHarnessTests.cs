@@ -425,6 +425,212 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
     }
 
     [Fact]
+    public async Task RunAsync_ToolSearchActivatesDeferredTool_ForNextRound()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        File.WriteAllText(Path.Combine(workspace.Path, "README.md"), "hello qre");
+        var model = new RecordingExperimentalModelClient(
+            [new FunctionCallContent(
+                "call-search",
+                "tool_search",
+                new Dictionary<string, object?> { ["query"] = "read file", ["top_k"] = 1 })],
+            [new FunctionCallContent(
+                "call-read",
+                "qre_read_file",
+                new Dictionary<string, object?> { ["path"] = "README.md", ["max_lines"] = 5 })],
+            [new TextContent("done")]);
+        var harness = new ExperimentalQueryRuntimeHarness(model);
+
+        var result = await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                Prompt = "read README",
+                WorkspacePath = workspace.Path,
+                RunId = "run-tool-search-activation",
+                MaxRounds = 4,
+                EnableTools = true,
+                ToolProfile = QueryRuntimeToolProfile.ReadOnly,
+                ToolSearch = new QueryRuntimeToolSearchOptions { Enabled = true, TopK = 1 }
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("done", result.FinalText);
+        Assert.Equal(2, result.TotalToolCalls);
+        Assert.Contains(
+            model.Requests[0].Messages,
+            message => message.Role == ChatRole.System &&
+                ReadText(message).Contains("qre_read_file", StringComparison.Ordinal));
+        var snapshots = ReadJsonl(result.TraceFilePath)
+            .Where(record => record.RootElement.GetProperty("Type").GetString() == "model.request")
+            .Select(record => record.RootElement.GetProperty("Data").GetProperty("ToolNames").EnumerateArray().Select(item => item.GetString()).ToArray())
+            .ToArray();
+        Assert.Contains("tool_search", snapshots[0]);
+        Assert.DoesNotContain("qre_read_file", snapshots[0]);
+        Assert.Contains("qre_read_file", snapshots[1]);
+    }
+
+    [Fact]
+    public async Task RunAsync_ToolSearchAddsCatalog_ForHostInitialMessages()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var model = new RecordingExperimentalModelClient([new TextContent("done")]);
+        var harness = new ExperimentalQueryRuntimeHarness(model);
+
+        await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                InitialMessages =
+                [
+                    new ChatMessage(ChatRole.System, "host system"),
+                    new ChatMessage(ChatRole.User, "read README")
+                ],
+                WorkspacePath = workspace.Path,
+                RunId = "run-tool-search-host-messages",
+                MaxRounds = 1,
+                EnableTools = true,
+                ToolProfile = QueryRuntimeToolProfile.ReadOnly,
+                ToolSearch = new QueryRuntimeToolSearchOptions { Enabled = true, TopK = 1 }
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(3, model.Requests[0].Messages.Count);
+        Assert.Equal(ChatRole.System, model.Requests[0].Messages[0].Role);
+        Assert.Contains("tool_search", ReadText(model.Requests[0].Messages[0]), StringComparison.Ordinal);
+        Assert.Contains("qre_read_file", ReadText(model.Requests[0].Messages[0]), StringComparison.Ordinal);
+        Assert.Equal("host system", ReadText(model.Requests[0].Messages[1]));
+        Assert.Equal(["tool_search"], model.Requests[0].Options?.Tools?.Select(tool => tool.Name).ToArray() ?? []);
+    }
+
+    [Fact]
+    public async Task RunAsync_ToolSearchKeepsRequiredToolVisibleInFirstRound()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var model = new RecordingExperimentalModelClient(
+            [new FunctionCallContent(
+                "call-read",
+                "qre_read_file",
+                new Dictionary<string, object?> { ["path"] = "README.md", ["max_lines"] = 5 })],
+            [new TextContent("done")]);
+        var harness = new ExperimentalQueryRuntimeHarness(model);
+
+        await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                Prompt = "read README",
+                WorkspacePath = workspace.Path,
+                RunId = "run-tool-search-required",
+                MaxRounds = 2,
+                EnableTools = true,
+                ToolProfile = QueryRuntimeToolProfile.ReadOnly,
+                RequiredToolName = "qre_read_file",
+                ToolSearch = new QueryRuntimeToolSearchOptions { Enabled = true, TopK = 1 }
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["qre_read_file", "tool_search"],
+            model.Requests[0].Options?.Tools?.Select(tool => tool.Name).Order(StringComparer.Ordinal).ToArray() ?? []);
+        var requiredMode = Assert.IsType<RequiredChatToolMode>(model.Requests[0].Options?.ToolMode);
+        Assert.Equal("qre_read_file", requiredMode.RequiredFunctionName);
+    }
+
+    [Fact]
+    public void ToolSearch_SelectActivatesExactDeferredToolName()
+    {
+        var profile = QueryRuntimeToolProfile.ReadOnly;
+        var readTool = AIFunctionFactory.Create(
+            (string path) => $"read {path}",
+            new AIFunctionFactoryOptions { Name = "qre_read_file", Description = "Read a file." });
+        var descriptor = new ExperimentalToolRegistry().ListTools(profile)
+            .Single(descriptor => descriptor.Name == "qre_read_file");
+        var session = new ExperimentalToolSearchSession(
+            profile,
+            [readTool],
+            [descriptor],
+            new QueryRuntimeToolSearchOptions { Enabled = true });
+
+        using var result = JsonDocument.Parse(session.Search("select:qre_read_file"));
+
+        var tool = Assert.Single(result.RootElement.GetProperty("tools").EnumerateArray());
+        Assert.Equal("qre_read_file", tool.GetProperty("name").GetString());
+        Assert.True(tool.GetProperty("activated").GetBoolean());
+        Assert.Contains("qre_read_file", session.ActiveToolNames);
+    }
+
+    [Fact]
+    public void ToolSearch_UsesPlainTextByDefault_AndSupportsExplicitRegex()
+    {
+        var profile = QueryRuntimeToolProfile.ReadOnly;
+        var descriptors = new[]
+        {
+            new QueryRuntimeToolDescriptor(
+                "git_status",
+                "Inspect git status.",
+                new HashSet<string>(StringComparer.Ordinal),
+                profile,
+                new QueryRuntimeToolDiscoveryMetadata(
+                    "Inspect git status.",
+                    ["git", "status"],
+                    [],
+                    [],
+                    [],
+                    "git"),
+                QueryRuntimeToolLoading.Deferred)
+        };
+
+        var plain = QueryRuntimeToolSearch.Search(
+            descriptors,
+            new QueryRuntimeToolSearchRequest
+            {
+                Query = "^git_status$",
+                Profile = profile,
+                TopK = 5
+            });
+        var regex = QueryRuntimeToolSearch.Search(
+            descriptors,
+            new QueryRuntimeToolSearchRequest
+            {
+                Query = "regex:git_status",
+                Profile = profile,
+                TopK = 5
+            });
+
+        Assert.Empty(plain);
+        Assert.Contains(regex, hit => hit.Tool.Name == "git_status");
+        Assert.Contains(regex, hit => hit.MatchedFields.Contains("regex"));
+    }
+
+    [Fact]
+    public void ToolSearch_TopKAndRiskLimitActivation()
+    {
+        var profile = QueryRuntimeToolProfile.Repair;
+        var writeTool = AIFunctionFactory.Create(
+            (string path, string content) => $"write {path}",
+            new AIFunctionFactoryOptions { Name = "qre_write_file", Description = "Write a file." });
+        var patchTool = AIFunctionFactory.Create(
+            (string path, string old_text, string new_text) => $"patch {path}",
+            new AIFunctionFactoryOptions { Name = "qre_apply_patch", Description = "Apply a patch." });
+        var descriptors = new ExperimentalToolRegistry().ListTools(profile)
+            .Where(descriptor => descriptor.Name is "qre_write_file" or "qre_apply_patch")
+            .ToArray();
+        var session = new ExperimentalToolSearchSession(
+            profile,
+            [writeTool, patchTool],
+            descriptors,
+            new QueryRuntimeToolSearchOptions { Enabled = true, TopK = 1 });
+
+        using var readResult = JsonDocument.Parse(session.Search("file", top_k: 1));
+        Assert.Equal(1, readResult.RootElement.GetProperty("tools").GetArrayLength());
+        Assert.False(readResult.RootElement.GetProperty("tools")[0].GetProperty("activated").GetBoolean());
+
+        using var writeResult = JsonDocument.Parse(session.Search("patch file", top_k: 1));
+        Assert.Equal(1, writeResult.RootElement.GetProperty("tools").GetArrayLength());
+        Assert.True(writeResult.RootElement.GetProperty("tools")[0].GetProperty("activated").GetBoolean());
+        Assert.Contains("qre_apply_patch", session.ActiveToolNames);
+        Assert.DoesNotContain("qre_write_file", session.ActiveToolNames);
+    }
+
+    [Fact]
     public async Task JsonlTraceStore_ReadLatestAsync_ReturnsSummary()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -737,6 +943,9 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .Select(line => JsonDocument.Parse(line))
             .ToList();
+
+    private static string ReadText(ChatMessage message)
+        => string.Concat(message.Contents.OfType<TextContent>().Select(static content => content.Text));
 
     private sealed class ScriptedExperimentalModelClient(params IReadOnlyList<AIContent>[] steps) : IExperimentalModelClient
     {

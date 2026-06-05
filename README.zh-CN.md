@@ -47,6 +47,8 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
   drop capabilities、seccomp 等）。
 - **外部工具 manifest**：`.qre/tools/*.json` 可声明 `stdio` 或最小 `mcp-stdio`
   工具，采用 out-of-process、manifest-first 设计，兼容 Native AOT 路径。
+- **延迟工具激活**：可启用 `tool_search`，让模型从很小的 always-on 工具面开始，
+  按能力搜索并在后续轮次激活 deferred 工具。
 - **Python function tools**：Python 项目可以给普通函数加装饰器，生成 manifest，
   再注册成 QRE tools；LLM tool-call loop 仍由 QRE 接管。
 - **机器可读输出**：`--json` CLI 输出、`qre trace latest --jsonl`、
@@ -74,6 +76,49 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
 
 本仓库刻意不包含 `CodexFlow.Core`。Core 侧的 bridge 覆盖属于原始 CodexFlow
 仓库，由 Core 通过 adapter 消费 QueryRuntime。
+
+## 作为 .NET 类库嵌入
+
+当另一个 .NET 应用需要让 QRE 替代现有 in-process runtime 时，应使用
+`CodexFlow.QueryRuntime.Abstractions.IQueryRuntimeHostEngine`。这个 contract
+可以接收多轮 `ChatMessage` 历史、自定义 `AIFunction` 工具、required-tool
+控制、provider `ChatOptions`、trace/workspace 路径，以及流式文本回调。CLI
+可以保持较小；host facade 才是完整替代旧 runtime 的类库入口。
+
+启用 `ToolSearch` 时，即使宿主传入的是 `InitialMessages`，QRE 也会在最前面
+插入一条很小的 discovery system message，包含 `tool_search` 用法和 deferred
+tools 目录；宿主原始消息保持不变。若同时设置 `RequiredToolName`，该 required
+tool 会在首轮保持可见，避免 provider 收到“要求调用但未声明 schema”的工具模式。
+
+```csharp
+using CodexFlow.QueryRuntime.Experimental;
+using Microsoft.Extensions.AI;
+using Qre = CodexFlow.QueryRuntime.Abstractions;
+
+Qre.IQueryRuntimeHostEngine runtime =
+    new ExperimentalQueryRuntimeHarness(
+        new ChatClientExperimentalModelClient(chatClient));
+
+var result = await runtime.RunAsync(
+    new Qre.QueryRuntimeHostRequest
+    {
+        InitialMessages = history,
+        WorkspacePath = workspacePath,
+        RunId = runId,
+        SessionId = sessionId,
+        Tools = customTools,
+        RequiredToolName = "repo_context",
+        Execution = new Qre.QueryRuntimeExecutionOptions { MaxRounds = 4 },
+        ToolSearch = new Qre.QueryRuntimeToolSearchOptions { Enabled = true, TopK = 3 },
+        Options = chatOptions,
+        TextDeltaSink = (delta, ct) => StreamToClientAsync(delta, ct)
+    },
+    ct);
+```
+
+完整 engine 与 facade contract 见
+[docs/IQueryRuntimeEngine.zh-CN.md](docs/IQueryRuntimeEngine.zh-CN.md)。延迟工具激活设计见
+[docs/toolsearch.md](docs/toolsearch.md)。
 
 ## 安装
 
@@ -131,6 +176,16 @@ qre run --workspace . --response "offline smoke" --json "analyze this repo"
 qre run --workspace . --profile readonly --max-rounds 3 \
   "Find the most important runtime entry points and explain them."
 ```
+
+如果希望缩小首轮工具 schema，可启用延迟工具激活：
+
+```bash
+qre run --workspace . --profile readonly --tool-search --tool-search-top-k 3 \
+  "Find the files that define the runtime engine."
+```
+
+启用 `--tool-search` 后，首轮模型只看到 `tool_search`。搜索结果会返回 score、
+风险、命中字段、必填/可选参数和激活状态；被激活的工具会在后续轮次注入。
 
 ### 3. 查看 trace 与 replay
 
@@ -361,6 +416,7 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 
 - [docs/queryruntime-technical-guide.zh-CN.md](docs/queryruntime-technical-guide.zh-CN.md) — 技术说明（定位、架构、用法、演进路径）。
 - [docs/IQueryRuntimeEngine.zh-CN.md](docs/IQueryRuntimeEngine.zh-CN.md) — 统一执行引擎详细设计。
+- [docs/toolsearch.md](docs/toolsearch.md) — `tool_search` 延迟工具激活设计。
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — 开源 harness 策略（英文）。
 - [docs/queryruntime-pre-release-work-plan.zh-CN.md](docs/queryruntime-pre-release-work-plan.zh-CN.md) — pre-release 工作计划。
 - [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md) — 已归档的完成态开发计划。

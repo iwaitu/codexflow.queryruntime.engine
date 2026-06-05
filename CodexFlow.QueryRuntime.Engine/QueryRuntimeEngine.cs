@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Engine;
@@ -55,12 +56,13 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
         {
             for (var round = 0; round < Math.Max(1, request.MaxRounds); round++)
             {
+                var currentTools = ResolveTools(request, round, requiredToolSatisfied);
                 await EmitAsync(
                     eventSink,
                     QueryRuntimeEventType.RoundStarted,
                     new RoundStartedEvent(++seq, queryId, request.SessionId, Now(), round, request.MaxRounds)).ConfigureAwait(false);
 
-                var options = PrepareOptions(request, requiredToolSatisfied);
+                var options = PrepareOptions(request, currentTools, requiredToolSatisfied);
                 await EmitAsync(
                     eventSink,
                     QueryRuntimeEventType.PromptAssemblySnapshot,
@@ -72,13 +74,13 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
                         round,
                         messages.Count,
                         request.EnableTools,
-                        options.Tools?.Select(tool => tool.Name).ToArray() ?? [],
+                        currentTools.Select(tool => tool.Name).ToArray(),
                         request.RequiredToolName)).ConfigureAwait(false);
 
                 var textParts = new List<string>();
                 var functionCalls = new List<FunctionCallContent>();
                 await foreach (var update in _modelClient.StreamAsync(
-                                   new QueryRuntimeModelRequest(messages, options, runId, workspacePath),
+                                   new QueryRuntimeModelRequest(messages.ToArray(), options, runId, workspacePath),
                                    ct).ConfigureAwait(false))
                 {
                     foreach (var content in update.Contents)
@@ -141,16 +143,32 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
                 var toolMessages = new List<AIContent>();
                 foreach (var functionCall in functionCalls)
                 {
-                    var tool = request.AvailableTools.FirstOrDefault(candidate =>
-                        string.Equals(candidate.Name, functionCall.Name, StringComparison.OrdinalIgnoreCase));
-                    if (tool == null)
-                    {
-                        continue;
-                    }
-
                     var arguments = functionCall.Arguments == null
                         ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                         : new Dictionary<string, object?>(functionCall.Arguments, StringComparer.OrdinalIgnoreCase);
+                    var tool = currentTools.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Name, functionCall.Name, StringComparison.OrdinalIgnoreCase));
+                    if (tool == null)
+                    {
+                        var missingToolResult = $"Tool '{functionCall.Name}' is not currently available. Use tool_search first if the tool is deferred, or choose one of the currently declared tools.";
+                        toolMessages.Add(new FunctionResultContent(functionCall.CallId, missingToolResult));
+                        await EmitAsync(
+                            eventSink,
+                            QueryRuntimeEventType.ToolExecutionCompleted,
+                            new ToolExecutionCompletedEvent(
+                                ++seq,
+                                queryId,
+                                request.SessionId,
+                                Now(),
+                                round,
+                                functionCall.Name,
+                                functionCall.CallId,
+                                false,
+                                missingToolResult.Length,
+                                missingToolResult)).ConfigureAwait(false);
+                        continue;
+                    }
+
                     await EmitAsync(
                         eventSink,
                         QueryRuntimeEventType.ToolCallRequested,
@@ -233,15 +251,28 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
         }
     }
 
-    private static ChatOptions PrepareOptions(QueryRuntimeRequest request, bool requiredToolSatisfied)
+    private static IReadOnlyList<AIFunction> ResolveTools(
+        QueryRuntimeRequest request,
+        int round,
+        bool requiredToolSatisfied)
+        => request.ToolProvider?.Invoke(new QueryRuntimeToolResolutionContext(round, requiredToolSatisfied)) ??
+           request.AvailableTools;
+
+    private static ChatOptions PrepareOptions(
+        QueryRuntimeRequest request,
+        IReadOnlyList<AIFunction> tools,
+        bool requiredToolSatisfied)
     {
-        var options = request.Options ?? new ChatOptions();
-        if (request.EnableTools && request.AvailableTools.Count > 0)
+        var options = CreateRuntimeOptions(request.Options);
+        if (request.EnableTools && tools.Count > 0)
         {
-            options.Tools = request.AvailableTools.Cast<AITool>().ToList();
-            if (!requiredToolSatisfied && !string.IsNullOrWhiteSpace(request.RequiredToolName))
+            options.Tools = tools.Cast<AITool>().ToList();
+            var requiredToolName = request.RequiredToolName?.Trim();
+            var requiredToolAvailable = !string.IsNullOrWhiteSpace(requiredToolName) &&
+                tools.Any(tool => string.Equals(tool.Name, requiredToolName, StringComparison.OrdinalIgnoreCase));
+            if (!requiredToolSatisfied && requiredToolAvailable)
             {
-                options.ToolMode = ChatToolMode.RequireSpecific(request.RequiredToolName.Trim());
+                options.ToolMode = ChatToolMode.RequireSpecific(requiredToolName!);
             }
             else
             {
@@ -255,6 +286,56 @@ public sealed class QueryRuntimeEngine : IQueryRuntimeEngine
         }
 
         return options;
+    }
+
+    private static ChatOptions CreateRuntimeOptions(ChatOptions? options)
+    {
+        if (options == null)
+        {
+            return new ChatOptions();
+        }
+
+        return options.GetType() == typeof(ChatOptions)
+            ? options.Clone()
+            : CreateDerivedRuntimeOptions(options) ?? options.Clone();
+    }
+
+    private static ChatOptions? CreateDerivedRuntimeOptions(ChatOptions options)
+    {
+        try
+        {
+            if (Activator.CreateInstance(options.GetType()) is not ChatOptions clone)
+            {
+                return null;
+            }
+
+            foreach (var property in options.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                if (!property.CanRead ||
+                    !property.CanWrite ||
+                    property.GetIndexParameters().Length != 0 ||
+                    property.SetMethod?.IsPublic != true)
+                {
+                    continue;
+                }
+
+                property.SetValue(clone, property.GetValue(options));
+            }
+
+            return clone;
+        }
+        catch (MissingMethodException)
+        {
+            return null;
+        }
+        catch (MemberAccessException)
+        {
+            return null;
+        }
+        catch (TargetInvocationException)
+        {
+            return null;
+        }
     }
 
     private async ValueTask EmitRoundCompletedAsync(

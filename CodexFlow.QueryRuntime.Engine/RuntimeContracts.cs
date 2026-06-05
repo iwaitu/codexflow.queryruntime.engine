@@ -40,10 +40,16 @@ public sealed record QueryRuntimeRequest
 
     public IReadOnlyList<AIFunction> AvailableTools { get; init; } = [];
 
+    public Func<QueryRuntimeToolResolutionContext, IReadOnlyList<AIFunction>>? ToolProvider { get; init; }
+
     public string? RequiredToolName { get; init; }
 
     public Func<string, CancellationToken, ValueTask>? TextDeltaSink { get; init; }
 }
+
+public sealed record QueryRuntimeToolResolutionContext(
+    int Round,
+    bool RequiredToolSatisfied);
 
 public sealed record QueryRuntimeResult(
     string RunId,
