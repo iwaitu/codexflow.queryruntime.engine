@@ -34,6 +34,9 @@ jobs:
           dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj \
             --configuration Release --no-build --logger "console;verbosity=normal"
 
+      - name: Pack NuGet libraries
+        run: scripts/qre-pack-nuget.sh Release
+
   aot:
     name: Native AOT (${{ matrix.rid }})
     runs-on: ${{ matrix.os }}

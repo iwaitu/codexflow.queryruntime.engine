@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <VersionPrefix>0.1.0-alpha.1</VersionPrefix>
+    <PackageVersion Condition="'$(PackageVersion)' == ''">$(VersionPrefix)</PackageVersion>
+    <Authors>CodexFlow</Authors>
+    <Company>CodexFlow</Company>
+    <Description>Auditable, replayable, sandboxed QueryRuntime libraries for .NET agent applications.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/iwaitu/codexflow.queryruntime.engine</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/iwaitu/codexflow.queryruntime.engine</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>agent;runtime;queryruntime;tool-calling;sandbox;replay;codexflow</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Link="README.md" />
+  </ItemGroup>
+</Project>

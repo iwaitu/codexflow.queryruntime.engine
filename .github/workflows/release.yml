@@ -187,9 +187,39 @@ jobs:
             qre-${{ matrix.rid }}.zip.sha256
           if-no-files-found: ignore
 
+  nuget:
+    name: Pack NuGet libraries
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Pack libraries
+        shell: bash
+        env:
+          QRE_PACKAGE_VERSION: ${{ needs.metadata.outputs.version }}
+          QRE_NUGET_OUTPUT: artifacts/nuget
+        run: scripts/qre-pack-nuget.sh Release
+
+      - name: Upload NuGet artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qre-nuget
+          path: |
+            artifacts/nuget/*.nupkg
+            artifacts/nuget/*.snupkg
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: [metadata, build]
+    needs: [metadata, build, nuget]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

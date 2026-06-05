@@ -9,6 +9,7 @@
     <Version>0.1.0-alpha.1</Version>
     <AssemblyInformationalVersion>0.1.0-alpha.1</AssemblyInformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="seccomp\qre-seccomp-profile.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="seccomp\qre-seccomp-profile.json" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles\any\any\seccomp" />
   </ItemGroup>
 
 </Project>

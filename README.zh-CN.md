@@ -154,6 +154,30 @@ export PATH="$PWD/CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publi
 qre --version
 ```
 
+### 方式三：构建 NuGet 类库包
+
+QRE 的 NuGet 输出优先面向类库引用。`qre` CLI 默认通过 native release
+artifacts 分发，不打包成 .NET tool 包。
+
+```bash
+scripts/qre-pack-nuget.sh Release
+```
+
+包会输出到 `artifacts/nuget`：
+
+- `CodexFlow.QueryRuntime.Abstractions`
+- `CodexFlow.QueryRuntime.Engine`
+- `CodexFlow.QueryRuntime.Experimental`
+- `CodexFlow.QueryRuntime.Models`
+- `CodexFlow.QueryRuntime.Sandbox.LocalProcess`
+- `CodexFlow.QueryRuntime.Sandbox.Docker`
+
+可以用 `QRE_PACKAGE_VERSION` 覆盖版本号：
+
+```bash
+QRE_PACKAGE_VERSION=0.1.0-alpha.2 scripts/qre-pack-nuget.sh Release
+```
+
 ## 快速开始
 
 ### 1. 离线 smoke（无需任何 LLM key）
