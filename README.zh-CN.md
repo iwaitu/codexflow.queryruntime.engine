@@ -170,7 +170,7 @@ scripts/qre-pack-nuget.sh Release
 可以用 `QRE_PACKAGE_VERSION` 覆盖版本号：
 
 ```bash
-QRE_PACKAGE_VERSION=0.1.1 scripts/qre-pack-nuget.sh Release
+QRE_PACKAGE_VERSION=0.1.2 scripts/qre-pack-nuget.sh Release
 ```
 
 ## 快速开始

@@ -294,7 +294,7 @@ The package is written to `artifacts/nuget`:
 Override the package version with `QRE_PACKAGE_VERSION`:
 
 ```bash
-QRE_PACKAGE_VERSION=0.1.1 scripts/qre-pack-nuget.sh Release
+QRE_PACKAGE_VERSION=0.1.2 scripts/qre-pack-nuget.sh Release
 ```
 
 ## Quickstart
