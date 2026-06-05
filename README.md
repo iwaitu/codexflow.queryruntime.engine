@@ -109,7 +109,10 @@ contract accepts message history, custom `AIFunction` tools, required-tool
 steering, provider `ChatOptions`, trace/workspace paths, and streaming text
 deltas. The CLI can stay smaller; the host facade is the replacement surface.
 
-Reference the library projects or packages that match the surface you need:
+Reference `CodexFlow.QueryRuntime.Engine` when consuming QRE as a NuGet package;
+it bundles the Abstractions assembly so host-facing contracts are available from
+the same package. For direct project references, reference the projects that
+match the surface you need:
 
 - `CodexFlow.QueryRuntime.Abstractions` for the stable host-facing contracts.
 - `CodexFlow.QueryRuntime.Experimental` for the current ready-to-use harness,
@@ -277,19 +280,20 @@ export PATH="$PWD/CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publi
 qre --version
 ```
 
-### Option 3: Build the NuGet library packages
+### Option 3: Build the NuGet library package
 
-QRE's NuGet output is the host-facing Abstractions library and the core Engine
-library. The `qre` CLI is distributed through the native release artifacts; it
-is not packed as a .NET tool package by default.
+QRE's NuGet output is the core Engine package. It includes the host-facing
+Abstractions assembly as a bundled library asset, so downstream consumers only
+need to install `CodexFlow.QueryRuntime.Engine`. The `qre` CLI is distributed
+through the native release artifacts; it is not packed as a .NET tool package by
+default.
 
 ```bash
 scripts/qre-pack-nuget.sh Release
 ```
 
-The packages are written to `artifacts/nuget`:
+The package is written to `artifacts/nuget`:
 
-- `CodexFlow.QueryRuntime.Abstractions`
 - `CodexFlow.QueryRuntime.Engine`
 - `SHA256SUMS` with package checksums
 

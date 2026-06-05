@@ -1,10 +1,13 @@
 # Package Source and Provenance
 
-QRE publishes library packages separately from the native `qre` CLI archives.
-The current NuGet package ids are:
+QRE publishes the library package separately from the native `qre` CLI archives.
+The current NuGet package id is:
 
-- `CodexFlow.QueryRuntime.Abstractions`
 - `CodexFlow.QueryRuntime.Engine`
+
+`CodexFlow.QueryRuntime.Engine` bundles `CodexFlow.QueryRuntime.Abstractions.dll`
+inside the same package as a `lib/net10.0` asset. It should not publish or depend
+on a separate `CodexFlow.QueryRuntime.Abstractions` package.
 
 The package version is set by `QRE_PACKAGE_VERSION` in local builds or by the
 release workflow metadata for tagged releases.
@@ -37,14 +40,14 @@ Example `NuGet.config` for a local development feed:
 </configuration>
 ```
 
-Build the packages and checksum metadata:
+Build the package and checksum metadata:
 
 ```bash
 QRE_PACKAGE_VERSION=0.1.2-local.1 scripts/qre-pack-nuget.sh Release
 cat artifacts/nuget/SHA256SUMS
 ```
 
-Verify local packages before copying them to a downstream feed:
+Verify the local package before copying it to a downstream feed:
 
 ```bash
 cd artifacts/nuget

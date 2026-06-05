@@ -25,7 +25,6 @@ if [[ -n "$PACKAGE_VERSION" ]]; then
 fi
 
 projects=(
-  CodexFlow.QueryRuntime.Abstractions/CodexFlow.QueryRuntime.Abstractions.csproj
   CodexFlow.QueryRuntime.Engine/CodexFlow.QueryRuntime.Engine.csproj
 )
 

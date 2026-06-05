@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeAbstractionsAssemblyInPackage</TargetsForTfmSpecificBuildOutput>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,7 +12,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" PrivateAssets="all" />
   </ItemGroup>
+
+  <Target Name="IncludeAbstractionsAssemblyInPackage">
+    <ItemGroup>
+      <BuildOutputInPackage
+        Include="..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll"
+        Condition="Exists('..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll')">
+        <FinalOutputPath>$([System.IO.Path]::GetFullPath('..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll'))</FinalOutputPath>
+        <TargetPath>CodexFlow.QueryRuntime.Abstractions.dll</TargetPath>
+      </BuildOutputInPackage>
+    </ItemGroup>
+  </Target>
 
 </Project>

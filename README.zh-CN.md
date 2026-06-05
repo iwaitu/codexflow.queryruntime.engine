@@ -156,8 +156,9 @@ qre --version
 
 ### 方式三：构建 NuGet 类库包
 
-QRE 的 NuGet 输出只包含核心 Engine 类库。`qre` CLI 默认通过 native
-release artifacts 分发，不打包成 .NET tool 包。
+QRE 的 NuGet 输出是核心 Engine 包；该包会内置 host-facing Abstractions
+assembly，因此 downstream 只需要安装 `CodexFlow.QueryRuntime.Engine`。`qre`
+CLI 默认通过 native release artifacts 分发，不打包成 .NET tool 包。
 
 ```bash
 scripts/qre-pack-nuget.sh Release
