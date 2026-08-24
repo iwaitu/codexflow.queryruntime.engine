@@ -14,11 +14,11 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.1.2", result.StandardOutput);
+        Assert.Contains("0.2.0-preview.17", result.StandardOutput);
     }
 
     [Fact]
-    public async Task RunV2_StaticResponse_UsesHostingFacadeAndReturnsTypedMetadata()
+    public async Task Run_DefaultsToV2HostingFacadeAndReturnsTypedMetadata()
     {
         using var workspace = TemporaryWorkspace.Create();
 
@@ -26,8 +26,6 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(
                 [
                     "run",
-                    "--runtime",
-                    "v2",
                     "--workspace",
                     workspace.Path,
                     "--response",
@@ -55,6 +53,21 @@ public sealed class QreCliSmokeTests
         var persistedAudit = File.ReadAllText(auditFile);
         Assert.DoesNotContain("exercise the v2 facade", persistedAudit, StringComparison.Ordinal);
         Assert.DoesNotContain("v2 cli smoke", persistedAudit, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_ExplicitV1IsRejectedBeforeExecution()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+
+        var result = await CaptureConsoleAsync(
+            () => QreCli.RunAsync(
+                ["run", "--runtime", "v1", "--workspace", workspace.Path, "--response", "must not run", "prompt"],
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("v1 execution has been removed", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(workspace.Path, ".qre")));
     }
 
     [Fact]
@@ -379,15 +392,14 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
-        Assert.Equal("qre.run.completed", runJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal("qre.v2.run.completed", runJson.RootElement.GetProperty("type").GetString());
         Assert.Equal("cli contract smoke", runJson.RootElement.GetProperty("finalText").GetString());
-        Assert.Equal("NoToolCalls", runJson.RootElement.GetProperty("termination").GetString());
-        Assert.Equal("NoToolCalls", runJson.RootElement.GetProperty("terminationReason").GetString());
+        Assert.Equal("Completed", runJson.RootElement.GetProperty("terminationReason").GetString());
         Assert.Equal("readonly", runJson.RootElement.GetProperty("profile").GetString());
         Assert.Equal("local", runJson.RootElement.GetProperty("runner").GetString());
         using var manifestJson = JsonDocument.Parse(File.ReadAllText(
-            runJson.RootElement.GetProperty("manifestPath").GetString()!));
-        Assert.Equal("qre.run.manifest", manifestJson.RootElement.GetProperty("Type").GetString());
+            Path.Combine(runJson.RootElement.GetProperty("runDirectory").GetString()!, "manifest.json")));
+        Assert.Equal("qre.v2.audit.manifest", manifestJson.RootElement.GetProperty("type").GetString());
         var runDirectory = runJson.RootElement.GetProperty("runDirectory").GetString()!;
         Assert.True(File.Exists(Path.Combine(runDirectory, "diff.patch")));
         Assert.True(File.Exists(Path.Combine(runDirectory, "usage.json")));
@@ -404,9 +416,9 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, trace.ExitCode);
         using var traceJson = JsonDocument.Parse(trace.StandardOutput);
-        Assert.Equal("qre.trace.latest", traceJson.RootElement.GetProperty("type").GetString());
-        Assert.Equal(runJson.RootElement.GetProperty("runId").GetString(), traceJson.RootElement.GetProperty("runId").GetString());
+        Assert.Equal("qre.v2.trace.latest", traceJson.RootElement.GetProperty("type").GetString());
         Assert.Equal(runJson.RootElement.GetProperty("runDirectory").GetString(), traceJson.RootElement.GetProperty("runDirectory").GetString());
+        Assert.Equal(runJson.RootElement.GetProperty("auditFilePath").GetString(), traceJson.RootElement.GetProperty("auditFilePath").GetString());
         Assert.True(traceJson.RootElement.GetProperty("eventCount").GetInt32() > 0);
 
         var traceJsonl = await CaptureConsoleAsync(
@@ -422,13 +434,10 @@ public sealed class QreCliSmokeTests
         try
         {
             Assert.Equal(traceJson.RootElement.GetProperty("eventCount").GetInt32(), traceEvents.Length);
-            Assert.All(traceEvents, evt => Assert.Equal("qre.trace.event", evt.RootElement.GetProperty("type").GetString()));
-            Assert.Equal("run.started", traceEvents[0].RootElement.GetProperty("eventType").GetString());
-            Assert.Equal(runJson.RootElement.GetProperty("runId").GetString(), traceEvents[0].RootElement.GetProperty("runId").GetString());
-            Assert.All(traceEvents, evt => Assert.False(evt.RootElement.TryGetProperty("sourceType", out _)));
-            Assert.All(traceEvents, evt => Assert.False(evt.RootElement.GetProperty("payload").TryGetProperty("RuntimeEventType", out _)));
-            Assert.Contains(traceEvents, evt => evt.RootElement.GetProperty("eventType").GetString() == "model.response");
-            Assert.Contains(traceEvents, evt => evt.RootElement.GetProperty("eventType").GetString() == "budget.usage");
+            Assert.All(traceEvents, evt => Assert.Equal(1, evt.RootElement.GetProperty("schemaVersion").GetInt32()));
+            Assert.Equal("TurnStarted", traceEvents[0].RootElement.GetProperty("kind").GetString());
+            Assert.Contains(traceEvents, evt => evt.RootElement.GetProperty("kind").GetString() == "ModelResponseCommitted");
+            Assert.Contains(traceEvents, evt => evt.RootElement.GetProperty("kind").GetString() == "TurnTerminal");
         }
         finally
         {
@@ -445,15 +454,10 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, replay.ExitCode);
         using var replayJson = JsonDocument.Parse(replay.StandardOutput);
-        Assert.Equal("qre.replay.summary", replayJson.RootElement.GetProperty("type").GetString());
-        Assert.Equal(runJson.RootElement.GetProperty("runId").GetString(), replayJson.RootElement.GetProperty("runId").GetString());
-        Assert.Equal("strict-replay", replayJson.RootElement.GetProperty("mode").GetString());
-        Assert.True(replayJson.RootElement.GetProperty("strictReplayable").GetBoolean());
-        Assert.Contains(
-            replayJson.RootElement.GetProperty("decisionTrajectory").EnumerateArray(),
-                step => step.GetProperty("kind").GetString() == "model" &&
-                step.GetProperty("hasRecordedPayload").GetBoolean());
-        Assert.Equal("qre.run.manifest", replayJson.RootElement.GetProperty("manifest").GetProperty("Type").GetString());
+        Assert.Equal("qre.v2.replay.summary", replayJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal("Recorded", replayJson.RootElement.GetProperty("replayCapability").GetString());
+        Assert.False(replayJson.RootElement.GetProperty("providerCalls").GetBoolean());
+        Assert.False(replayJson.RootElement.GetProperty("toolExecutions").GetBoolean());
 
         var replayRun = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
@@ -462,9 +466,9 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, replayRun.ExitCode);
         using var replayRunJson = JsonDocument.Parse(replayRun.StandardOutput);
-        Assert.Equal("qre.replay.completed", replayRunJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal("qre.v2.replay.completed", replayRunJson.RootElement.GetProperty("type").GetString());
         Assert.Equal("cli contract smoke", replayRunJson.RootElement.GetProperty("finalText").GetString());
-        Assert.Equal("recorded-replay", replayRunJson.RootElement.GetProperty("runner").GetString());
+        Assert.Equal("recorded-replay", replayRunJson.RootElement.GetProperty("mode").GetString());
     }
 
     [Fact]
@@ -478,7 +482,7 @@ public sealed class QreCliSmokeTests
                 TestContext.Current.CancellationToken));
         Assert.Equal(0, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
-        var hostRunId = runJson.RootElement.GetProperty("runId").GetString()!;
+        var hostRunId = runJson.RootElement.GetProperty("sessionId").GetString()!;
         var runDirectory = runJson.RootElement.GetProperty("runDirectory").GetString()!;
         var persistedRunId = Path.GetFileName(runDirectory);
         Assert.StartsWith("public-", persistedRunId, StringComparison.Ordinal);
@@ -500,7 +504,8 @@ public sealed class QreCliSmokeTests
         using var summaryJson = JsonDocument.Parse(summary.StandardOutput);
         Assert.Equal("PublicRedacted", summaryJson.RootElement.GetProperty("dataMode").GetString());
         Assert.Equal("SummaryOnly", summaryJson.RootElement.GetProperty("replayCapability").GetString());
-        Assert.False(summaryJson.RootElement.GetProperty("strictReplayable").GetBoolean());
+        Assert.False(summaryJson.RootElement.GetProperty("providerCalls").GetBoolean());
+        Assert.False(summaryJson.RootElement.GetProperty("toolExecutions").GetBoolean());
 
         var replay = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
@@ -521,8 +526,6 @@ public sealed class QreCliSmokeTests
                 TestContext.Current.CancellationToken));
         Assert.Equal(0, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
-        var sourceRunId = runJson.RootElement.GetProperty("runId").GetString();
-
         var strict = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
                 ["replay", "latest", "--workspace", workspace.Path, "--strict", "--json"],
@@ -531,10 +534,9 @@ public sealed class QreCliSmokeTests
         Assert.Equal(0, strict.ExitCode);
         using var strictJson = JsonDocument.Parse(strict.StandardOutput);
         var root = strictJson.RootElement;
-        Assert.Equal("qre.replay.completed", root.GetProperty("type").GetString());
-        Assert.Equal("strict-replay", root.GetProperty("mode").GetString());
+        Assert.Equal("qre.v2.replay.completed", root.GetProperty("type").GetString());
+        Assert.Equal("strict-recorded-replay", root.GetProperty("mode").GetString());
         Assert.Equal("strict smoke", root.GetProperty("finalText").GetString());
-        Assert.Equal(sourceRunId, root.GetProperty("sourceRunId").GetString());
         Assert.Equal(1, root.GetProperty("schemaVersion").GetInt32());
         Assert.False(root.GetProperty("providerCalls").GetBoolean());
         Assert.False(root.GetProperty("toolExecutions").GetBoolean());
@@ -563,7 +565,7 @@ public sealed class QreCliSmokeTests
 
         var summary = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
-                ["replay", "latest", "--workspace", workspace.Path, "--summary", "--json"],
+                ["replay", "latest", "--runtime", "v1", "--workspace", workspace.Path, "--summary", "--json"],
                 TestContext.Current.CancellationToken));
         Assert.Equal(0, summary.ExitCode);
         using var summaryJson = JsonDocument.Parse(summary.StandardOutput);
@@ -573,16 +575,15 @@ public sealed class QreCliSmokeTests
 
         var strict = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
-                ["replay", "latest", "--workspace", workspace.Path, "--strict", "--json"],
+                ["replay", "latest", "--runtime", "v1", "--workspace", workspace.Path, "--strict", "--json"],
                 TestContext.Current.CancellationToken));
 
         Assert.Equal(1, strict.ExitCode);
-        Assert.Contains("strict replay requires schema version", strict.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("legacy", strict.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("v1 recorded execution replay is disabled", strict.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task ReplayRecorded_RejectsUnsupportedFutureSchema_WithPreciseReason()
+    public async Task ReplayRecorded_V1FutureSchemaCannotBypassV2OnlyCutover()
     {
         using var workspace = TemporaryWorkspace.Create();
         var runDirectory = Path.Combine(workspace.Path, ".qre", "runs", "future-run");
@@ -600,12 +601,11 @@ public sealed class QreCliSmokeTests
 
         var recorded = await CaptureConsoleAsync(
             () => QreCli.RunAsync(
-                ["replay", "latest", "--workspace", workspace.Path, "--json"],
+                ["replay", "latest", "--runtime", "v1", "--workspace", workspace.Path, "--json"],
                 TestContext.Current.CancellationToken));
 
         Assert.Equal(1, recorded.ExitCode);
-        Assert.Contains("unsupported trace schema version 2", recorded.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("runtime supports up to 1", recorded.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("v1 recorded execution replay is disabled", recorded.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -631,13 +631,11 @@ public sealed class QreCliSmokeTests
         var lines = run.StandardOutput.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         Assert.Single(lines);
         using var json = JsonDocument.Parse(lines[0]);
-        Assert.Equal("qre.run.completed", json.RootElement.GetProperty("type").GetString());
+        Assert.Equal("qre.v2.run.completed", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("single json smoke", json.RootElement.GetProperty("finalText").GetString());
-        Assert.Equal(1, json.RootElement.GetProperty("zeroToolCallRounds").GetInt32());
+        Assert.Equal(1, json.RootElement.GetProperty("totalSteps").GetInt32());
         Assert.Equal(0, json.RootElement.GetProperty("continuationCount").GetInt32());
-        Assert.Equal(0, json.RootElement.GetProperty("writeToolCalls").GetInt32());
-        Assert.Equal(JsonValueKind.Array, json.RootElement.GetProperty("executedToolNames").ValueKind);
-        Assert.Empty(json.RootElement.GetProperty("executedToolNames").EnumerateArray());
+        Assert.Equal(0, json.RootElement.GetProperty("totalToolCalls").GetInt32());
         Assert.False(json.RootElement.TryGetProperty("eventType", out _));
         Assert.False(json.RootElement.TryGetProperty("delta", out _));
     }
@@ -690,8 +688,9 @@ public sealed class QreCliSmokeTests
         Assert.Equal(0, run.ExitCode);
         Assert.Equal(string.Empty, run.StandardError);
         Assert.Contains("stream smoke", run.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("run_id:", run.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("trace:", run.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("runtime: v2", run.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("session_id:", run.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("audit:", run.StandardOutput, StringComparison.Ordinal);
         Assert.DoesNotContain("qre.run.completed", run.StandardOutput, StringComparison.Ordinal);
     }
 
@@ -743,26 +742,10 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(1, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
-        var traceFile = runJson.RootElement.GetProperty("traceFilePath").GetString()!;
-        var traceEvents = File.ReadAllLines(traceFile)
-            .Where(static line => line.Contains("\"Type\":\"model.request\"", StringComparison.Ordinal))
-            .Select(static line => JsonDocument.Parse(line))
-            .ToArray();
-
-        try
-        {
-            var promptAssembly = Assert.Single(traceEvents);
-            var data = promptAssembly.RootElement.GetProperty("Data");
-            Assert.False(data.TryGetProperty("RequiredToolName", out _));
-            Assert.False(data.GetProperty("RequiredToolSatisfied").GetBoolean());
-        }
-        finally
-        {
-            foreach (var traceEvent in traceEvents)
-            {
-                traceEvent.Dispose();
-            }
-        }
+        var auditFile = runJson.RootElement.GetProperty("auditFilePath").GetString()!;
+        var auditText = File.ReadAllText(auditFile);
+        Assert.DoesNotContain("qre_list_files", auditText, StringComparison.Ordinal);
+        Assert.Equal("continuation_budget_exhausted", runJson.RootElement.GetProperty("errorCode").GetString());
     }
 
     [Fact]
@@ -788,18 +771,18 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
-        var traceFile = runJson.RootElement.GetProperty("traceFilePath").GetString()!;
+        var traceFile = runJson.RootElement.GetProperty("auditFilePath").GetString()!;
         var traceEvents = File.ReadAllLines(traceFile)
-            .Where(static line => line.Contains("\"Type\":\"model.request\"", StringComparison.Ordinal))
+            .Where(static line => line.Contains("\"kind\":\"ModelRequestPrepared\"", StringComparison.Ordinal))
             .Select(static line => JsonDocument.Parse(line))
             .ToArray();
 
         try
         {
             var promptAssembly = Assert.Single(traceEvents);
-            var data = promptAssembly.RootElement.GetProperty("Data");
-            Assert.Equal(1, data.GetProperty("ToolCount").GetInt32());
-            Assert.False(data.TryGetProperty("ToolNames", out _));
+            var data = promptAssembly.RootElement.GetProperty("payload");
+            Assert.Equal(1, data.GetProperty("toolCount").GetInt32());
+            Assert.False(data.TryGetProperty("toolNames", out _));
         }
         finally
         {
@@ -892,7 +875,7 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, rerun.ExitCode);
         using var rerunJson = JsonDocument.Parse(rerun.StandardOutput);
-        Assert.Equal("qre.run.completed", rerunJson.RootElement.GetProperty("type").GetString());
+        Assert.Equal("qre.v2.run.completed", rerunJson.RootElement.GetProperty("type").GetString());
         Assert.Equal("second response", rerunJson.RootElement.GetProperty("finalText").GetString());
         Assert.Equal("none", rerunJson.RootElement.GetProperty("profile").GetString());
 
@@ -903,10 +886,9 @@ public sealed class QreCliSmokeTests
 
         Assert.Equal(0, latestTrace.ExitCode);
         using var started = JsonDocument.Parse(latestTrace.StandardOutput.Split(Environment.NewLine)[0]);
-        Assert.False(started.RootElement.GetProperty("payload").TryGetProperty("Prompt", out _));
-        Assert.Equal(
-            "PublicRedacted",
-            started.RootElement.GetProperty("payload").GetProperty("DataMode").GetString());
+        Assert.False(started.RootElement.GetProperty("payload").TryGetProperty("objective", out _));
+        Assert.Equal("public_summary", started.RootElement.GetProperty("payload").GetProperty("payloadType").GetString());
+        Assert.Equal("PublicRedacted", started.RootElement.GetProperty("dataMode").GetString());
     }
 
     [Fact]

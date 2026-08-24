@@ -911,18 +911,18 @@ security audit summary, nor a replacement for the raw trace.
 
 #### v2 C6 versioned audit and data-only replay
 
-`--runtime v2` uses a separate C6 audit schema; it neither reuses nor replaces
-the v1 trace. The default `.qre/v2/runs/<public-id>/audit.v1.jsonl` contains an
+`qre run` uses the v2 audit schema by default and no longer exposes v1 execution.
+The default `.qre/v2/runs/<public-id>/audit.v1.jsonl` contains an
 explicit allow-list `PublicRedacted / SummaryOnly` projection. Prompts, model or
 reasoning text, tool names/arguments/results, paths, and host IDs are not persisted.
 `--trace-data private` writes owner-only data under `.qre/v2/private/runs`, while
 `--trace-data sanitized` is for reviewed fixtures; both are marked `Recorded`.
 
 ```bash
-qre run --runtime v2 --workspace . --trace-data sanitized \
+qre run --workspace . --trace-data sanitized \
   --response "offline v2" --json "audit this runtime"
-qre replay latest --runtime v2 --workspace . --summary --json
-qre replay latest --runtime v2 --workspace . --strict --json
+qre replay latest --workspace . --summary --json
+qre replay latest --workspace . --strict --json
 ```
 
 The v2 replay is a data-only validation reducer: its API accepts no model client,

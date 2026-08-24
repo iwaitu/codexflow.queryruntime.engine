@@ -20,7 +20,8 @@ public static class ExperimentalV2ToolComposition
         ISandboxRunner? sandboxRunner = null,
         RuntimeSandboxKind sandboxKind = RuntimeSandboxKind.LocalProcess,
         bool includeExternal = false,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        string? runDirectory = null)
         => CreateRuntime(
             profile,
             workspacePath,
@@ -28,7 +29,8 @@ public static class ExperimentalV2ToolComposition
             sandboxKind,
             includeExternal,
             toolSearch: null,
-            timeProvider).Pipeline;
+            timeProvider,
+            runDirectory).Pipeline;
 
     public static ExperimentalV2RuntimeComposition CreateRuntime(
         QueryRuntimeToolProfile profile,
@@ -37,7 +39,8 @@ public static class ExperimentalV2ToolComposition
         RuntimeSandboxKind sandboxKind = RuntimeSandboxKind.LocalProcess,
         bool includeExternal = false,
         QueryRuntimeToolSearchOptions? toolSearch = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        string? runDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         var workspaceRoot = QueryRuntimePathSafety.NormalizeRoot(workspacePath);
@@ -56,7 +59,7 @@ public static class ExperimentalV2ToolComposition
             "repair" =>
             [
                 .. ExperimentalReadOnlyToolPack.Create(workspaceRoot),
-                .. ExperimentalRepairToolPack.Create(workspaceRoot)
+                .. ExperimentalRepairToolPack.Create(workspaceRoot, runDirectory)
             ],
             _ => throw new ArgumentException($"Unsupported v2 tool profile '{profile.Name}'.", nameof(profile))
         };

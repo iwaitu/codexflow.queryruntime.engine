@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>qre</AssemblyName>
-    <Version>0.1.2</Version>
-    <AssemblyInformationalVersion>0.1.2</AssemblyInformationalVersion>
+    <Version>$(VersionPrefix)</Version>
+    <AssemblyInformationalVersion>$(VersionPrefix)</AssemblyInformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <IsPackable>false</IsPackable>
   </PropertyGroup>

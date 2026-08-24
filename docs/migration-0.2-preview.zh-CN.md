@@ -1,15 +1,13 @@
 # QueryRuntime 0.2 Preview 迁移指南
 
-本文说明如何从稳定 v1 `0.1.2` 接口迁移到 `0.2.0-preview.*` 中显式启用的 v2 Runtime。
+本文说明如何从稳定 v1 `0.1.2` 接口迁移到 `0.2.0-preview.*` 的 v2-only Runtime。
 
 ## 兼容边界
 
 - 不重发或修改 `0.1.2` 包和 v1 trace schema。
-- v2 必须显式启用：CLI 使用 `--runtime v2`；CodexFlow 使用
-  `Runtime:QueryRuntime:Backend=qre-v2`。
-- v1 reader 在 preview 窗口内继续保留；未知 v2 audit schema 显式失败。
-- 一个 Turn 始终属于启动它的 backend。切换 feature flag 只影响后续请求，不允许把 in-flight Turn
-  跨 backend 恢复。
+- CLI 仅允许 v2 执行；`--runtime v2` 是可选兼容写法，`--runtime v1` 会在执行前失败。
+- CodexFlow 只接受 `Runtime:QueryRuntime:Backend=qre-v2`，`core` 或 `qre` 会导致启动失败。
+- v1 trace summary reader 仅用于历史只读检查；未知 v2 audit schema 显式失败。
 
 ## API 变化
 
@@ -19,31 +17,31 @@ v2 使用 `CodexFlow.QueryRuntime.Protocol` 下的 provider-neutral contract，�
 typed ID；model stream 分离 text、reasoning、usage、warning、tool call 和 completion；工具执行必须经过
 冻结 ToolRegistry 与 execution plan。
 
-preview 期间旧 `IQueryRuntimeEngine` 和 Experimental harness 继续用于回退。新代码不应依赖 Experimental
-Agent Loop 内部实现，而应使用 v2 Hosting facade 以及 Engine-owned policy、context、audit contract。
+旧 v1 public types 暂时继续编译以支持源码迁移和历史消费者，但 CLI 与 CodexFlow 生产入口均不再调度到
+重复的 v1 Agent Loop。新代码统一使用 v2 Hosting facade 和 Engine-owned policy、context、audit contract。
 
 ## CLI 迁移
 
 ```bash
-qre run --runtime v2 --profile readonly --response "offline smoke" --json "inspect this repository"
-qre replay latest --runtime v2 --summary --json
+qre run --profile readonly --response "offline smoke" --json "inspect this repository"
+qre replay latest --summary --json
 ```
 
-观察窗口完成前，CLI 默认仍为 v1。v2 支持 `none`、`readonly`、`verify`、`repair`；写入和高风险执行仍需
+v2 是唯一执行路径，支持 `none`、`readonly`、`verify`、`repair`；写入和高风险执行仍需
 绑定冻结计划的审批。公开审计默认脱敏且仅支持 summary；`--trace-data sanitized` 只用于经审查 fixture，
 `--trace-data private` 用于访问受控诊断。
 
-## 宿主迁移与回退
+## 宿主迁移
 
-1. 先升级 package，不修改 backend flag。
-2. 对 `qre-v2` 运行宿主 contract kit，先验证 readonly、verify。
+1. 升级到 `0.2.0-preview.17` 或更高版本，并把 backend 设为 `qre-v2`。
+2. 运行宿主 contract kit，先验证 readonly、verify。
 3. 只有写审批、sandbox/write-back 门禁通过后才启用 repair。
 4. 对 policy decision、tool order、归一化 terminal reason、side-effect count 零容忍；final text 单独应用容差。
-5. 回退时把新请求的 backend 改为 `qre`（打包 v1）或 `core`；禁止把 active Turn 或 v2 audit state 复制到 v1。
+5. 如需回退 v1，必须重新部署旧 package/应用版本；不再提供进程内 feature flag 回退。
 
 非法 backend 名称和非正数 model stream timeout 必须让宿主启动失败，不能静默落到其他引擎。
 
-## 默认切换门禁
+## 切换决策
 
-把 v2 设为默认并删除重复 v1 Agent Loop，必须同时满足全部自动门禁、至少两个 preview 发布，以及约定
-观察窗口内无 Critical/High 执行语义回归。代码构建完成和本地 preview 包本身不能替代时间型观察门禁。
+项目 owner 于 2026-08-24 明确豁免“两次 preview＋观察窗口”门禁并批准 v2-only 切换。自动化测试、Native
+AOT 和真实 E2E 仍为强制项，详见 ADR-007。运营回退单元改为上一应用部署版本，不再是进程内 backend flag。

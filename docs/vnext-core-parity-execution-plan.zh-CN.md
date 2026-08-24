@@ -1,6 +1,6 @@
 # QueryRuntime vNext Core Parity 执行计划
 
-状态：C0–C7 代码完成；v2 默认切换与 v1 loop 删除等待 preview 观察门禁  
+状态：C0–C7 完成；经 owner 明确豁免观察门禁后已切换为 v2-only 执行
 日期：2026-08-24  
 版本目标：`0.2.0-preview.*`
 
@@ -25,7 +25,7 @@ replay 属于条件路线三，不得提前进入核心。
 | C4 | ToolRegistry、Router、Policy、Approval、Sandbox | 完成 | C3 contract kit |
 | C5 | RuntimeHistory、Context、确定性截断和基础 compaction | 完成 | C4 tool lifecycle |
 | C6 | versioned audit、recorded replay、数据分层和配额 | 完成 | C4/C5 稳定边界 |
-| C7 | 灰度、清理、`0.2.0-preview.*` | 代码完成；观察门禁待闭环 | Core Parity Gate |
+| C7 | 灰度、清理、`0.2.0-preview.*` | 完成；ADR-007 记录门禁豁免与 v2-only 切换 | Core Parity Gate + owner exception |
 
 ## C2 完成证据
 
@@ -167,9 +167,9 @@ exactly-once、加密 full-fidelity tape 或生产 shadow；这些仍受路线�
   没有为拆分新增 package，也没有复制 Agent Loop。
 - CodexFlow backend 继续显式支持 `core`、`qre`、`qre-v2`，非法 backend 和非正 model timeout 通过
   `ValidateOnStart` 启动失败，不再静默回落。in-flight Turn 不跨 backend 恢复。
-- 新增中英文 `0.2` preview 迁移指南；本地 `0.2.0-preview.16` package 通过 checksum、内容和 clean consumer，
+- 新增中英文 `0.2` preview 迁移指南；本地 `0.2.0-preview.17` package 通过 checksum、内容和 clean consumer，
   旧 `0.1.2` 未被重发或修改。
-- Runtime Linux unit/security regression 409/409、CodexFlow Core 975/975、Runtime Windows Release build
+- Runtime Linux unit/security regression 410/410、CodexFlow Core 975/975、Runtime Windows Release build
   0 warning/0 error、CodexFlow solution 0 error、Windows/Linux Native AOT 和原生 v2 audit/replay smoke、
   dependency vulnerability/license gate 均通过。
 - 真实 qwen3.8 vLLM verify E2E 强制 `qre_git_status`：2 Step、1 次工具执行、9 个 audit events，usage
@@ -181,9 +181,13 @@ exactly-once、加密 full-fidelity tape 或生产 shadow；这些仍受路线�
 - v2 verify、repair、deny 各执行两次 strict replay：digest 分别稳定一致，且均为
   `providerCalls=false`、`toolExecutions=false`；deny 轨迹允许保留拒绝 observation，但执行计数保持 0。
 
-C7 的工程代码已经完成，但默认切换是独立运营门禁：当前只生成了本地 preview artifact，未代替正式发布和
-约定观察窗口。因此 v1 feature flag 回退与重复 Agent Loop 继续保留，v2 不会被静默设为默认；只有至少两个
-正式 preview 和观察窗口内无 Critical/High 执行语义回归后，才执行默认切换与旧 loop 删除。
+2026-08-24，owner 明确要求跳过“两次正式 preview＋观察窗口”运营门禁并立即完成 v2 切换，ADR-007 记录
+该风险接受。CLI run/trace/replay/rerun 与 CodexFlow 宿主生产入口现均使用 v2；`--runtime v1` 不再执行，
+CodexFlow 的 `core`/`qre` backend 配置会启动失败。v1 public types 和只读 trace summary reader 暂留用于源码
+迁移与历史诊断，但不存在生产调度回退。回滚必须部署上一应用/package 版本，不能在进程内切换 backend。
+最终 Windows Native AOT 在不传 `--runtime v2` 时完成真实 qwen3.8 verify：2 Step、1 次 `qre_git_status`、
+最终标记 `V2_CUTOVER_LIVE_OK`；同一 audit 两次 strict replay digest 均为
+`f9fb546fd8017ecd7e6b0e440da2120abcdc7c09f42754bcf79d40d955eb122a`，provider/tool execution 均为 false。
 
 ## C0 可运行门禁
 
@@ -205,5 +209,5 @@ C0 退出条件：ADR-001 至 ADR-006 为 Accepted；现有 public API、CLI JSO
 - v1 继续位于现有 Abstractions/Engine/Experimental 路径，直到 C7 明确移除重复 loop。
 - v2 从 provider-free Protocol 开始，以 compatibility adapter 连接 MEAI；不在 Protocol 中引用 MEAI。
 - 每个阶段都必须继续运行路线一 security negative tests。
-- 路线二允许 `0.2.0-preview.*` source breaking change，但必须提供迁移说明和 v1 feature flag 回退。
+- 路线二允许 `0.2.0-preview.*` source breaking change；ADR-007 后必须提供迁移说明、历史只读 trace 与部署级回滚。
 - 任何路线三能力必须先新增独立 ADR、owner、预算、威胁模型和触发证据。

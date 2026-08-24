@@ -324,17 +324,18 @@ Verify the CLI / trace / JSON output works end to end:
 qre run --workspace . --response "offline smoke" --json "analyze this repo"
 ```
 
-Explicitly exercise the route-two C6 v2 hosting facade, deterministic context,
-deferred frozen tool catalog, and versioned audit (preview):
+Exercise the v2-only hosting facade, deterministic context, deferred frozen tool
+catalog, and versioned audit:
 
 ```bash
-qre run --runtime v2 --workspace . --profile readonly --tool-search \
+qre run --workspace . --profile readonly --tool-search \
   --trace-data sanitized --response "offline v2 smoke" --json "exercise v2"
-qre replay latest --runtime v2 --workspace . --strict --json
+qre replay latest --workspace . --strict --json
 ```
 
-Without `--runtime v2`, the CLI continues to use v1. C6 v2 supports the
-none/readonly/verify/repair profiles and external stdio tools. Write and
+`qre run` now always uses v2; `--runtime v2` is optional compatibility syntax
+and `--runtime v1` fails before execution. v2 supports the none/readonly/verify/repair
+profiles and external stdio tools. Write and
 high-risk execution requires `--approve-risk <reason>`; approval is bound to
 the normalized arguments, workspace, policy, sandbox, and expiry. `--tool-search`
 now exposes a per-Step subset of the frozen execution registry: the first Step
@@ -343,10 +344,10 @@ The default v2 audit is `PublicRedacted / SummaryOnly`; only explicitly enabled
 sanitized/private data is recorded-replay capable, and replay calls no provider
 and executes no tool.
 
-Emits a single `qre.run.completed` JSON object:
+Emits a single `qre.v2.run.completed` JSON object:
 
 ```json
-{"type":"qre.run.completed","finalText":"offline smoke","runId":"20260602145703992","termination":"NoToolCalls","profile":"none","tools":[],"traceFilePath":"./.qre/runs/20260602145703992/events.jsonl","totalRounds":1,"totalToolCalls":0,"totalDurationMs":52}
+{"type":"qre.v2.run.completed","finalText":"offline smoke","status":"Completed","terminationReason":"Completed","profile":"none","totalSteps":1,"totalToolCalls":0,"auditSchemaVersion":1}
 ```
 
 ### 2. Read-only codebase analysis
@@ -372,12 +373,12 @@ and activation status; activated tools are injected on later rounds.
 ```bash
 qre trace latest --workspace . --jsonl
 qre replay latest --workspace . --json
-qre replay latest --runtime v2 --workspace . --summary --json
+qre replay latest --workspace . --summary --json
 ```
 
-`replay latest` defaults to a recorded replay: it reads the recorded model responses
-and tool results from the trace — it does **not** call the provider or re-execute the
-original tools.
+`replay latest` reads the v2 audit and performs data-only replay: it does **not**
+call the provider or re-execute tools. Legacy v1 traces remain available only via
+`--runtime v1 --summary`; v1 run/replay execution is disabled.
 
 ## Calling a real LLM provider
 

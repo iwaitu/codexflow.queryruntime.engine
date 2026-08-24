@@ -1,6 +1,6 @@
 # ADR-006: 0.2 preview compatibility and rollback
 
-- Status: Accepted
+- Status: Superseded by ADR-007
 - Date: 2026-08-24
 - Owners: Runtime maintainers
 

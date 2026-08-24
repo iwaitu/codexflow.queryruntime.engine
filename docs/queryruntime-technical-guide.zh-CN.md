@@ -840,17 +840,17 @@ live rerun 输出当作确定性保证。
 
 #### v2 C6 versioned audit 与 data-only replay
 
-`--runtime v2` 使用独立的 C6 audit schema，不复用或覆盖 v1 trace。默认写入
+`qre run` 默认且仅使用 v2 audit schema，不再提供 v1 执行入口。默认写入
 `.qre/v2/runs/<public-id>/audit.v1.jsonl`，payload 是显式 allow-list 的
 `PublicRedacted / SummaryOnly` 投影；prompt、model/reasoning 正文、工具名/参数/结果、路径和宿主 ID
 不会落盘。`--trace-data private` 写入 owner-only `.qre/v2/private/runs`，
 `--trace-data sanitized` 用于经过审查的 fixture，两者都标记为 `Recorded`。
 
 ```bash
-qre run --runtime v2 --workspace . --trace-data sanitized \
+qre run --workspace . --trace-data sanitized \
   --response "offline v2" --json "audit this runtime"
-qre replay latest --runtime v2 --workspace . --summary --json
-qre replay latest --runtime v2 --workspace . --strict --json
+qre replay latest --workspace . --summary --json
+qre replay latest --workspace . --strict --json
 ```
 
 v2 replay 是纯数据验证 reducer：API 不接收 model client、provider 或 tool executor。它验证 schema、

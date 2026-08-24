@@ -40,6 +40,8 @@ internal sealed record QreV2RunOutput(
 
     public string AuditFilePath { get; init; } = string.Empty;
 
+    public string RunDirectory { get; init; } = string.Empty;
+
     public string AuditDataMode { get; init; } = string.Empty;
 
     public string AuditReplayCapability { get; init; } = string.Empty;
