@@ -38,8 +38,9 @@ minimal slice that can validate the direction:
 - Default model policy: when tools are enabled or the model is asked to output
   JSON, thinking is disabled by default to improve tool-call and schema-output
   compatibility.
-- `--json` machine output, `qre trace latest --jsonl`, `qre replay latest`
-  recorded replay, and the read-only summary mode of `qre replay latest --summary`.
+- `--json` machine output, `qre trace latest --jsonl`, and the read-only
+  `qre replay latest --summary` mode. Default public traces are summary-only;
+  recorded replay accepts only explicitly enabled full-fidelity private/sanitized traces.
 - `qre diff latest` prefers the latest run's run-scoped `diff.patch`; it falls back
   to the workspace git diff only when there is no run patch.
 - External tool manifest: `.qre/tools/*.json` can declare `stdio` or minimal
@@ -148,10 +149,12 @@ Suitable questions:
 
 ### 3.4 Teaching, evaluation, and replay
 
-**Today**: the experimental CLI's `replay latest` performs a recorded replay by
-default: it reads the recorded model responses and tool results from the trace,
-does not call the provider, and does not execute the original tools. `--summary`
-keeps the read-only trace summary mode. Currently invoked via `qre replay latest ...`.
+**Today**: the experimental CLI writes `PublicRedacted / SummaryOnly` traces by
+default. `replay latest --summary` safely reads those summaries, while a recorded
+replay against summary-only data fails closed. Only reviewed fixtures explicitly
+written with `--trace-data sanitized`, or access-controlled diagnostics written with
+`--trace-data private`, contain full-fidelity replay data. Replay does not call the
+provider or execute the original tools.
 
 The hardest thing to debug in agent development is "why did it answer this way this
 time." Recorded replay reproduces a provider-free / tool-free decision trajectory,
@@ -774,10 +777,13 @@ restrictions to upper-layer callers.
 
 ### 5.8 Trace, run artifacts, and replay
 
-**Today**: the trace is written as JSONL with an explicit, durable `SchemaVersion`;
-`replay latest` does a recorded replay by default, not calling the provider and not
-executing the original tools. `--summary` keeps the read-only summary mode, and
-`--strict` runs the deterministic, byte-stable replay described below.
+**Today**: the trace is written as JSONL with explicit, durable `SchemaVersion`,
+`DataMode`, and `ReplayCapability` fields. The default is
+`PublicRedacted / SummaryOnly`; it does not persist prompts, model text, tool
+arguments/results, stdout/stderr, or payload blobs. `--summary` reads default traces;
+recorded and strict replay accept only explicitly full-fidelity traces and otherwise
+fail closed. Public traces also replace the host `RunId` and run-directory name with
+an unlinkable `public-<uuid>` id and redact `QueryId`.
 
 Each `qre run` writes under the workspace:
 
@@ -789,7 +795,12 @@ Each `qre run` writes under the workspace:
 .qre/runs/<run-id>/usage.json
 .qre/runs/<run-id>/artifacts/
 .qre/runs/<run-id>/blobs/sha256/...
+.qre/private/runs/<private-id>/...  # owner-only PrivateDiagnostic, 7-day default retention
 ```
+
+Private diagnostic directories use protected current-user ACLs on Windows and
+`0700` directories / `0600` files on Unix. `PrivateDiagnosticRetention` may shorten
+retention or extend it up to the enforced 30-day maximum. It does not add encryption.
 
 View the latest trace:
 
@@ -799,9 +810,10 @@ qre trace latest --workspace . --json
 qre trace latest --workspace . --jsonl
 ```
 
-Execute the recorded replay of the latest run:
+Create a reviewed sanitized fixture and execute its recorded replay:
 
 ```bash
+qre run --workspace . --trace-data sanitized --response "offline smoke" "analyze this repo"
 qre replay latest --workspace . --json
 ```
 
@@ -896,6 +908,62 @@ live rerun output as a determinism guarantee.
 desktop, or other platforms locate runId, the run directory, the trace file, the
 profile, and the termination status without parsing the full JSONL. It is not a
 security audit summary, nor a replacement for the raw trace.
+
+#### v2 C6 versioned audit and data-only replay
+
+`qre run` uses the v2 audit schema by default and no longer exposes v1 execution.
+The default `.qre/v2/runs/<public-id>/audit.v1.jsonl` contains an
+explicit allow-list `PublicRedacted / SummaryOnly` projection. Prompts, model or
+reasoning text, tool names/arguments/results, paths, and host IDs are not persisted.
+`--trace-data private` writes owner-only data under `.qre/v2/private/runs`, while
+`--trace-data sanitized` is for reviewed fixtures; both are marked `Recorded`.
+
+```bash
+qre run --workspace . --trace-data sanitized \
+  --response "offline v2" --json "audit this runtime"
+qre replay latest --workspace . --summary --json
+qre replay latest --workspace . --strict --json
+```
+
+The v2 replay is a data-only validation reducer: its API accepts no model client,
+provider, or tool executor. It validates schema, contiguous sequence,
+causation/correlation, kind/payload/identity shape, model request/response pairs,
+tool-observation order, terminal text/usage/history, and manifest/file/blob path,
+length, SHA-256, and quota consistency. `providerCalls` and `toolExecutions` are
+always `false`. `--strict` requests complete trajectory validation and a stable
+`replayDigest`; it is not a live rerun and does not execute crash resume or provide
+an exactly-once guarantee.
+
+#### H1 local crash resume
+
+`0.2.0-preview.21` adds the hardened `checkpoint.v1.json` contract independently of audit v1. Complete
+recovery material is written only for `--trace-data sanitized` or `private`;
+public-redacted runs never write checkpoints. Checkpoints use atomic replacement,
+length/SHA-256 checks, bounded file/JSON depth, path containment, a frozen-request
+fingerprint, and a host-owned `RecoveryCompatibilityId`. Every recovery creates a
+new `RuntimeRunAttemptId` with root/parent/ordinal lineage and never appends to the
+prior attempt's audit.
+
+```bash
+qre resume latest --workspace . --response "offline continuation" --json
+```
+
+Resumable boundaries are TurnStarted, StepPrepared, text-only ModelCommitted,
+ToolBatchCommitted, StepCommitted, and ContinuationCommitted. A prepared Step may
+be sampled again; a committed text-only model output is appended to history without
+another provider call; a committed tool batch is never repeated. A ModelCommitted
+checkpoint that contains tool calls cannot prove whether execution occurred, so it
+returns `checkpoint_needs_reconciliation` with zero provider and tool calls. Terminal
+checkpoints, request/workspace/host-composition drift, mutable tool-search state, and
+cross-contract-version recovery also fail closed. H1 does not include lease/fencing,
+cross-version migration, a five-state side-effect ledger, or exactly-once semantics.
+
+`RuntimeAuditStoreOptions` bounds retention (at most 30 days), run count, all-run
+storage, per-run bytes, event count, JSON line/depth, and individual/aggregate blob
+bytes. Single-process writers share the total storage quota. Write failures use
+always fail closed for durable recovery; failed runs
+are eligible for terminal-only GC. Unknown/future schemas, non-terminal runs, public
+summaries, and any integrity conflict are rejected for replay.
 
 ### 5.9 Diff output
 
@@ -1448,8 +1516,8 @@ open-source spread:
 - It already records model responses, structured tool-call snapshots, the normalized
   argument hash, tool outputs, and content-addressed blobs.
 - A recorded replay model adapter and tool coordinator are implemented.
-- Replay by default does not call the provider and does not execute the original
-  tools.
+- Full-fidelity replay does not call the provider or execute the original tools;
+  the default public trace permits summaries only.
 - Continue adding deterministic ID / clock, trace schema migration, a public replay
   spec, and cross-version replay compatibility.
 

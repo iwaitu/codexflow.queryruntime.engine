@@ -23,7 +23,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 Prompt = "explain this repo",
                 WorkspacePath = workspace.Path,
                 RunId = "run-no-tool",
-                MaxRounds = 2
+                MaxRounds = 2,
+                Trace = SanitizedTrace()
             },
             TestContext.Current.CancellationToken);
 
@@ -86,7 +87,7 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
 
     [Theory]
     [InlineData(".git/qre")]
-    [InlineData("secret-traces")]
+    [InlineData(".env")]
     public async Task RunAsync_RejectsUnsafeTraceRootSegments(string traceRoot)
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -103,6 +104,26 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                     MaxRounds = 1
                 },
                 TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task RunAsync_AllowsFuzzySecretLookingTraceRoot()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var harness = new ExperimentalQueryRuntimeHarness(new StaticExperimentalModelClient("ok"));
+
+        var result = await harness.RunAsync(
+            new ExperimentalQueryRuntimeRequest
+            {
+                Prompt = "test",
+                WorkspacePath = workspace.Path,
+                TraceRoot = "secret-traces",
+                RunId = "token-analysis",
+                MaxRounds = 1
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(result.TraceFilePath));
     }
 
     [Fact]
@@ -167,7 +188,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 RunId = "run-tool",
                 MaxRounds = 3,
                 EnableTools = true,
-                Tools = [workspaceInfo]
+                Tools = [workspaceInfo],
+                Trace = SanitizedTrace()
             },
             TestContext.Current.CancellationToken);
 
@@ -206,7 +228,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 RunId = "run-large-tool-output",
                 MaxRounds = 3,
                 EnableTools = true,
-                Tools = [workspaceInfo]
+                Tools = [workspaceInfo],
+                Trace = SanitizedTrace()
             },
             TestContext.Current.CancellationToken);
 
@@ -250,7 +273,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 RunId = "run-recorded-source",
                 MaxRounds = 3,
                 EnableTools = true,
-                Tools = [workspaceInfo]
+                Tools = [workspaceInfo],
+                Trace = SanitizedTrace()
             },
             TestContext.Current.CancellationToken);
 
@@ -519,7 +543,7 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         var records = ReadJsonl(result.TraceFilePath);
         Assert.Contains(records, record =>
             record.RootElement.GetProperty("Type").GetString() == "policy.decision" &&
-            record.RootElement.GetProperty("ToolName").GetString() == "qre_git_status" &&
+            record.RootElement.GetProperty("ToolName").GetString() == "[redacted]" &&
             record.RootElement.GetProperty("Allowed").GetBoolean());
     }
 
@@ -561,11 +585,10 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 ReadText(message).Contains("qre_read_file", StringComparison.Ordinal));
         var snapshots = ReadJsonl(result.TraceFilePath)
             .Where(record => record.RootElement.GetProperty("Type").GetString() == "model.request")
-            .Select(record => record.RootElement.GetProperty("Data").GetProperty("ToolNames").EnumerateArray().Select(item => item.GetString()).ToArray())
+            .Select(record => record.RootElement.GetProperty("Data").GetProperty("ToolCount").GetInt32())
             .ToArray();
-        Assert.Contains("tool_search", snapshots[0]);
-        Assert.DoesNotContain("qre_read_file", snapshots[0]);
-        Assert.Contains("qre_read_file", snapshots[1]);
+        Assert.Equal(1, snapshots[0]);
+        Assert.Equal(2, snapshots[1]);
     }
 
     [Fact]
@@ -750,7 +773,11 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
             workspace.Path,
             TestContext.Current.CancellationToken);
 
-        Assert.EndsWith(Path.Combine(".qre", "runs", "run-trace-store", "events.jsonl"), summary.TraceFilePath);
+        Assert.EndsWith("events.jsonl", summary.TraceFilePath, StringComparison.Ordinal);
+        Assert.StartsWith(
+            Path.Combine(workspace.Path, ".qre", "runs", "public-"),
+            summary.TraceFilePath,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Equal("trace-summary", summary.Mode);
         Assert.True(summary.EventCount > 0);
         Assert.Equal("NoToolCalls", summary.TerminationReason);
@@ -924,7 +951,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 Prompt = "summarize",
                 WorkspacePath = workspace.Path,
                 RunId = "run-schema-version",
-                MaxRounds = 1
+                MaxRounds = 1,
+                Trace = SanitizedTrace()
             },
             TestContext.Current.CancellationToken);
 
@@ -959,7 +987,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                     RunId = "run-strict-source",
                     MaxRounds = 3,
                     EnableTools = true,
-                    Tools = [workspaceInfo]
+                    Tools = [workspaceInfo],
+                    Trace = SanitizedTrace()
                 },
                 TestContext.Current.CancellationToken);
 
@@ -994,7 +1023,8 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                     EnableTools = true,
                     Tools = RecordedReplayToolPack.Create(sourceTraceFile),
                     TimeProvider = new DeterministicReplayClock(seed.BaseTimestamp),
-                    QueryIdFactory = () => seed.QueryId
+                    QueryIdFactory = () => seed.QueryId,
+                    Trace = SanitizedTrace()
                 },
                 TestContext.Current.CancellationToken);
 
@@ -1042,6 +1072,9 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .Select(line => JsonDocument.Parse(line))
             .ToList();
+
+    private static QueryRuntimeTraceOptions SanitizedTrace()
+        => new() { DataMode = QueryRuntimeTraceDataMode.SanitizedFixture };
 
     private static string ReadText(ChatMessage message)
         => string.Concat(message.Contents.OfType<TextContent>().Select(static content => content.Text));

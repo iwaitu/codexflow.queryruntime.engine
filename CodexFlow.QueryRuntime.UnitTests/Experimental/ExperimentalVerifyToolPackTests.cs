@@ -48,6 +48,31 @@ public sealed class ExperimentalVerifyToolPackTests
     }
 
     [Fact]
+    public async Task VerifyTool_NonZeroExit_IsReportedAsToolFailure()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var runner = new RecordingSandboxRunner
+        {
+            Result = new SandboxResult(1, string.Empty, "compile failed", false, 12)
+        };
+        var tools = ExperimentalVerifyToolPack.Create(
+            workspace.Path,
+            runner,
+            new ExperimentalCapabilityPolicy());
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await InvokeAsync(tools, "qre_dotnet_build", new()
+            {
+                ["target"] = string.Empty,
+                ["timeout_seconds"] = 30,
+                ["max_output_chars"] = 1_000
+            }));
+
+        Assert.Contains("exit_code: 1", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("compile failed", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task VerifyTool_InjectsTrustedLocalEnvironmentWithoutHostSecrets()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -73,6 +98,14 @@ public sealed class ExperimentalVerifyToolPackTests
             if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PATH")))
             {
                 Assert.True(runner.LastSpec.Environment.ContainsKey("PATH"));
+            }
+            foreach (var name in new[] { "APPDATA", "LOCALAPPDATA" })
+            {
+                var value = Environment.GetEnvironmentVariable(name);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    Assert.Equal(value, runner.LastSpec.Environment[name]);
+                }
             }
         }
         finally
@@ -124,11 +157,14 @@ public sealed class ExperimentalVerifyToolPackTests
 
         public SandboxJobSpec? LastSpec { get; private set; }
 
+        public SandboxResult Result { get; init; } =
+            new(0, "runner-ok", string.Empty, false, 12);
+
         public Task<SandboxResult> RunAsync(SandboxJobSpec spec, CancellationToken ct = default)
         {
             Calls++;
             LastSpec = spec;
-            return Task.FromResult(new SandboxResult(0, "runner-ok", string.Empty, false, 12));
+            return Task.FromResult(Result);
         }
     }
 

@@ -29,6 +29,7 @@ public static class QueryRuntimePathSafety
     public static string ResolveUnderRoot(string rootPath, string? path)
     {
         var root = NormalizeRoot(rootPath);
+        RejectLinkedRoot(root);
         path = string.IsNullOrWhiteSpace(path) ? "." : path;
 
         var resolved = Path.IsPathFullyQualified(path)
@@ -62,11 +63,14 @@ public static class QueryRuntimePathSafety
     }
 
     /// <summary>
-    /// Rejects paths under protected QRE workspace areas or paths that look like
-    /// credentials. The supplied path must already be resolved under the root.
+    /// Rejects paths under protected QRE workspace areas or paths with exact,
+    /// high-confidence credential file names. Fuzzy secret-looking matches are
+    /// intentionally not enforcement rules because names such as TokenService.cs
+    /// and SecretMaskerTests.cs are normal source files.
     /// </summary>
     public static void RejectProtectedWorkspacePath(string rootPath, string resolvedPath, string operation)
     {
+        RejectWorkspaceLinks(rootPath, resolvedPath, operation);
         var segments = GetRelativeSegments(rootPath, resolvedPath);
         if (segments.Any(static segment =>
                 segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
@@ -75,14 +79,61 @@ public static class QueryRuntimePathSafety
             throw new InvalidOperationException($"Protected workspace artifacts cannot be {operation}.");
         }
 
-        if (segments.Any(IsSecretLookingSegment))
+        if (segments.Any(IsProtectedCredentialSegment))
         {
-            throw new InvalidOperationException($"Secret-looking paths cannot be {operation}.");
+            throw new InvalidOperationException($"Protected credential paths cannot be {operation}.");
         }
     }
 
     /// <summary>
-    /// Identifies common credential file names and secret-bearing path segments.
+    /// Rejects every symlink, junction, or reparse point in a workspace tool path.
+    /// Repository tools use this stricter rule because an in-workspace alias can
+    /// otherwise hide a protected credential path from lexical checks.
+    /// </summary>
+    public static void RejectWorkspaceLinks(string rootPath, string resolvedPath, string operation)
+    {
+        var root = NormalizeRoot(rootPath);
+        var resolved = Path.GetFullPath(resolvedPath);
+        if (!IsUnderRoot(root, resolved))
+        {
+            throw new InvalidOperationException("Path traversal outside workspace is not allowed.");
+        }
+
+        var current = root;
+        foreach (var segment in GetRelativeSegments(root, resolved))
+        {
+            current = Path.Combine(current, segment);
+            if (GetLinkTargetOrThrow(current) != null)
+            {
+                throw new InvalidOperationException($"Linked workspace paths cannot be {operation}.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Identifies exact high-confidence credential file names that are safe to
+    /// use as a mandatory deny rule.
+    /// </summary>
+    public static bool IsProtectedCredentialSegment(string segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment))
+        {
+            return false;
+        }
+
+        var name = segment.Trim().ToLowerInvariant();
+        var protectedEnvironmentFile = name.Equals(".env", StringComparison.Ordinal) ||
+                                       name.StartsWith(".env.", StringComparison.Ordinal) &&
+                                       name is not ".env.example" and not ".env.sample" and not ".env.template";
+        return protectedEnvironmentFile ||
+               name is ".netrc" or "credentials" or "id_rsa" or "id_dsa" or "id_ecdsa" or "id_ed25519" ||
+               name.EndsWith(".key", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Heuristically identifies names that may carry credentials. This helper is
+    /// for warnings, manifests, or additional approval only; callers must not use
+    /// fuzzy matches as an unconditional read/write denial.
     /// </summary>
     public static bool IsSecretLookingSegment(string segment)
     {
@@ -92,10 +143,9 @@ public static class QueryRuntimePathSafety
         }
 
         var name = segment.Trim().ToLowerInvariant();
-        return name is ".env" or ".env.local" or ".netrc" or "id_rsa" or "id_dsa" or "id_ecdsa" or "id_ed25519" ||
+        return IsProtectedCredentialSegment(name) ||
                SecretSegmentMarkers.Any(name.Contains) ||
-               name.EndsWith(".pem", StringComparison.Ordinal) ||
-               name.EndsWith(".key", StringComparison.Ordinal);
+               name.EndsWith(".pem", StringComparison.Ordinal);
     }
 
     private static string[] GetRelativeSegments(string rootPath, string resolvedPath)
@@ -123,7 +173,7 @@ public static class QueryRuntimePathSafety
             }
 
             current = Path.Combine(current, segment);
-            var linkTarget = TryGetLinkTarget(current);
+            var linkTarget = GetLinkTargetOrThrow(current);
             if (linkTarget == null)
             {
                 continue;
@@ -136,15 +186,25 @@ public static class QueryRuntimePathSafety
         }
     }
 
-    private static string? TryGetLinkTarget(string path)
+    private static void RejectLinkedRoot(string rootPath)
+    {
+        var linkTarget = GetLinkTargetOrThrow(rootPath);
+        if (linkTarget != null)
+        {
+            throw new InvalidOperationException("Workspace or trace root cannot be a symlink or junction.");
+        }
+    }
+
+    private static string? GetLinkTargetOrThrow(string path)
     {
         try
         {
-            FileSystemInfo info = Directory.Exists(path)
+            var attributes = File.GetAttributes(path);
+            FileSystemInfo info = attributes.HasFlag(FileAttributes.Directory)
                 ? new DirectoryInfo(path)
                 : new FileInfo(path);
 
-            if (string.IsNullOrWhiteSpace(info.LinkTarget))
+            if (!attributes.HasFlag(FileAttributes.ReparsePoint) && string.IsNullOrWhiteSpace(info.LinkTarget))
             {
                 return null;
             }
@@ -155,16 +215,24 @@ public static class QueryRuntimePathSafety
                 return finalTarget.FullName;
             }
 
+            if (string.IsNullOrWhiteSpace(info.LinkTarget))
+            {
+                throw new InvalidOperationException($"Unable to resolve reparse-point target: {path}");
+            }
+
             var linkParent = Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory();
             return Path.IsPathFullyQualified(info.LinkTarget)
                 ? Path.GetFullPath(info.LinkTarget)
                 : Path.GetFullPath(Path.Combine(linkParent, info.LinkTarget));
         }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            throw new InvalidOperationException($"Unable to verify path link safety: {path}", ex);
         }
-
-        return null;
     }
 
     private static StringComparison GetComparison()

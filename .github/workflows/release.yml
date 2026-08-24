@@ -1,82 +1,138 @@
 name: Release
 
-# Publishes single-file Native AOT `qre` binaries for every supported platform
-# after CI succeeds on main, whenever a version tag (e.g. v0.1.0-alpha.1) is
-# pushed, or when the workflow is manually dispatched.
+# Publishes single-file Native AOT `qre` binaries for every supported platform.
+# Releases are manual and require the protected `qre-production-release`
+# environment plus a credential-rotation confirmation variable.
 #
 # Native AOT cannot cross-compile across operating systems, so each target is
 # built on a matching native runner.
 
 on:
-  workflow_run:
-    workflows: ['CI']
-    branches: [main]
-    types: [completed]
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Version to stamp (without leading v), e.g. 0.1.0-alpha.1'
         required: true
         default: '0.0.0-dev'
+      release_ref:
+        description: 'Reviewed commit SHA or protected branch to release'
+        required: true
+        default: 'main'
+      credential_rotation_evidence:
+        description: 'Non-secret incident/ticket reference proving exposed credentials were rotated'
+        required: true
+      confirm_release:
+        description: 'I confirm this release has been reviewed and is ready to publish'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: qre-release-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
+  release-gate:
+    name: Protected release approval
+    runs-on: ubuntu-latest
+    environment: qre-production-release
+    steps:
+      - name: Verify approval and credential rotation evidence
+        shell: bash
+        env:
+          CONFIRMED: ${{ inputs.confirm_release }}
+          ROTATION_EVIDENCE: ${{ inputs.credential_rotation_evidence }}
+          ROTATION_APPROVED: ${{ vars.QRE_CREDENTIAL_ROTATION_APPROVED }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRMED" = "true" || { echo "Explicit release confirmation is required." >&2; exit 1; }
+          test "$ROTATION_APPROVED" = "true" || { echo "Environment variable QRE_CREDENTIAL_ROTATION_APPROVED must be true." >&2; exit 1; }
+          case "${ROTATION_EVIDENCE,,}" in
+            ""|todo|pending|none|n/a) echo "Completed rotation evidence is required." >&2; exit 1 ;;
+          esac
+
   metadata:
     name: Resolve release metadata
+    needs: release-gate
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     outputs:
       version: ${{ steps.meta.outputs.version }}
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       target_commitish: ${{ steps.meta.outputs.target_commitish }}
     steps:
-      - name: Resolve checkout ref
-        id: ref
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            CHECKOUT_REF="${{ github.event.workflow_run.head_sha }}"
-          else
-            CHECKOUT_REF="${GITHUB_SHA}"
-          fi
-          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ steps.ref.outputs.checkout_ref }}
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
 
       - name: Resolve version
         id: meta
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
-            VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj | head -n 1)"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-
-          if [ -z "$VERSION" ]; then
-            echo "Failed to resolve release version." >&2
+          VERSION="${{ inputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
             exit 1
           fi
 
-          CHECKOUT_REF="${{ steps.ref.outputs.checkout_ref }}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
-          echo "target_commitish=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1
+          TAG_STATUS=$?
+          set -e
+          case "$TAG_STATUS" in
+            0) echo "Release tag v$VERSION already exists; published versions are immutable." >&2; exit 1 ;;
+            2) ;;
+            *) echo "Unable to verify whether release tag v$VERSION exists." >&2; exit 1 ;;
+          esac
+
+          RELEASE_STATUS="$(curl --silent --show-error --output /tmp/qre-release.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION")"
+          case "$RELEASE_STATUS" in
+            404) ;;
+            200) echo "GitHub release v$VERSION already exists; published versions are immutable." >&2; exit 1 ;;
+            *) echo "Unable to verify GitHub release v$VERSION (HTTP $RELEASE_STATUS)." >&2; exit 1 ;;
+          esac
+
+          CHECKOUT_REF="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$CHECKOUT_REF" origin/main; then
+            echo "Release ref must be a commit contained in origin/main." >&2
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "checkout_ref=$CHECKOUT_REF"
+            echo "target_commitish=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION"
           echo "Resolved checkout ref: $CHECKOUT_REF"
 
+  test:
+    name: Build & unit-test release ref
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore CodexFlow.QueryRuntime.slnx
+      - run: dotnet build CodexFlow.QueryRuntime.slnx --configuration Release --no-restore
+      - run: dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
   build:
     name: Build ${{ matrix.rid }}
-    needs: metadata
+    needs: [metadata, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -93,12 +149,12 @@ jobs:
           - os: windows-latest
             rid: win-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.metadata.outputs.checkout_ref }}
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
@@ -106,14 +162,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
-      - name: Publish Native AOT
+      - name: Publish Native AOT + trim/AOT warning gate
         shell: bash
+        env:
+          QRE_PACKAGE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          dotnet publish CodexFlow.QueryRuntime.Cli \
-            -c Release -r ${{ matrix.rid }} \
-            -p:PublishAot=true -p:SelfContained=true \
-            -p:Version=${{ needs.metadata.outputs.version }} \
-            -p:AssemblyInformationalVersion=${{ needs.metadata.outputs.version }}
+          set -euo pipefail
+          scripts/qre-aot-gate.sh ${{ matrix.rid }} Release | tee qre-aot-gate.log
+          QRE_BINARY="$(grep -m1 '^qre_binary=' qre-aot-gate.log | sed 's/^qre_binary=//')"
+          test -n "$QRE_BINARY"
+          scripts/qre-aot-smoke.sh "$QRE_BINARY"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -177,7 +235,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "qre run failed" }
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qre-${{ matrix.rid }}
           path: |
@@ -187,17 +245,59 @@ jobs:
             qre-${{ matrix.rid }}.zip.sha256
           if-no-files-found: ignore
 
+  security:
+    name: Secrets, dependencies, licenses & SBOM
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Secret scan (current tree)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /repo --redact --no-banner
+
+      - name: Secret scan (complete Git history)
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --log-opts=--all --redact --no-banner
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Dependency vulnerability and license gates
+        run: bash scripts/qre-dependency-gate.sh
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: artifacts/qre-sbom.spdx.json
+          artifact-name: qre-sbom
+          syft-version: v1.51.0
+          upload-release-assets: false
+
   nuget:
     name: Pack NuGet package
     needs: metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.metadata.outputs.checkout_ref }}
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
@@ -208,8 +308,11 @@ jobs:
           QRE_NUGET_OUTPUT: artifacts/nuget
         run: scripts/qre-pack-nuget.sh Release
 
+      - name: Smoke clean package
+        run: bash scripts/qre-package-smoke.sh artifacts/nuget
+
       - name: Upload NuGet artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qre-nuget
           path: |
@@ -220,11 +323,15 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [metadata, build, nuget]
+    needs: [metadata, build, nuget, security]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -232,12 +339,21 @@ jobs:
       - name: List artifacts
         run: ls -la dist
 
-      - name: Create / update release
-        uses: softprops/action-gh-release@v2
+      - name: Attest release artifacts (Sigstore-backed provenance)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
-          tag_name: v${{ needs.metadata.outputs.version }}
-          target_commitish: ${{ needs.metadata.outputs.target_commitish }}
-          name: qre v${{ needs.metadata.outputs.version }}
-          files: dist/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          subject-path: 'dist/*'
+
+      - name: Create immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TARGET_COMMITISH: ${{ needs.metadata.outputs.target_commitish }}
+        run: |
+          set -euo pipefail
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET_COMMITISH" \
+            --title "qre v$VERSION" \
+            --generate-notes

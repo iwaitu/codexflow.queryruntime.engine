@@ -3,6 +3,8 @@
 # framework-dependent build). Exercises the P3 smoke surface:
 #   - qre --version
 #   - qre run (offline, deterministic response)
+#   - qre run --runtime v2 (C6 audit + C5 context/deferred catalog path)
+#   - qre replay latest --runtime v2 (data-only C6 replay)
 #   - qre tool list
 #   - qre replay latest (recorded / non-strict)
 #   - qre replay latest --strict, including a same-source-trace determinism
@@ -48,9 +50,33 @@ echo
 echo "== qre run (offline) =="
 RUN_WS="${SCRATCH}/run"
 mkdir -p "${RUN_WS}"
-"${QRE_BIN}" run --workspace "${RUN_WS}" --response "offline smoke" --json "analyze this repo" > "${SCRATCH}/run.json"
+"${QRE_BIN}" run --workspace "${RUN_WS}" --trace-data sanitized --response "offline smoke" --json "analyze this repo" > "${SCRATCH}/run.json"
 cat "${SCRATCH}/run.json"; echo
 [[ "$(json_str "${SCRATCH}/run.json" type)" == "qre.run.completed" ]] || fail "run did not report qre.run.completed"
+
+echo
+echo "== qre run --runtime v2 (offline) =="
+"${QRE_BIN}" run --runtime v2 --workspace "${RUN_WS}" --profile readonly --tool-search --trace-data sanitized --response "offline v2 smoke" --json "exercise the C6 audit and C5 context" > "${SCRATCH}/run-v2.json"
+cat "${SCRATCH}/run-v2.json"; echo
+[[ "$(json_str "${SCRATCH}/run-v2.json" type)" == "qre.v2.run.completed" ]] || fail "v2 run did not report qre.v2.run.completed"
+[[ "$(json_str "${SCRATCH}/run-v2.json" status)" == "Completed" ]] || fail "v2 run did not complete"
+[[ "$(json_str "${SCRATCH}/run-v2.json" profile)" == "readonly" ]] || fail "v2 run did not use readonly profile"
+grep -aq '"qre_read_file"' "${SCRATCH}/run-v2.json" || fail "v2 run did not expose the frozen readonly tool catalog"
+[[ "$(json_raw "${SCRATCH}/run-v2.json" deferredToolSearch)" == "true" ]] || fail "v2 run did not enable deferred tool selection"
+[[ "$(json_str "${SCRATCH}/run-v2.json" contextEstimator)" == "utf8-bytes-div4-v2" ]] || fail "v2 run did not report the C5 context estimator"
+[[ "$(json_raw "${SCRATCH}/run-v2.json" auditSchemaVersion)" == "1" ]] || fail "v2 run did not report audit schema v1"
+[[ "$(json_str "${SCRATCH}/run-v2.json" auditDataMode)" == "SanitizedFixture" ]] || fail "v2 run did not persist a sanitized fixture"
+[[ "$(json_str "${SCRATCH}/run-v2.json" auditReplayCapability)" == "Recorded" ]] || fail "v2 run did not report recorded replay capability"
+
+echo
+echo "== qre replay latest --runtime v2 (C6 data-only replay) =="
+"${QRE_BIN}" replay latest --runtime v2 --workspace "${RUN_WS}" --strict --json > "${SCRATCH}/replay-v2.json"
+cat "${SCRATCH}/replay-v2.json"; echo
+[[ "$(json_str "${SCRATCH}/replay-v2.json" type)" == "qre.v2.replay.completed" ]] || fail "v2 recorded replay did not complete"
+[[ "$(json_str "${SCRATCH}/replay-v2.json" mode)" == "strict-recorded-replay" ]] || fail "v2 replay did not use strict recorded mode"
+[[ "$(json_raw "${SCRATCH}/replay-v2.json" providerCalls)" == "false" ]] || fail "v2 replay reported provider calls"
+[[ "$(json_raw "${SCRATCH}/replay-v2.json" toolExecutions)" == "false" ]] || fail "v2 replay reported tool executions"
+[[ -n "$(json_str "${SCRATCH}/replay-v2.json" replayDigest)" ]] || fail "v2 replay produced no replayDigest"
 
 echo
 echo "== qre tool list =="

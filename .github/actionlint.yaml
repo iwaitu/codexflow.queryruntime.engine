@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # GitHub added this standard hosted label after actionlint 1.7.7's embedded
+  # label list. Keep the workflow on the official Intel runner while allowing
+  # the pinned local validator to recognize it.
+  labels:
+    - macos-15-intel

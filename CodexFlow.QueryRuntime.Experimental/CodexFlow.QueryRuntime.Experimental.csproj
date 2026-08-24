@@ -9,12 +9,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
-    <PackageReference Include="VllmChatClient" Version="2.0.21" />
+    <PackageReference Include="VllmChatClient" Version="2.0.22" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Engine\CodexFlow.QueryRuntime.Engine.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.LocalProcess\CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
   </ItemGroup>
 

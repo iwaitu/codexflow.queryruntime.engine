@@ -1,5 +1,6 @@
 using CodexFlow.QueryRuntime.Experimental;
 using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Protocol;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.IntegrationTests.Infrastructure;
@@ -24,6 +25,11 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
 
     public IExperimentalModelClient CreateExperimentalModelClient()
         => new ChatClientExperimentalModelClient(_chatClient);
+
+    public IRuntimeModelClient CreateRuntimeModelClient()
+        => new MeaiRuntimeModelClient(
+            _chatClient,
+            request => CreateChatOptions(maxOutputTokens: request.Parameters.MaxOutputTokens ?? 256));
 
     public static bool TryCreate(out RealQueryRuntimeTestHost? host, out string reason)
     {

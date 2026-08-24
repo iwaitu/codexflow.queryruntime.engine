@@ -255,7 +255,13 @@ public static class ExperimentalVerifyToolPack
             throw new InvalidOperationException($"Capability policy {decision.Kind}: {decision.Reason}");
         }
 
-        return await sandboxRunner.RunAsync(spec).ConfigureAwait(false);
+        var result = await sandboxRunner.RunAsync(spec).ConfigureAwait(false);
+        if (result.ExitCode != 0 || result.TimedOut)
+        {
+            throw new InvalidOperationException(FormatResult(string.Join(' ', command), result, maxOutputChars));
+        }
+
+        return result;
     }
 
     private static string FormatResult(string command, SandboxResult result, int maxOutputChars)

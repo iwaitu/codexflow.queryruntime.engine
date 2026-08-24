@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>qre</AssemblyName>
-    <Version>0.1.2</Version>
-    <AssemblyInformationalVersion>0.1.2</AssemblyInformationalVersion>
+    <Version>$(VersionPrefix)</Version>
+    <AssemblyInformationalVersion>$(VersionPrefix)</AssemblyInformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="VllmChatClient" Version="2.0.21" />
+    <PackageReference Include="VllmChatClient" Version="2.0.22" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />

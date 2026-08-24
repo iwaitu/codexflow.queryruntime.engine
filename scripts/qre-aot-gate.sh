@@ -14,6 +14,7 @@
 #   QRE_AOT_RID            Default RID when <rid> is omitted (default native RID).
 #   QRE_CONFIGURATION      Default configuration (default Release).
 #   QRE_APPROVED_WARNINGS  Path to the approved-warnings allowlist.
+#   QRE_PACKAGE_VERSION    Optional package/assembly version stamped into the binary.
 #
 # On success it prints "qre_binary=<path>" as the last line so callers can
 # locate the produced native binary.
@@ -47,6 +48,13 @@ export DOTNET_CLI_UI_LANGUAGE="${DOTNET_CLI_UI_LANGUAGE:-en}"
 RID="${1:-${QRE_AOT_RID:-$(detect_native_rid)}}"
 CONFIGURATION="${2:-${QRE_CONFIGURATION:-Release}}"
 APPROVED="${QRE_APPROVED_WARNINGS:-${ROOT_DIR}/scripts/qre-aot-approved-warnings.txt}"
+PUBLISH_PROPERTIES=()
+if [[ -n "${QRE_PACKAGE_VERSION:-}" ]]; then
+  PUBLISH_PROPERTIES+=(
+    "-p:Version=${QRE_PACKAGE_VERSION}"
+    "-p:AssemblyInformationalVersion=${QRE_PACKAGE_VERSION}"
+  )
+fi
 
 PROJECT="${ROOT_DIR}/CodexFlow.QueryRuntime.Cli"
 LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/qre-aot-publish.XXXXXX")"
@@ -67,6 +75,7 @@ dotnet publish "${PROJECT}" \
   -p:PublishAot=true \
   -p:SelfContained=true \
   -p:TrimmerSingleWarn=false \
+  "${PUBLISH_PROPERTIES[@]}" \
   2>&1 | tee "${LOG_FILE}"
 
 PUBLISH_STATUS="${PIPESTATUS[0]}"

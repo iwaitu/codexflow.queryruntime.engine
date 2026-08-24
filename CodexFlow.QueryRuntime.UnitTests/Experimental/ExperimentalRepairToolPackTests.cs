@@ -21,7 +21,10 @@ public sealed class ExperimentalRepairToolPackTests
         });
 
         Assert.Contains("wrote src/notes.txt", result, StringComparison.Ordinal);
-        Assert.Equal("hello repair" + Environment.NewLine, File.ReadAllText(Path.Combine(workspace.Path, "src", "notes.txt")));
+        var writtenPath = Path.Combine(workspace.Path, "src", "notes.txt");
+        Assert.Equal("hello repair" + Environment.NewLine, File.ReadAllText(writtenPath));
+        var bytes = File.ReadAllBytes(writtenPath);
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
         Assert.Equal("src/notes.txt", File.ReadAllText(Path.Combine(runDirectory, "repair-edits.txt")).Trim());
     }
 
@@ -69,7 +72,9 @@ public sealed class ExperimentalRepairToolPackTests
     [InlineData(".git/config")]
     [InlineData(".Git/config")]
     [InlineData(".env")]
-    [InlineData("nested/api-token.txt")]
+    [InlineData(".env.staging")]
+    [InlineData(".env.test")]
+    [InlineData("keys/credentials")]
     [InlineData("keys/id_rsa")]
     public async Task WriteFile_RejectsProtectedAndSecretLookingPaths(string path)
     {
@@ -85,7 +90,28 @@ public sealed class ExperimentalRepairToolPackTests
 
         Assert.True(
             ex.Message.Contains("Protected workspace artifacts", StringComparison.Ordinal) ||
-            ex.Message.Contains("Secret-looking paths", StringComparison.Ordinal));
+            ex.Message.Contains("Protected credential paths", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("src/TokenService.cs")]
+    [InlineData("tests/SecretMaskerTests.cs")]
+    [InlineData("docs/credentials-guide.md")]
+    [InlineData(".env.example")]
+    [InlineData(".env.sample")]
+    [InlineData(".env.template")]
+    public async Task WriteFile_AllowsFuzzySecretLookingSourcePaths(string path)
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var tools = ExperimentalRepairToolPack.Create(workspace.Path);
+
+        _ = await InvokeAsync(tools, "qre_write_file", new()
+        {
+            ["path"] = path,
+            ["content"] = "normal source content"
+        });
+
+        Assert.True(File.Exists(Path.Combine(workspace.Path, path)));
     }
 
     [Fact]
@@ -166,6 +192,41 @@ public sealed class ExperimentalRepairToolPackTests
             {
                 File.Delete(outside);
             }
+        }
+    }
+
+    [Fact]
+    public async Task WriteFile_RejectsInWorkspaceAliasToProtectedCredential()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var credential = Path.Combine(workspace.Path, ".env.staging");
+        var alias = Path.Combine(workspace.Path, "safe.txt");
+        File.WriteAllText(credential, "API_KEY=must-not-change");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(alias, credential);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            var tools = ExperimentalRepairToolPack.Create(workspace.Path);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await InvokeAsync(tools, "qre_write_file", new()
+                {
+                    ["path"] = "safe.txt",
+                    ["content"] = "overwritten"
+                }));
+
+            Assert.Contains("Linked workspace paths cannot be modified", ex.Message, StringComparison.Ordinal);
+            Assert.Equal("API_KEY=must-not-change", File.ReadAllText(credential));
+        }
+        finally
+        {
+            DeleteFileIfExists(alias);
         }
     }
 

@@ -5,9 +5,24 @@ using Microsoft.Extensions.AI;
 
 namespace CodexFlow.QueryRuntime.Experimental;
 
-public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimentalModelClient
+public sealed class RecordedReplayModelClient : IExperimentalModelClient
 {
-    private readonly Queue<RecordedModelResponse> _responses = new(LoadResponses(traceFilePath));
+    private readonly Queue<RecordedModelResponse> _responses;
+
+    public RecordedReplayModelClient(
+        string traceFilePath,
+        QueryRuntimeTraceReadOptions? options = null)
+        : this(traceFilePath, new RecordedReplayReadContext(options))
+    {
+    }
+
+    public RecordedReplayModelClient(
+        string traceFilePath,
+        RecordedReplayReadContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        _responses = new Queue<RecordedModelResponse>(LoadResponses(traceFilePath, context));
+    }
 
     public async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(
         QueryRuntimeModelRequest request,
@@ -33,8 +48,11 @@ public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimen
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static IReadOnlyList<RecordedModelResponse> LoadResponses(string traceFilePath)
-        => JsonlTraceStore.ReadRecords(traceFilePath)
+    private static IReadOnlyList<RecordedModelResponse> LoadResponses(
+        string traceFilePath,
+        RecordedReplayReadContext context)
+    {
+        return JsonlTraceStore.ReadRecords(traceFilePath, context.Options)
             .Where(static record => record.Type == "model.response")
             .Select(record =>
             {
@@ -44,10 +62,11 @@ public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimen
                 }
 
                 return new RecordedModelResponse(
-                    ReadPayloadText(traceFilePath, data, "AssistantText"),
+                    ReadPayloadText(traceFilePath, data, "AssistantText", context.ArtifactBudget),
                     ReadToolCalls(data));
             })
             .ToArray();
+    }
 
     private static IReadOnlyList<RecordedToolCall> ReadToolCalls(JsonElement data)
     {
@@ -70,7 +89,11 @@ public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimen
         return results;
     }
 
-    internal static string ReadPayloadText(string traceFilePath, JsonElement data, string propertyName)
+    internal static string ReadPayloadText(
+        string traceFilePath,
+        JsonElement data,
+        string propertyName,
+        TraceArtifactReadBudget? budget = null)
     {
         if (data.TryGetProperty(propertyName, out var inline) && inline.ValueKind == JsonValueKind.String)
         {
@@ -82,9 +105,8 @@ public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimen
             return string.Empty;
         }
 
-        var relativePath = ReadRequiredString(blob, "Path");
-        var blobPath = Path.Combine(JsonlTraceStore.GetRunDirectory(traceFilePath), relativePath);
-        return File.ReadAllText(blobPath);
+        return (budget ?? new TraceArtifactReadBudget(QueryRuntimeTraceReadOptions.Default))
+            .ReadText(traceFilePath, blob);
     }
 
     public static Dictionary<string, object?> ReadArguments(JsonElement args)
@@ -127,9 +149,17 @@ public sealed class RecordedReplayModelClient(string traceFilePath) : IExperimen
 
 public static class RecordedReplayToolPack
 {
-    public static IReadOnlyList<AIFunction> Create(string traceFilePath)
+    public static IReadOnlyList<AIFunction> Create(
+        string traceFilePath,
+        QueryRuntimeTraceReadOptions? options = null)
+        => Create(traceFilePath, new RecordedReplayReadContext(options));
+
+    public static IReadOnlyList<AIFunction> Create(
+        string traceFilePath,
+        RecordedReplayReadContext context)
     {
-        var outputs = LoadOutputs(traceFilePath);
+        ArgumentNullException.ThrowIfNull(context);
+        var outputs = LoadOutputs(traceFilePath, context);
         return outputs
             .GroupBy(static output => output.ToolName, StringComparer.OrdinalIgnoreCase)
             .Select(group => AIFunctionFactory.Create(
@@ -157,9 +187,11 @@ public static class RecordedReplayToolPack
             .ToArray();
     }
 
-    private static IReadOnlyList<RecordedToolOutput> LoadOutputs(string traceFilePath)
+    private static IReadOnlyList<RecordedToolOutput> LoadOutputs(
+        string traceFilePath,
+        RecordedReplayReadContext context)
     {
-        var records = JsonlTraceStore.ReadRecords(traceFilePath);
+        var records = JsonlTraceStore.ReadRecords(traceFilePath, context.Options);
         var hashesByCallId = records
             .Where(static record => record.Type == "tool.call.requested")
             .Select(static record => record.TryGetData(out var data)
@@ -193,7 +225,7 @@ public static class RecordedReplayToolPack
             outputs.Add(new RecordedToolOutput(
                 toolName,
                 hash,
-                RecordedReplayModelClient.ReadPayloadText(traceFilePath, data, "Result")));
+                RecordedReplayModelClient.ReadPayloadText(traceFilePath, data, "Result", context.ArtifactBudget)));
         }
 
         return outputs;

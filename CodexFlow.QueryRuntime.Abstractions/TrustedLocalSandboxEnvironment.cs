@@ -7,6 +7,8 @@ public static class TrustedLocalSandboxEnvironment
         "PATH",
         "HOME",
         "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
         "TMPDIR",
         "TMP",
         "TEMP",

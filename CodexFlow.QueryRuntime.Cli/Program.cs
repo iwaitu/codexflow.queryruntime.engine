@@ -1,11 +1,15 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using CodexFlow.QueryRuntime.Abstractions;
+using CodexFlow.QueryRuntime.Engine.V2;
 using CodexFlow.QueryRuntime.Experimental;
 using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Protocol;
 using CodexFlow.QueryRuntime.Sandbox.Docker;
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
 using Microsoft.Extensions.AI;
@@ -36,6 +40,7 @@ internal static class QreCli
             "policy" => Policy(args[1..]),
             "replay" => await Replay(args[1..], ct).ConfigureAwait(false),
             "rerun" => await Rerun(args[1..], ct).ConfigureAwait(false),
+            "resume" => await Resume(args[1..], ct).ConfigureAwait(false),
             "diff" => await Diff(args[1..], ct).ConfigureAwait(false),
             "sandbox" => await Sandbox(args[1..], ct).ConfigureAwait(false),
             "doctor" => await Doctor(args[1..], ct).ConfigureAwait(false),
@@ -106,12 +111,32 @@ internal static class QreCli
                     }
                     options.Runtime.MaxRounds = maxRounds;
                     break;
+                case "--runtime":
+                    if (++i >= args.Length || args[i] != "v2")
+                    {
+                        return Fail("v1 execution has been removed from qre run. --runtime accepts only v2 and is now optional.");
+                    }
+                    break;
+                case "--resume-checkpoint":
+                    if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        return Fail("--resume-checkpoint requires a path.");
+                    }
+                    options.ResumeCheckpointPath = args[i];
+                    break;
                 case "--required-tool":
                     if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
                     {
                         return Fail("--required-tool requires a tool name.");
                     }
                     options.RequiredToolName = args[i];
+                    break;
+                case "--approve-risk":
+                    if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        return Fail("--approve-risk requires a reason.");
+                    }
+                    options.ApprovalReason = args[i].Trim();
                     break;
                 case "--runner":
                     if (++i >= args.Length)
@@ -141,6 +166,13 @@ internal static class QreCli
                         return Fail("--thinking requires auto, off, on, or preserve.");
                     }
                     options.ModelPolicy.ThinkingPolicy = thinkingPolicy;
+                    break;
+                case "--trace-data":
+                    if (++i >= args.Length || !TryParseTraceDataMode(args[i], out var traceDataMode))
+                    {
+                        return Fail("--trace-data requires public, private, or sanitized.");
+                    }
+                    options.Trace = new QueryRuntimeTraceOptions { DataMode = traceDataMode };
                     break;
                 case "--json-output":
                     options.Output.RequestJson = true;
@@ -197,20 +229,69 @@ internal static class QreCli
             return Fail($"Workspace does not exist: {resolvedWorkspace}");
         }
 
-        IExperimentalModelClient? modelClient;
-        try
+        return await RunQueryV2Async(options, prompt, resolvedWorkspace, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<int> RunQueryV2Async(
+        QreRunOptions options,
+        string prompt,
+        string resolvedWorkspace,
+        CancellationToken ct)
+    {
+        var normalizedProfile = ExperimentalToolRegistry.NormalizeProfileName(options.ToolProfile.Name);
+        if (normalizedProfile is not ("none" or "readonly" or "verify" or "repair"))
         {
-            modelClient = CreateModelClient(options.Provider);
-        }
-        catch (QreModelSelectionException ex)
-        {
-            return Fail(ex.Message);
+            return Fail($"Unsupported profile value: {options.ToolProfile.Name}");
         }
 
-        if (modelClient == null)
+        RuntimeCheckpointDocument? resumeCheckpoint = null;
+        RuntimeAuditDataMode? resumeStorageMode = null;
+        if (!string.IsNullOrWhiteSpace(options.ResumeCheckpointPath))
         {
-            return Fail(
-                "No model client configured. Provide --response for offline smoke mode, or set --api-url, --api-key, and --model.");
+            var requestedStorageMode = ToV2AuditDataMode(options.Trace.DataMode);
+            if (requestedStorageMode == RuntimeAuditDataMode.PublicRedacted)
+            {
+                return Fail("H1 resume requires --trace-data sanitized or private; public-redacted storage cannot persist recovery state.");
+            }
+            try
+            {
+                resumeStorageMode = ResolveCheckpointStorageMode(
+                    resolvedWorkspace,
+                    options.ResumeCheckpointPath);
+                if (resumeStorageMode != requestedStorageMode)
+                {
+                    return Fail(
+                        $"Checkpoint storage class is {resumeStorageMode}; resume must preserve the same --trace-data class.");
+                }
+                resumeCheckpoint = RuntimeJsonCheckpointStore.Read(options.ResumeCheckpointPath);
+            }
+            catch (RuntimeResumeException ex)
+            {
+                return Fail($"Could not safely read v2 checkpoint ({ex.Error.Code}): {ex.Message}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                       InvalidDataException or JsonException or InvalidOperationException)
+            {
+                return Fail($"Could not safely read v2 checkpoint: {ex.Message}");
+            }
+            if (resumeCheckpoint.Disposition == RuntimeCheckpointDisposition.NeedsReconciliation)
+            {
+                return Fail("Checkpoint requires reconciliation because tool outcomes may be uncertain; no provider or tool was executed.");
+            }
+            if (resumeCheckpoint.Disposition == RuntimeCheckpointDisposition.Terminal)
+            {
+                return Fail("Latest checkpoint is terminal and cannot be resumed.");
+            }
+            if (!string.Equals(resumeCheckpoint.Request.Policy.Profile, normalizedProfile, StringComparison.Ordinal) ||
+                !string.Equals(
+                    resumeCheckpoint.Request.Environment.WorkspaceIdentity,
+                    resolvedWorkspace,
+                    OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+            {
+                return Fail("Checkpoint profile or workspace does not match the resume request.");
+            }
         }
 
         var sandboxRunner = CreateSandboxRunner(
@@ -223,117 +304,371 @@ internal static class QreCli
         {
             return Fail(runnerError);
         }
-
-        var tools = ResolveTools(
-            options.ToolProfile,
-            resolvedWorkspace,
-            sandboxRunner,
-            options.IncludeExternalTools);
-        if (tools == null)
+        var runSuffix = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid().ToString("N")[..8]}";
+        var auditOptions = new RuntimeAuditStoreOptions
         {
-            return Fail($"Unsupported profile value: {options.ToolProfile.Name}");
+            DataMode = ToV2AuditDataMode(options.Trace.DataMode),
+            Retention = options.Trace.PrivateDiagnosticRetention
+        };
+        await using var auditStore = RuntimeJsonlAuditStore.Create(
+            resolvedWorkspace,
+            $"v2-{runSuffix}",
+            auditOptions);
+        RuntimeJsonCheckpointStore? checkpointStore = auditOptions.DataMode == RuntimeAuditDataMode.PublicRedacted
+            ? null
+            : new RuntimeJsonCheckpointStore(
+                auditStore.RunDirectory,
+                new RuntimeJsonCheckpointStoreOptions
+                {
+                    Private = auditOptions.DataMode == RuntimeAuditDataMode.PrivateDiagnostic
+                });
+
+        ExperimentalV2RuntimeComposition composition;
+        try
+        {
+            var toolSearch = options.ToolSearch.Enabled
+                ? ResolveV2ToolSearchOptions(options.ToolSearch, options.RequiredToolName)
+                : null;
+            composition = ExperimentalV2ToolComposition.CreateRuntime(
+                new QueryRuntimeToolProfile(normalizedProfile),
+                resolvedWorkspace,
+                sandboxRunner,
+                string.Equals(runnerName, "docker", StringComparison.Ordinal)
+                    ? RuntimeSandboxKind.Docker
+                    : RuntimeSandboxKind.LocalProcess,
+                options.IncludeExternalTools,
+                toolSearch,
+                runDirectory: auditOptions.DataMode == RuntimeAuditDataMode.PublicRedacted
+                    ? null
+                    : auditStore.RunDirectory);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException)
+        {
+            return Fail(ex.Message);
+        }
+
+        IRuntimeModelClient? modelClient;
+        try
+        {
+            modelClient = CreateV2ModelClient(options);
+        }
+        catch (QreModelSelectionException ex)
+        {
+            return Fail(ex.Message);
+        }
+
+        if (modelClient == null)
+        {
+            return Fail(
+                "No v2 model client configured. Provide --response for static mode, or set --api-url, --api-key, and --model.");
         }
 
         try
         {
-            var wroteStreamText = false;
-            var harness = new ExperimentalQueryRuntimeHarness(modelClient);
-            var result = await harness.RunAsync(
-                new ExperimentalQueryRuntimeRequest
+            var sessionId = resumeCheckpoint?.Request.SessionId ?? new RuntimeSessionId($"qre-cli-{runSuffix}");
+            var turnId = resumeCheckpoint?.Request.TurnId ?? new RuntimeTurnId($"qre-cli-turn-{runSuffix}");
+            var toolPipeline = composition.Pipeline;
+            var runtime = new AgentRuntime(modelClient);
+            using var handle = new RuntimeTurnHandle();
+            var eventSink = options.Output.Stream
+                ? new CliV2EventSink(options.Output.Stream)
+                : null;
+            var baseRequest = resumeCheckpoint?.Request.ToLoopRequest() ?? new RuntimeAgentLoopRequest(
+                sessionId,
+                turnId,
+                prompt,
+                string.IsNullOrWhiteSpace(composition.CapabilityCatalog)
+                    ? [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])]
+                    :
+                    [
+                        new RuntimeMessage(
+                            RuntimeMessageRole.System,
+                            [new RuntimeTextItem(composition.CapabilityCatalog)]),
+                        new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])
+                    ],
+                toolPipeline.Descriptors,
+                new RuntimeModelParameters(
+                    Model: FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL")),
+                    RequireJsonObject: options.Output.RequestJson,
+                    RequiredToolName: options.RequiredToolName),
+                new RuntimePolicySnapshot("v2", normalizedProfile),
+                new RuntimeEnvironmentSnapshot(runnerName, resolvedWorkspace, $"v2:{normalizedProfile}"),
+                new RuntimeBudgetSnapshot(
+                    Math.Max(1, options.Runtime.MaxRounds),
+                    maxToolCalls: Math.Max(4, options.Runtime.MaxRounds * 4),
+                    maxModelRetries: 1,
+                    maxContinuations: Math.Max(0, options.Runtime.MaxStopGateContinuations)));
+            var loopRequest = baseRequest with
+            {
+                Attempt = resumeCheckpoint == null
+                    ? RuntimeRunAttempt.Create($"attempt-{runSuffix}")
+                    : RuntimeRunAttempt.Resume(resumeCheckpoint, $"attempt-{runSuffix}"),
+                CheckpointSink = checkpointStore,
+                CheckpointFailureMode = RuntimeCheckpointFailureMode.FailClosed,
+                RecoveryCompatibilityId = BuildCliRecoveryCompatibilityId(
+                    options,
+                    runnerName,
+                    runnerConfiguration,
+                    normalizedProfile,
+                    auditOptions.DataMode,
+                    composition.RecoveryCompatibilityDigest),
+                ToolPipeline = toolPipeline,
+                ToolCatalogSelector = composition.ToolCatalogSelector,
+                AuditSink = auditStore,
+                AuditFailureMode = RuntimeAuditFailureMode.FailClosed,
+                ToolApproval = options.ApprovalReason == null
+                    ? null
+                    : new CliV2ToolApproval(options.ApprovalReason)
+            };
+            var result = resumeCheckpoint == null
+                ? await runtime.RunAsync(
+                    new RuntimeRunRequest(loopRequest)
                 {
-                    Prompt = prompt,
-                    WorkspacePath = resolvedWorkspace,
-                    MaxRounds = options.Runtime.MaxRounds,
-                    EnableTools = tools.Count > 0,
-                    ToolSearch = options.ToolSearch,
-                    ToolProfile = options.ToolProfile,
-                    RequiresStructuredOutput = options.Output.RequestJson,
-                    ThinkingPolicy = options.ModelPolicy.ThinkingPolicy,
-                    Options = BuildChatOptions(options),
-                    RequiredToolName = options.RequiredToolName,
-                    TextDeltaSink = options.Output.Stream
-                        ? (delta, _) =>
-                        {
-                            Console.Write(delta);
-                            wroteStreamText = true;
-                            return ValueTask.CompletedTask;
-                        }
-                        : null
+                    Handle = handle
                 },
+                    eventSink,
+                    ct).ConfigureAwait(false)
+                : await runtime.ResumeAsync(
+                    new RuntimeResumeRequest(loopRequest, resumeCheckpoint)
+                {
+                    Handle = handle
+                },
+                eventSink,
                 ct).ConfigureAwait(false);
-            await AppendRunRunnerConfigurationTraceAsync(
-                result.TraceFilePath,
-                result.RunId,
-                runnerName,
-                runnerConfiguration).ConfigureAwait(false);
-            await FinalizeRunArtifactsAsync(
-                result.TraceFilePath,
+            await FinalizeV2RunArtifactsAsync(
+                auditStore.RunDirectory,
                 resolvedWorkspace,
-                result.RunId,
-                result.TotalRounds,
-                result.TotalToolCalls,
-                result.TotalDurationMs,
+                prompt,
+                result,
+                options.Trace,
                 ct).ConfigureAwait(false);
 
             if (options.Output.Json)
             {
-                WriteJson(new QreRunOutput(
-                    "qre.run.completed",
+                WriteJson(new QreV2RunOutput(
+                    resumeCheckpoint == null ? "qre.v2.run.completed" : "qre.v2.resume.completed",
                     result.FinalText,
-                    result.RunId,
-                    result.TerminationReason,
-                    options.ToolProfile.Name,
-                    runnerName,
-                    runnerConfiguration,
-                    tools.Select(static tool => tool.Name).ToArray(),
-                    resolvedWorkspace,
-                    result.TraceFilePath,
-                    JsonlTraceStore.GetRunDirectory(result.TraceFilePath),
-                    Path.Combine(JsonlTraceStore.GetRunDirectory(result.TraceFilePath), "manifest.json"),
-                    result.TotalRounds,
-                    result.TotalToolCalls,
-                    result.TotalDurationMs)
+                    sessionId.Value,
+                    turnId.Value,
+                    result.Status.ToString(),
+                    result.TerminationReason.ToString(),
+                    result.Turn.Steps.Count,
+                    result.Turn.Progress.ToolCallCount,
+                    result.Turn.Progress.ContinuationCount,
+                    result.Usage.InputTokens,
+                    result.Usage.OutputTokens,
+                    result.Usage.TotalTokens,
+                    result.Error?.Code)
                 {
-                    TerminalDetailCode = result.TerminalDetailCode,
-                    ZeroToolCallRounds = result.ZeroToolCallRounds,
-                    ContinuationCount = result.ContinuationCount,
-                    WriteToolCalls = result.WriteToolCalls,
-                    LastFunctionCall = result.LastFunctionCall,
-                    RequiredToolName = result.RequiredToolName,
-                    RequiredToolSatisfied = result.RequiredToolSatisfied,
-                    ExecutedToolNames = result.ExecutedToolNames,
-                    SuccessfulToolNames = result.SuccessfulToolNames
+                    Profile = normalizedProfile,
+                    Runner = runnerName,
+                    Tools = toolPipeline.Descriptors.Select(static tool => tool.CanonicalName).ToArray(),
+                    HistoryVersion = result.Session.HistoryVersion,
+                    ContextPreparations = result.LoopResult.PreparedContexts.Count,
+                    CompactionCount = result.LoopResult.PreparedContexts.Count(static context => context.Compacted),
+                    MaxPreparedContextTokens = result.LoopResult.PreparedContexts.Count == 0
+                        ? 0
+                        : result.LoopResult.PreparedContexts.Max(static context => context.EstimatedTokens),
+                    ContextEstimator = RuntimeTokenEstimator.Version,
+                    DeferredToolSearch = composition.ToolCatalogSelector != null,
+                    AuditSchemaVersion = RuntimeAuditSchema.CurrentVersion,
+                    AuditEventCount = result.LoopResult.AuditEvents.Count,
+                    AuditFilePath = auditStore.AuditFilePath,
+                    RunDirectory = auditStore.RunDirectory,
+                    AuditDataMode = auditOptions.DataMode.ToString(),
+                    AuditReplayCapability = auditOptions.ReplayCapability.ToString(),
+                    AttemptId = result.Attempt?.AttemptId.Value,
+                    ParentAttemptId = result.Attempt?.ParentAttemptId?.Value,
+                    RootAttemptId = result.Attempt?.RootAttemptId.Value,
+                    AttemptOrdinal = result.Attempt?.Ordinal ?? 0,
+                    CheckpointPath = checkpointStore?.CheckpointPath
                 });
             }
             else
             {
-                if (options.Output.Stream)
+                if (options.Output.Stream && !result.FinalText.EndsWith('\n'))
                 {
-                    if (wroteStreamText && !result.FinalText.EndsWith('\n'))
-                    {
-                        Console.WriteLine();
-                    }
+                    Console.WriteLine();
                 }
-                else
+                else if (!options.Output.Stream)
                 {
                     Console.WriteLine(result.FinalText);
                     Console.WriteLine();
                 }
-                Console.WriteLine($"run_id: {result.RunId}");
+                Console.WriteLine("runtime: v2");
+                Console.WriteLine($"session_id: {sessionId.Value}");
+                Console.WriteLine($"turn_id: {turnId.Value}");
+                Console.WriteLine($"status: {result.Status}");
                 Console.WriteLine($"termination: {result.TerminationReason}");
+                Console.WriteLine($"profile: {normalizedProfile}");
                 Console.WriteLine($"runner: {runnerName}");
-                Console.WriteLine($"tools: {(tools.Count == 0 ? "none" : string.Join(',', tools.Select(tool => tool.Name)))}");
-                Console.WriteLine($"trace: {result.TraceFilePath}");
-                Console.WriteLine($"run_directory: {JsonlTraceStore.GetRunDirectory(result.TraceFilePath)}");
-                Console.WriteLine($"write_tool_calls: {result.WriteToolCalls}");
+                Console.WriteLine($"audit: {auditStore.AuditFilePath}");
+                Console.WriteLine($"audit_events: {result.LoopResult.AuditEvents.Count}");
+                Console.WriteLine($"audit_data_mode: {auditOptions.DataMode}");
+                Console.WriteLine($"audit_replay: {auditOptions.ReplayCapability}");
+                Console.WriteLine($"attempt_id: {result.Attempt?.AttemptId.Value}");
+                Console.WriteLine($"parent_attempt_id: {result.Attempt?.ParentAttemptId?.Value}");
+                Console.WriteLine($"attempt_ordinal: {result.Attempt?.Ordinal ?? 0}");
+                if (checkpointStore != null)
+                {
+                    Console.WriteLine($"checkpoint: {checkpointStore.CheckpointPath}");
+                }
             }
 
-            return 0;
+            return result.Status == RuntimeTurnStatus.Completed ? 0 : 1;
+        }
+        catch (RuntimeResumeException ex)
+        {
+            return Fail($"Resume failed ({ex.Error.Code}): {ex.Message}");
+        }
+        catch (ArgumentException ex) when (resumeCheckpoint != null)
+        {
+            return Fail($"Resume request is incompatible with the checkpoint: {ex.Message}");
         }
         finally
         {
             (modelClient as IDisposable)?.Dispose();
         }
+    }
+
+    private static IRuntimeModelClient? CreateV2ModelClient(QreRunOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.Provider.StaticResponse))
+        {
+            return new StaticRuntimeModelClient(options.Provider.StaticResponse);
+        }
+
+        var apiUrl = FirstNonEmpty(options.Provider.ApiUrl, Environment.GetEnvironmentVariable("QRE_API_URL"));
+        var apiKey = FirstNonEmpty(options.Provider.ApiKey, Environment.GetEnvironmentVariable("QRE_API_KEY"));
+        var model = FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL"));
+        var apiMode = FirstNonEmpty(options.Provider.ApiMode, Environment.GetEnvironmentVariable("QRE_API_MODE"));
+        if (string.IsNullOrWhiteSpace(apiUrl) ||
+            string.IsNullOrWhiteSpace(apiKey) ||
+            string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        return new MeaiRuntimeModelClient(
+            QreVllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode),
+            request => new ChatOptions
+            {
+                Temperature = request.Parameters.Temperature is { } temperature
+                    ? (float)temperature
+                    : null,
+                MaxOutputTokens = request.Parameters.MaxOutputTokens,
+                ResponseFormat = request.Parameters.RequireJsonObject
+                    ? ChatResponseFormat.Json
+                    : null
+            });
+    }
+
+    private static string BuildCliRecoveryCompatibilityId(
+        QreRunOptions options,
+        string runnerName,
+        QreSandboxRunnerConfiguration? runnerConfiguration,
+        string normalizedProfile,
+        RuntimeAuditDataMode storageMode,
+        string toolCompositionDigest)
+    {
+        var providerIdentity = !string.IsNullOrWhiteSpace(options.Provider.StaticResponse)
+            ? "static"
+            : string.Join('|',
+                FirstNonEmpty(options.Provider.ApiUrl, Environment.GetEnvironmentVariable("QRE_API_URL")),
+                FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL")),
+                FirstNonEmpty(options.Provider.ApiMode, Environment.GetEnvironmentVariable("QRE_API_MODE")));
+        var providerDigest = providerIdentity == "static"
+            ? "static"
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerIdentity)))
+                .ToLowerInvariant();
+        var runnerIdentity = runnerConfiguration == null
+            ? runnerName
+            : string.Join('|',
+                runnerConfiguration.Type,
+                runnerConfiguration.Image,
+                runnerConfiguration.ContainerUser,
+                runnerConfiguration.DropAllCapabilities,
+                runnerConfiguration.NoNewPrivileges,
+                runnerConfiguration.ReadOnlyRootFilesystem,
+                runnerConfiguration.TmpfsMount,
+                runnerConfiguration.SeccompProfilePath,
+                runnerConfiguration.RequireSeccompProfile,
+                runnerConfiguration.CopyWorkspaceForWriteJobs);
+        var runnerDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(runnerIdentity)))
+            .ToLowerInvariant();
+        var approvalDigest = string.IsNullOrEmpty(options.ApprovalReason)
+            ? "none"
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(options.ApprovalReason)))
+                .ToLowerInvariant();
+        return string.Join(':',
+            "qre-cli-h1",
+            "v3",
+            $"provider={providerDigest}",
+            $"runner={runnerName}",
+            $"runner-config={runnerDigest}",
+            $"storage={storageMode.ToString().ToLowerInvariant()}",
+            $"profile={normalizedProfile}",
+            $"external={options.IncludeExternalTools.ToString().ToLowerInvariant()}",
+            $"tool-composition={toolCompositionDigest}",
+            $"tool-search={options.ToolSearch.Enabled.ToString().ToLowerInvariant()}",
+            $"thinking={options.ModelPolicy.ThinkingPolicy.ToString().ToLowerInvariant()}",
+            $"approval={approvalDigest}");
+    }
+
+    private static RuntimeAuditDataMode ResolveCheckpointStorageMode(
+        string workspacePath,
+        string checkpointPath)
+    {
+        var workspace = Path.GetFullPath(workspacePath);
+        var checkpoint = Path.GetFullPath(checkpointPath);
+        var runDirectory = Path.GetDirectoryName(checkpoint) ??
+            throw new InvalidDataException("Checkpoint path has no run directory.");
+        var expected = QueryRuntimePathSafety.ResolveUnderRoot(runDirectory, "checkpoint.v1.json");
+        if (!string.Equals(checkpoint, expected, CliPathComparison()))
+        {
+            throw new InvalidDataException("Checkpoint must use the canonical checkpoint filename.");
+        }
+        var runsRoot = Path.GetDirectoryName(runDirectory) ??
+            throw new InvalidDataException("Checkpoint path has no runs root.");
+        var v2Root = QueryRuntimePathSafety.ResolveUnderRoot(workspace, Path.Combine(".qre", "v2"));
+        var sanitizedRoot = QueryRuntimePathSafety.ResolveUnderRoot(v2Root, "runs");
+        var privateRoot = QueryRuntimePathSafety.ResolveUnderRoot(v2Root, Path.Combine("private", "runs"));
+        QueryRuntimePathSafety.RejectWorkspaceLinks(runDirectory, checkpoint, "read for recovery");
+        if (string.Equals(runsRoot, sanitizedRoot, CliPathComparison()))
+        {
+            return RuntimeAuditDataMode.SanitizedFixture;
+        }
+        if (string.Equals(runsRoot, privateRoot, CliPathComparison()))
+        {
+            return RuntimeAuditDataMode.PrivateDiagnostic;
+        }
+        throw new InvalidDataException(
+            "Checkpoint must be directly under the workspace .qre/v2 runs or private/runs tree.");
+    }
+
+    private static StringComparison CliPathComparison()
+        => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+    private static QueryRuntimeToolSearchOptions ResolveV2ToolSearchOptions(
+        QueryRuntimeToolSearchOptions source,
+        string? requiredToolName)
+    {
+        var alwaysOn = new HashSet<string>(source.AlwaysOnToolNames, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(requiredToolName))
+        {
+            alwaysOn.Add(requiredToolName);
+        }
+        return new QueryRuntimeToolSearchOptions
+        {
+            Enabled = true,
+            TopK = source.TopK,
+            AlwaysOnToolNames = alwaysOn.Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+            DeferredToolNames = source.DeferredToolNames.ToArray(),
+            IncludeAlreadyActive = source.IncludeAlreadyActive,
+            IncludeUnavailable = source.IncludeUnavailable
+        };
     }
 
     private static IExperimentalModelClient? CreateModelClient(QueryRuntimeProviderOptions options)
@@ -384,6 +719,33 @@ internal static class QreCli
             : tools;
     }
 
+    private static IReadOnlySet<string> ResolveApprovalRequiredToolNames(
+        QueryRuntimeToolProfile profile,
+        string workspacePath,
+        bool includeExternal)
+    {
+        var names = new ExperimentalToolRegistry()
+            .ListTools(profile)
+            .Where(static descriptor => descriptor.Capabilities.Contains(QueryRuntimeCapabilities.WriteFileSystem))
+            .Select(static descriptor => descriptor.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (includeExternal)
+        {
+            names.UnionWith(ExternalStdioToolPack
+                .ListDescriptors(profile, workspacePath)
+                .Select(static descriptor => descriptor.Name));
+        }
+
+        return names;
+    }
+
+    internal static bool IsSuccessfulV1Run(
+        string terminationReason,
+        string? requiredToolName,
+        bool requiredToolSatisfied)
+        => string.Equals(terminationReason, "NoToolCalls", StringComparison.Ordinal) &&
+           (string.IsNullOrWhiteSpace(requiredToolName) || requiredToolSatisfied);
+
     private static ChatOptions? BuildChatOptions(QreRunOptions options)
     {
         if (!options.Output.RequestJson)
@@ -410,6 +772,28 @@ internal static class QreCli
 
         return Enum.IsDefined(policy);
     }
+
+    private static bool TryParseTraceDataMode(string value, out QueryRuntimeTraceDataMode mode)
+    {
+        mode = value.Trim().ToLowerInvariant() switch
+        {
+            "public" or "redacted" => QueryRuntimeTraceDataMode.PublicRedacted,
+            "private" or "diagnostic" => QueryRuntimeTraceDataMode.PrivateDiagnostic,
+            "sanitized" or "fixture" => QueryRuntimeTraceDataMode.SanitizedFixture,
+            _ => (QueryRuntimeTraceDataMode)(-1)
+        };
+
+        return Enum.IsDefined(mode);
+    }
+
+    private static RuntimeAuditDataMode ToV2AuditDataMode(QueryRuntimeTraceDataMode mode)
+        => mode switch
+        {
+            QueryRuntimeTraceDataMode.PublicRedacted => RuntimeAuditDataMode.PublicRedacted,
+            QueryRuntimeTraceDataMode.PrivateDiagnostic => RuntimeAuditDataMode.PrivateDiagnostic,
+            QueryRuntimeTraceDataMode.SanitizedFixture => RuntimeAuditDataMode.SanitizedFixture,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported v2 audit data mode.")
+        };
 
     private static bool TryParseNetworkPolicy(string value, out SandboxNetworkPolicy policy)
     {
@@ -1093,6 +1477,7 @@ internal static class QreCli
         var workspace = Directory.GetCurrentDirectory();
         var json = false;
         var jsonl = false;
+        var runtime = "v2";
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -1111,6 +1496,13 @@ internal static class QreCli
                 case "--jsonl":
                     jsonl = true;
                     break;
+                case "--runtime":
+                    if (++i >= args.Length || args[i] is not ("v1" or "v2"))
+                    {
+                        return Fail("--runtime requires v1 or v2.");
+                    }
+                    runtime = args[i];
+                    break;
                 default:
                     return Fail($"Unknown trace latest option: {args[i]}");
             }
@@ -1119,6 +1511,11 @@ internal static class QreCli
         if (json && jsonl)
         {
             return Fail("--json and --jsonl cannot be used together.");
+        }
+
+        if (runtime == "v2")
+        {
+            return TraceLatestV2(workspace, json, jsonl);
         }
 
         if (!TryFindLatestTraceFile(workspace, out var traceFile, out var error))
@@ -1160,6 +1557,79 @@ internal static class QreCli
         }
 
         return 0;
+    }
+
+    private static int TraceLatestV2(string workspace, bool json, bool jsonl)
+    {
+        try
+        {
+            var auditFile = RuntimeJsonlAuditStore.FindLatestAuditFile(workspace);
+            if (jsonl)
+            {
+                foreach (var line in File.ReadLines(auditFile))
+                {
+                    Console.WriteLine(line);
+                }
+                return 0;
+            }
+
+            var recording = RuntimeJsonlAuditStore.Read(auditFile);
+            var terminal = recording.Events.LastOrDefault(static auditEvent =>
+                auditEvent.Kind == RuntimeAuditEventKind.TurnTerminal)?.Payload;
+            var status = terminal switch
+            {
+                RuntimeTurnTerminalAuditPayload payload => payload.Status.ToString(),
+                RuntimePublicAuditPayload payload => payload.TurnStatus?.ToString(),
+                _ => null
+            };
+            var termination = terminal switch
+            {
+                RuntimeTurnTerminalAuditPayload payload => payload.TerminationReason.ToString(),
+                RuntimePublicAuditPayload payload => payload.TerminationReason?.ToString(),
+                _ => null
+            };
+            var errorCode = terminal switch
+            {
+                RuntimeTurnTerminalAuditPayload payload => payload.Error?.Code,
+                RuntimePublicAuditPayload payload => payload.ErrorCode,
+                _ => null
+            };
+            var runDirectory = Path.GetDirectoryName(auditFile)!;
+            var output = new QreV2TraceLatestOutput(
+                "qre.v2.trace.latest",
+                auditFile,
+                runDirectory,
+                Path.Combine(runDirectory, "manifest.json"),
+                recording.Events.Count,
+                RuntimeAuditSchema.CurrentVersion,
+                recording.DataMode.ToString(),
+                recording.ReplayCapability.ToString(),
+                status,
+                termination,
+                errorCode);
+            if (json)
+            {
+                WriteJson(output);
+                return 0;
+            }
+
+            Console.WriteLine($"audit: {output.AuditFilePath}");
+            Console.WriteLine($"run_directory: {output.RunDirectory}");
+            Console.WriteLine($"events: {output.EventCount}");
+            Console.WriteLine($"schema_version: {output.SchemaVersion}");
+            Console.WriteLine($"data_mode: {output.DataMode}");
+            Console.WriteLine($"replay_capability: {output.ReplayCapability}");
+            if (output.Status != null)
+            {
+                Console.WriteLine($"status: {output.Status}");
+                Console.WriteLine($"termination: {output.TerminationReason}");
+            }
+            return 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+        {
+            return Fail($"Could not safely read the latest v2 audit: {ex.Message}");
+        }
     }
 
     private static void WriteTraceJsonl(string traceFile)
@@ -1236,6 +1706,7 @@ internal static class QreCli
         var workspace = Directory.GetCurrentDirectory();
         string? response = null;
         string? profileOverride = null;
+        QueryRuntimeTraceDataMode? traceDataMode = null;
         var json = false;
 
         for (var i = 0; i < args.Length; i++)
@@ -1268,27 +1739,42 @@ internal static class QreCli
                 case "--json":
                     json = true;
                     break;
+                case "--trace-data":
+                    if (++i >= args.Length || !TryParseTraceDataMode(args[i], out var parsedTraceDataMode))
+                    {
+                        return Fail("--trace-data requires public, private, or sanitized.");
+                    }
+                    traceDataMode = parsedTraceDataMode;
+                    break;
                 default:
                     return Fail($"Unknown rerun latest option: {args[i]}");
             }
         }
 
-        if (!TryFindLatestTraceFile(workspace, out var traceFile, out var error))
+        string auditFile;
+        RuntimeAuditRecording recording;
+        try
         {
-            return Fail(error);
+            auditFile = RuntimeJsonlAuditStore.FindLatestAuditFile(workspace);
+            recording = RuntimeJsonlAuditStore.Read(auditFile, ct: ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+        {
+            return Fail($"Could not safely read the latest v2 audit: {ex.Message}");
         }
 
-        var records = JsonlTraceStore.ReadRecords(traceFile);
-        var prompt = records.FirstOrDefault(static record => record.Type == "run.started")?.TryGetString("Prompt");
-        if (string.IsNullOrWhiteSpace(prompt))
+        var started = recording.Events
+            .FirstOrDefault(static auditEvent => auditEvent.Kind == RuntimeAuditEventKind.TurnStarted)?
+            .Payload as RuntimeTurnStartedAuditPayload;
+        if (started == null || string.IsNullOrWhiteSpace(started.Objective))
         {
-            return Fail($"Latest trace has no recorded prompt: {traceFile}");
+            return Fail(
+                $"Latest v2 audit is {recording.DataMode} and has no rerunnable objective. " +
+                "Create the source run with --trace-data sanitized or private.");
         }
 
-        var runDirectory = JsonlTraceStore.GetRunDirectory(traceFile);
-        var profile = profileOverride ??
-            TryGetJsonString(JsonlTraceStore.TryReadManifest(runDirectory), "ToolProfile") ??
-            "readonly";
+        var prompt = started.Objective;
+        var profile = profileOverride ?? started.Policy.Profile;
 
         var runArgs = new List<string>
         {
@@ -1307,6 +1793,17 @@ internal static class QreCli
         if (json)
         {
             runArgs.Add("--json");
+        }
+
+        if (traceDataMode.HasValue)
+        {
+            runArgs.Add("--trace-data");
+            runArgs.Add(traceDataMode.Value switch
+            {
+                QueryRuntimeTraceDataMode.PrivateDiagnostic => "private",
+                QueryRuntimeTraceDataMode.SanitizedFixture => "sanitized",
+                _ => "public"
+            });
         }
 
         runArgs.Add(prompt);
@@ -1353,6 +1850,7 @@ internal static class QreCli
         var json = false;
         var timeoutSeconds = 120;
         var maxOutputBytes = 1024 * 1024;
+        var traceOptions = new QueryRuntimeTraceOptions();
         string? approvalReason = null;
         IReadOnlyList<string> command = [];
 
@@ -1414,6 +1912,13 @@ internal static class QreCli
                     break;
                 case "--json":
                     json = true;
+                    break;
+                case "--trace-data":
+                    if (++i >= args.Length || !TryParseTraceDataMode(args[i], out var traceDataMode))
+                    {
+                        return Fail("--trace-data requires public, private, or sanitized.");
+                    }
+                    traceOptions = new QueryRuntimeTraceOptions { DataMode = traceDataMode };
                     break;
                 case "--approve-risk":
                     if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
@@ -1525,7 +2030,7 @@ internal static class QreCli
         var traceFilePath = await WriteSandboxExecTraceAsync(output with
         {
             TraceFilePath = null
-        }).ConfigureAwait(false);
+        }, traceOptions).ConfigureAwait(false);
         output = output with { TraceFilePath = traceFilePath };
 
         if (json)
@@ -1559,45 +2064,71 @@ internal static class QreCli
         return result?.ExitCode ?? 1;
     }
 
-    private static async Task<string> WriteSandboxExecTraceAsync(QreSandboxExecOutput output)
+    private static async Task<string> WriteSandboxExecTraceAsync(
+        QreSandboxExecOutput output,
+        QueryRuntimeTraceOptions traceOptions)
     {
-        var runId = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff");
-        var traceFilePath = Path.Combine(output.WorkspacePath, ".qre", "runs", runId, "events.jsonl");
-        Directory.CreateDirectory(Path.GetDirectoryName(traceFilePath)!);
+        var includeSensitiveData = traceOptions.DataMode != QueryRuntimeTraceDataMode.PublicRedacted;
+        IReadOnlySet<string> visibleCapabilities = includeSensitiveData
+            ? output.Capabilities
+            : new HashSet<string>(StringComparer.Ordinal);
+        IReadOnlySet<string> visibleCommandCapabilities = includeSensitiveData
+            ? output.CommandCapabilities
+            : new HashSet<string>(StringComparer.Ordinal);
+        var visibleProfile = includeSensitiveData ? output.Profile : "[redacted]";
+        var visibleTool = includeSensitiveData ? output.Tool : "[redacted]";
+        var visibleRunner = output.Runner is "local" or "docker" ? output.Runner : "[redacted]";
+        var visibleNetwork = output.Network is "none" or "default" ? output.Network : "[redacted]";
+        var visibleMount = output.Mount is "readonly" or "readwrite" ? output.Mount : "[redacted]";
+        var visibleDecision = includeSensitiveData ? output.Decision : (output.Allowed ? "allowed" : "blocked");
+        var visibleConfiguration = includeSensitiveData
+            ? output.RunnerConfiguration
+            : QreSandboxRunnerConfiguration.PublicSummary(visibleRunner);
+        var requestedRunId = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff");
+        var workspaceRoot = Path.GetFullPath(output.WorkspacePath);
+        var traceRoot = QueryRuntimePathSafety.ResolveUnderRoot(workspaceRoot, ".qre");
+        var location = JsonlTraceEventSink.PrepareAuxiliaryRunLocation(
+            traceRoot,
+            requestedRunId,
+            traceOptions);
+        var runId = location.PersistedRunId;
+        var traceFilePath = location.TraceFilePath;
         var timestamp = DateTimeOffset.UtcNow;
         var records = new object[]
         {
             new QreSandboxExecStartedTraceRecord(
                 "sandbox.exec.started",
                 runId,
-                output.WorkspacePath,
-                output.Profile,
-                output.Runner,
-                output.RunnerConfiguration,
-                output.Tool,
-                output.Capabilities,
-                output.Command,
-                output.CommandCapabilities,
+                includeSensitiveData ? output.WorkspacePath : "[redacted]",
+                visibleProfile,
+                visibleRunner,
+                visibleConfiguration,
+                visibleTool,
+                visibleCapabilities,
+                includeSensitiveData ? output.Command : [],
+                visibleCommandCapabilities,
                 output.ExplicitApproval,
-                output.ApprovalReason,
-                output.Network,
-                output.Mount,
+                includeSensitiveData ? output.ApprovalReason : null,
+                visibleNetwork,
+                visibleMount,
+                traceOptions.DataMode.ToString(),
+                traceOptions.ReplayCapability.ToString(),
                 timestamp),
             new QreSandboxPolicyDecisionTraceRecord(
                 "policy.decision",
-                output.Profile,
-                output.Runner,
-                output.Tool,
-                output.Capabilities,
-                output.Command,
-                output.CommandCapabilities,
+                visibleProfile,
+                visibleRunner,
+                visibleTool,
+                visibleCapabilities,
+                includeSensitiveData ? output.Command : [],
+                visibleCommandCapabilities,
                 output.ExplicitApproval,
-                output.ApprovalReason,
-                output.Network,
-                output.Mount,
-                output.Decision,
+                includeSensitiveData ? output.ApprovalReason : null,
+                visibleNetwork,
+                visibleMount,
+                visibleDecision,
                 output.Allowed,
-                output.Reason,
+                includeSensitiveData ? output.Reason : "[redacted]",
                 timestamp)
         };
         if (!output.Allowed)
@@ -1609,18 +2140,18 @@ internal static class QreCli
                     output.Decision == nameof(QueryRuntimeCapabilityDecisionKind.RequireApproval)
                         ? "policy.approval_required"
                         : "policy.denied",
-                    output.Profile,
-                    output.Runner,
-                    output.Tool,
-                    output.Capabilities,
-                    output.Command,
-                    output.CommandCapabilities,
+                    visibleProfile,
+                    visibleRunner,
+                    visibleTool,
+                    visibleCapabilities,
+                    includeSensitiveData ? output.Command : [],
+                    visibleCommandCapabilities,
                     output.ExplicitApproval,
-                    output.ApprovalReason,
-                    output.Network,
-                    output.Mount,
-                    output.Decision,
-                    output.Reason,
+                    includeSensitiveData ? output.ApprovalReason : null,
+                    visibleNetwork,
+                    visibleMount,
+                    visibleDecision,
+                    includeSensitiveData ? output.Reason : "[redacted]",
                     timestamp)
             ];
         }
@@ -1634,28 +2165,32 @@ internal static class QreCli
                 output.ExitCode,
                 output.TimedOut,
                 output.DurationMs,
-                output.StandardOutput,
-                output.StandardError,
+                includeSensitiveData ? output.StandardOutput : null,
+                includeSensitiveData ? output.StandardError : null,
                 DateTimeOffset.UtcNow)
         ];
 
         await File.WriteAllLinesAsync(
             traceFilePath,
             records.Select(SerializeJsonOutput)).ConfigureAwait(false);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(traceFilePath, traceOptions);
         return traceFilePath;
     }
 
     private static async Task AppendRunRunnerConfigurationTraceAsync(
         string traceFilePath,
-        string runId,
         string runner,
-        QreSandboxRunnerConfiguration? runnerConfiguration)
+        QreSandboxRunnerConfiguration? runnerConfiguration,
+        QueryRuntimeTraceOptions traceOptions)
     {
+        var isPublic = traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted;
+        var visibleRunner = runner is "local" or "docker" ? runner : "[redacted]";
+        var persistedRunId = Path.GetFileName(JsonlTraceStore.GetRunDirectory(traceFilePath));
         var record = new QreRunRunnerConfigurationTraceRecord(
             "runner.configuration",
-            runId,
-            runner,
-            runnerConfiguration,
+            persistedRunId,
+            visibleRunner,
+            isPublic ? QreSandboxRunnerConfiguration.PublicSummary(visibleRunner) : runnerConfiguration,
             DateTimeOffset.UtcNow);
         await File.AppendAllTextAsync(
             traceFilePath,
@@ -1665,35 +2200,61 @@ internal static class QreCli
     private static async Task FinalizeRunArtifactsAsync(
         string traceFilePath,
         string workspacePath,
-        string runId,
         int totalRounds,
         int totalToolCalls,
         long totalDurationMs,
+        QueryRuntimeTraceOptions traceOptions,
         CancellationToken ct)
     {
         var runDirectory = JsonlTraceStore.GetRunDirectory(traceFilePath);
-        Directory.CreateDirectory(Path.Combine(runDirectory, "artifacts"));
-        await WriteRunDiffPatchAsync(runDirectory, workspacePath, ct).ConfigureAwait(false);
+        var artifactsDirectory = Path.Combine(runDirectory, "artifacts");
+        Directory.CreateDirectory(artifactsDirectory);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(
+            artifactsDirectory,
+            traceOptions,
+            isDirectory: true);
+        await WriteRunDiffPatchAsync(
+            runDirectory,
+            workspacePath,
+            ct,
+            includeSensitiveData: traceOptions.DataMode != QueryRuntimeTraceDataMode.PublicRedacted).ConfigureAwait(false);
 
-        var usage = BuildBudgetUsage(traceFilePath, runId, totalRounds, totalToolCalls, totalDurationMs);
+        var persistedRunId = Path.GetFileName(runDirectory);
+        var usage = BuildBudgetUsage(
+            traceFilePath,
+            persistedRunId,
+            totalRounds,
+            totalToolCalls,
+            totalDurationMs);
         var usagePath = Path.Combine(runDirectory, "usage.json");
         await File.WriteAllTextAsync(
             usagePath,
             SerializeJsonOutput(usage) + Environment.NewLine,
             ct).ConfigureAwait(false);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(usagePath, traceOptions);
         await File.AppendAllTextAsync(
             traceFilePath,
             SerializeJsonOutput(usage) + Environment.NewLine,
             ct).ConfigureAwait(false);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(traceFilePath, traceOptions);
+
+        var diffPath = Path.Combine(runDirectory, "diff.patch");
+        if (File.Exists(diffPath))
+        {
+            JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(diffPath, traceOptions);
+        }
     }
 
     internal static async Task WriteRunDiffPatchAsync(
         string runDirectory,
         string workspacePath,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool includeSensitiveData = true)
     {
         var diffPath = Path.Combine(runDirectory, "diff.patch");
-        var editedPaths = await TryReadRunEditedPathsAsync(runDirectory, ct).ConfigureAwait(false);
+        var editedPaths = includeSensitiveData
+            ? await TryReadRunEditedPathsAsync(runDirectory, ct).ConfigureAwait(false)
+            : [];
         var diff = editedPaths.Count == 0
             ? string.Empty
             : await TryReadGitDiffPatchAsync(workspacePath, editedPaths, ct).ConfigureAwait(false);
@@ -2321,6 +2882,7 @@ internal static class QreCli
     private static async Task<int> ReplayLatestAsync(string[] args, CancellationToken ct)
     {
         var workspace = Directory.GetCurrentDirectory();
+        var runtime = "v2";
         var json = false;
         var summaryOnly = false;
         var strict = false;
@@ -2345,9 +2907,26 @@ internal static class QreCli
                 case "--strict":
                     strict = true;
                     break;
+                case "--runtime":
+                    if (++i >= args.Length || args[i] is not ("v1" or "v2"))
+                    {
+                        return Fail("--runtime requires v1 or v2.");
+                    }
+                    runtime = args[i];
+                    break;
                 default:
                     return Fail($"Unknown replay latest option: {args[i]}");
             }
+        }
+
+        if (runtime == "v2")
+        {
+            return ReplayLatestV2(workspace, json, summaryOnly, strict, ct);
+        }
+
+        if (!summaryOnly)
+        {
+            return Fail("v1 recorded execution replay is disabled after the v2-only cutover. Use --summary to inspect legacy traces.");
         }
 
         if (!TryFindLatestTraceFile(workspace, out var traceFile, out var error))
@@ -2370,6 +2949,16 @@ internal static class QreCli
 
         if (!summary.StrictReplayable)
         {
+            if (string.Equals(
+                    summary.ReplayCapability,
+                    QueryRuntimeReplayCapability.SummaryOnly.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail(
+                    $"Latest trace is summary-only ({summary.DataMode}) and cannot be replayed. " +
+                    "Create a sanitized fixture or explicitly opt in to private diagnostic trace data.");
+            }
+
             return Fail($"Latest trace is not strict-replayable: {string.Join(", ", summary.MissingReplayRecords)}");
         }
 
@@ -2386,6 +2975,193 @@ internal static class QreCli
         }
 
         return await ExecuteReplayAsync(workspace, traceFile, summary, json, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<int> Resume(string[] args, CancellationToken ct)
+    {
+        if (args.Length == 0 || args[0] is "--help" or "-h")
+        {
+            PrintResumeHelp();
+            return 0;
+        }
+        if (args[0] != "latest")
+        {
+            return Fail($"Unknown resume command: {args[0]}");
+        }
+
+        var forwarded = args[1..].ToList();
+        var workspace = Directory.GetCurrentDirectory();
+        for (var i = 0; i < forwarded.Count; i++)
+        {
+            if (forwarded[i] is "--workspace" or "-w")
+            {
+                if (++i >= forwarded.Count)
+                {
+                    return Fail("--workspace requires a path.");
+                }
+                workspace = forwarded[i];
+            }
+        }
+
+        string checkpointPath;
+        RuntimeCheckpointDocument checkpoint;
+        RuntimeAuditDataMode checkpointStorageMode;
+        try
+        {
+            checkpointPath = RuntimeJsonCheckpointStore.FindLatestCheckpoint(workspace);
+            checkpointStorageMode = ResolveCheckpointStorageMode(workspace, checkpointPath);
+            checkpoint = RuntimeJsonCheckpointStore.Read(checkpointPath);
+        }
+        catch (RuntimeResumeException ex)
+        {
+            return Fail($"Could not safely read the latest v2 checkpoint ({ex.Error.Code}): {ex.Message}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   InvalidDataException or JsonException or InvalidOperationException)
+        {
+            return Fail($"Could not safely read the latest v2 checkpoint: {ex.Message}");
+        }
+
+        if (!forwarded.Contains("--profile", StringComparer.Ordinal) &&
+            !forwarded.Contains("--tools", StringComparer.Ordinal))
+        {
+            forwarded.Add("--profile");
+            forwarded.Add(checkpoint.Request.Policy.Profile);
+        }
+        if (!forwarded.Contains("--trace-data", StringComparer.Ordinal))
+        {
+            forwarded.Add("--trace-data");
+            forwarded.Add(checkpointStorageMode == RuntimeAuditDataMode.PrivateDiagnostic
+                ? "private"
+                : "sanitized");
+        }
+        forwarded.Add("--resume-checkpoint");
+        forwarded.Add(checkpointPath);
+        forwarded.Add(checkpoint.Request.Objective);
+        return await RunQueryAsync(forwarded.ToArray(), ct).ConfigureAwait(false);
+    }
+
+    private static async Task FinalizeV2RunArtifactsAsync(
+        string runDirectory,
+        string workspacePath,
+        string prompt,
+        RuntimeTurnResult result,
+        QueryRuntimeTraceOptions traceOptions,
+        CancellationToken ct)
+    {
+        var artifactsDirectory = Path.Combine(runDirectory, "artifacts");
+        Directory.CreateDirectory(artifactsDirectory);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(
+            artifactsDirectory,
+            traceOptions,
+            isDirectory: true);
+        await WriteRunDiffPatchAsync(
+            runDirectory,
+            workspacePath,
+            ct,
+            includeSensitiveData: traceOptions.DataMode != QueryRuntimeTraceDataMode.PublicRedacted).ConfigureAwait(false);
+
+        var promptChars = prompt.Length;
+        var assistantChars = result.FinalText.Length;
+        var promptTokens = checked((int)Math.Min(
+            result.Usage.InputTokens > 0 ? result.Usage.InputTokens : EstimateTokens(promptChars),
+            int.MaxValue));
+        var completionTokens = checked((int)Math.Min(
+            result.Usage.OutputTokens > 0 ? result.Usage.OutputTokens : EstimateTokens(assistantChars),
+            int.MaxValue));
+        var usage = new QreBudgetUsageTraceRecord(
+            "budget.usage",
+            Path.GetFileName(runDirectory),
+            Estimated: result.Usage.InputTokens <= 0 || result.Usage.OutputTokens <= 0,
+            PromptChars: promptChars,
+            AssistantChars: assistantChars,
+            ToolOutputChars: 0,
+            PromptTokens: promptTokens,
+            CompletionTokens: completionTokens,
+            ToolOutputTokens: 0,
+            TotalTokens: (int)Math.Min((long)promptTokens + completionTokens, int.MaxValue),
+            EstimatedUsd: null,
+            TotalRounds: result.Turn.Steps.Count,
+            TotalToolCalls: result.Turn.Progress.ToolCallCount,
+            TotalDurationMs: 0,
+            Timestamp: DateTimeOffset.UtcNow);
+        var usagePath = Path.Combine(runDirectory, "usage.json");
+        await File.WriteAllTextAsync(
+            usagePath,
+            SerializeJsonOutput(usage) + Environment.NewLine,
+            ct).ConfigureAwait(false);
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(usagePath, traceOptions);
+
+        var diffPath = Path.Combine(runDirectory, "diff.patch");
+        JsonlTraceEventSink.ApplyAuxiliaryArtifactSecurity(diffPath, traceOptions);
+    }
+
+    private static int ReplayLatestV2(
+        string workspace,
+        bool json,
+        bool summaryOnly,
+        bool strict,
+        CancellationToken ct)
+    {
+        try
+        {
+            var auditFile = RuntimeJsonlAuditStore.FindLatestAuditFile(workspace);
+            var recording = RuntimeJsonlAuditStore.Read(auditFile, ct: ct);
+            if (summaryOnly)
+            {
+                var summary = new QreV2ReplayOutput(
+                    "qre.v2.replay.summary",
+                    "summary",
+                    RuntimeAuditSchema.CurrentVersion,
+                    recording.DataMode.ToString(),
+                    recording.ReplayCapability.ToString(),
+                    recording.Events.Count,
+                    ProviderCalls: false,
+                    ToolExecutions: false,
+                    auditFile);
+                QreV2CliPresentation.WriteReplayOutput(summary, json);
+                return 0;
+            }
+
+            if (recording.ReplayCapability != RuntimeAuditReplayCapability.Recorded ||
+                recording.DataMode == RuntimeAuditDataMode.PublicRedacted)
+            {
+                return Fail(
+                    $"Latest v2 audit is summary-only ({recording.DataMode}) and cannot be replayed. " +
+                    "Run with --trace-data sanitized, or explicitly opt in to private diagnostic data.");
+            }
+
+            var replay = RuntimeRecordedReplay.Replay(recording);
+            var output = new QreV2ReplayOutput(
+                "qre.v2.replay.completed",
+                strict ? "strict-recorded-replay" : "recorded-replay",
+                RuntimeAuditSchema.CurrentVersion,
+                recording.DataMode.ToString(),
+                recording.ReplayCapability.ToString(),
+                replay.EventCount,
+                replay.ProviderCalls,
+                replay.ToolExecutions,
+                auditFile)
+            {
+                FinalText = replay.FinalText,
+                Status = replay.Status.ToString(),
+                TerminationReason = replay.TerminationReason.ToString(),
+                TotalSteps = replay.TotalSteps,
+                TotalToolCalls = replay.TotalToolCalls,
+                ContinuationCount = replay.ContinuationCount,
+                ReplayDigest = replay.ReplayDigest
+            };
+            QreV2CliPresentation.WriteReplayOutput(output, json);
+            return 0;
+        }
+        catch (RuntimeAuditReplayException ex)
+        {
+            return Fail($"v2 replay rejected the audit ({ex.Error.Code}): {ex.Error.Message}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+        {
+            return Fail($"v2 replay could not safely read the audit: {ex.Message}");
+        }
     }
 
     private static void PrintReplaySummary(QreReplaySummary summary)
@@ -2407,6 +3183,8 @@ internal static class QreCli
         Console.WriteLine($"tool_results: {summary.ToolResults}");
         Console.WriteLine($"events: {summary.EventCount}");
         Console.WriteLine($"strict_replayable: {summary.StrictReplayable.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"data_mode: {summary.DataMode}");
+        Console.WriteLine($"replay_capability: {summary.ReplayCapability}");
         Console.WriteLine($"schema_version: {summary.SchemaVersion}");
         Console.WriteLine($"strict_replay_compatible: {summary.StrictReplayCompatible.ToString().ToLowerInvariant()}");
         if (!string.IsNullOrWhiteSpace(summary.StrictReplayBlockedReason))
@@ -2435,10 +3213,11 @@ internal static class QreCli
         }
 
         var profileName = TryGetJsonString(summary.Manifest, "ToolProfile") ?? "readonly";
+        var replayReadContext = new RecordedReplayReadContext();
         var tools = summary.ToolResults > 0
-            ? RecordedReplayToolPack.Create(traceFile)
+            ? RecordedReplayToolPack.Create(traceFile, replayReadContext)
             : [];
-        var harness = new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(traceFile));
+        var harness = new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(traceFile, replayReadContext));
         var result = await harness.RunAsync(
             new ExperimentalQueryRuntimeRequest
             {
@@ -2447,7 +3226,8 @@ internal static class QreCli
                 MaxRounds = Math.Max(1, summary.DecisionTrajectory.Count(static step => step.Kind == "model")),
                 EnableTools = tools.Count > 0,
                 ToolProfile = new QueryRuntimeToolProfile(profileName),
-                Tools = tools
+                Tools = tools,
+                Trace = new QueryRuntimeTraceOptions { DataMode = QueryRuntimeTraceDataMode.SanitizedFixture }
             },
             ct).ConfigureAwait(false);
 
@@ -2481,10 +3261,10 @@ internal static class QreCli
         await FinalizeRunArtifactsAsync(
             result.TraceFilePath,
             Path.GetFullPath(workspace),
-            result.RunId,
             result.TotalRounds,
             result.TotalToolCalls,
             result.TotalDurationMs,
+            new QueryRuntimeTraceOptions { DataMode = QueryRuntimeTraceDataMode.SanitizedFixture },
             ct).ConfigureAwait(false);
 
         if (json)
@@ -2518,15 +3298,16 @@ internal static class QreCli
 
         var seed = DeterministicReplay.ReadSeed(traceFile);
         var profileName = TryGetJsonString(summary.Manifest, "ToolProfile") ?? "readonly";
+        var replayReadContext = new RecordedReplayReadContext();
         var tools = summary.ToolResults > 0
-            ? RecordedReplayToolPack.Create(traceFile)
+            ? RecordedReplayToolPack.Create(traceFile, replayReadContext)
             : [];
 
         // Strict replay seeds the engine with a deterministic clock + query id from the
         // source trace so repeated replays produce a byte-identical canonical projection.
         // It never instantiates a provider chat client (RecordedReplayModelClient) and
         // never executes the original tools (RecordedReplayToolPack returns recorded output).
-        var harness = new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(traceFile));
+        var harness = new ExperimentalQueryRuntimeHarness(new RecordedReplayModelClient(traceFile, replayReadContext));
         var result = await harness.RunAsync(
             new ExperimentalQueryRuntimeRequest
             {
@@ -2537,7 +3318,8 @@ internal static class QreCli
                 ToolProfile = new QueryRuntimeToolProfile(profileName),
                 Tools = tools,
                 TimeProvider = new DeterministicReplayClock(seed.BaseTimestamp),
-                QueryIdFactory = () => seed.QueryId
+                QueryIdFactory = () => seed.QueryId,
+                Trace = new QueryRuntimeTraceOptions { DataMode = QueryRuntimeTraceDataMode.SanitizedFixture }
             },
             ct).ConfigureAwait(false);
 
@@ -2576,10 +3358,10 @@ internal static class QreCli
         await FinalizeRunArtifactsAsync(
             result.TraceFilePath,
             Path.GetFullPath(workspace),
-            result.RunId,
             result.TotalRounds,
             result.TotalToolCalls,
             result.TotalDurationMs,
+            new QueryRuntimeTraceOptions { DataMode = QueryRuntimeTraceDataMode.SanitizedFixture },
             ct).ConfigureAwait(false);
 
         if (json)
@@ -2632,6 +3414,22 @@ internal static class QreCli
             missing.Count == 0;
         var schemaVersion = DeterministicReplay.ReadSchemaVersion(traceFile);
         var compatibility = QueryRuntimeTraceSchema.GetReplayCompatibility(schemaVersion, strict: true);
+        var started = records.FirstOrDefault(static record => record.Type == "run.started");
+        var manifest = JsonlTraceStore.TryReadManifest(runDirectory);
+        var dataMode = started?.TryGetString("DataMode") ??
+            TryGetJsonString(manifest, "DataMode") ??
+            QueryRuntimeTraceDataMode.PrivateDiagnostic.ToString();
+        var replayCapability = started?.TryGetString("ReplayCapability") ??
+            TryGetJsonString(manifest, "ReplayCapability") ??
+            QueryRuntimeReplayCapability.FullFidelity.ToString();
+        var fullFidelity = string.Equals(
+            replayCapability,
+            QueryRuntimeReplayCapability.FullFidelity.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        strictReplayable = strictReplayable && fullFidelity;
+        var blockedReason = !fullFidelity
+            ? $"trace data mode {dataMode} is summary-only"
+            : compatibility.Compatible ? null : compatibility.Reason;
 
         return new QreReplaySummary(
             Type: "qre.replay.summary",
@@ -2650,10 +3448,12 @@ internal static class QreCli
             DecisionTrajectory: trajectory,
             MissingReplayRecords: missing,
             TerminalRecord: terminalRecord?.Root,
-            Manifest: JsonlTraceStore.TryReadManifest(runDirectory),
+            Manifest: manifest,
             SchemaVersion: schemaVersion,
             StrictReplayCompatible: strictReplayable && compatibility.Compatible,
-            StrictReplayBlockedReason: compatibility.Compatible ? null : compatibility.Reason);
+            StrictReplayBlockedReason: blockedReason,
+            DataMode: dataMode,
+            ReplayCapability: replayCapability);
     }
 
     private static IReadOnlyList<QreReplayStep> BuildReplayTrajectory(JsonlTraceNodeRecord[] records)
@@ -2755,6 +3555,9 @@ internal static class QreCli
         => value switch
         {
             QreRunOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreRunOutput),
+            QreV2RunOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreV2RunOutput),
+            QreV2ReplayOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreV2ReplayOutput),
+            QreV2TraceLatestOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreV2TraceLatestOutput),
             QreTraceLatestOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreTraceLatestOutput),
             QreTraceJsonlEvent output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreTraceJsonlEvent),
             QreToolListOutput output => JsonSerializer.Serialize(output, QreCliJsonContext.Default.QreToolListOutput),
@@ -2803,6 +3606,8 @@ internal static class QreCli
         Console.WriteLine();
         PrintRerunHelp();
         Console.WriteLine();
+        PrintResumeHelp();
+        Console.WriteLine();
         PrintDiffHelp();
         Console.WriteLine();
         PrintSandboxHelp();
@@ -2832,8 +3637,11 @@ internal static class QreCli
         Console.WriteLine("  --tool-search           Start with tool_search and lazy-activate profile tools.");
         Console.WriteLine("  --tool-search-top-k <n> Max search hits to activate. Defaults to 5.");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
+        Console.WriteLine("  --runtime <v2>          Compatibility selector. v2 is the only execution runtime and the default.");
         Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
+        Console.WriteLine("  --approve-risk <reason> Approve plan-bound repair/external tool calls for this run.");
         Console.WriteLine("  --thinking <mode>       auto, off, on, or preserve. Defaults to auto.");
+        Console.WriteLine("  --trace-data <mode>     public (default), private, or sanitized. Private may persist secrets.");
         Console.WriteLine("  --json-output           Request JSON output and disable thinking by default.");
         Console.WriteLine("  --json                  Print CLI result as JSON.");
         Console.WriteLine("  --stream                Stream human-readable assistant text as it is produced.");
@@ -2843,7 +3651,8 @@ internal static class QreCli
     private static void PrintTraceHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre trace latest --workspace . [--json|--jsonl]");
+        Console.WriteLine("  qre trace latest --workspace . [--runtime v2] [--json|--jsonl]");
+        Console.WriteLine("  qre trace latest --workspace . --runtime v1 [--json|--jsonl]  Legacy read-only inspection.");
     }
 
     private static void PrintToolHelp()
@@ -2863,16 +3672,25 @@ internal static class QreCli
     private static void PrintReplayHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre replay latest --workspace . [--json] [--summary] [--strict]");
+        Console.WriteLine("  qre replay latest --workspace . [--runtime v2] [--json] [--summary] [--strict]");
+        Console.WriteLine("  qre replay latest --workspace . --runtime v1 --summary [--json]  Legacy read-only inspection.");
         Console.WriteLine("    --summary  Read-only trace summary; the runtime is not executed.");
-        Console.WriteLine("    --strict   Deterministic replay with injected clock/ids; emits a byte-stable");
-        Console.WriteLine("               replay_digest and requires schema version >= 1. No provider/tool calls.");
+        Console.WriteLine("    --strict   Validates the complete recorded trajectory and emits a stable replay_digest.");
+        Console.WriteLine("               v2 replay is data-only and never calls a provider or executes a tool.");
     }
 
     private static void PrintRerunHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre rerun latest --workspace . [--json] [--response text]");
+        Console.WriteLine("  qre rerun latest --workspace . [--json] [--response text] [--trace-data public|private|sanitized]");
+    }
+
+    private static void PrintResumeHelp()
+    {
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  qre resume latest --workspace . [--json] [--response text] [provider options]");
+        Console.WriteLine("    Resumes the latest sanitized/private H1 checkpoint as a new RunAttempt.");
+        Console.WriteLine("    Public checkpoints, terminal Turns, request drift, and uncertain tool outcomes fail before execution.");
     }
 
     private static void PrintDiffHelp()
@@ -2884,7 +3702,7 @@ internal static class QreCli
     private static void PrintSandboxHelp()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  qre sandbox exec --workspace . --profile verify [--workspace-root <path>] [--runner local|docker] [--json] [--approve-risk <reason>] -- dotnet test --no-restore");
+        Console.WriteLine("  qre sandbox exec --workspace . --profile verify [--workspace-root <path>] [--runner local|docker] [--trace-data public|private|sanitized] [--json] [--approve-risk <reason>] -- dotnet test --no-restore");
     }
 
     private static void PrintDoctorHelp()
@@ -3125,6 +3943,8 @@ internal static class QreCli
 
         public QueryRuntimeToolSearchOptions ToolSearch { get; } = new();
 
+        public QueryRuntimeTraceOptions Trace { get; set; } = new();
+
         public string Runner { get; set; } = "local";
 
         public string? DockerImage { get; set; }
@@ -3132,6 +3952,63 @@ internal static class QreCli
         public bool IncludeExternalTools { get; set; }
 
         public string? RequiredToolName { get; set; }
+
+        public string? ApprovalReason { get; set; }
+
+        public string? ResumeCheckpointPath { get; set; }
+    }
+
+    private sealed class CliV2ToolApproval(string reason) : IRuntimeToolApproval
+    {
+        public ValueTask<RuntimeToolApprovalDecision> DecideAsync(
+            ResolvedExecutionPlan plan,
+            RuntimeToolCall call,
+            RuntimeToolExecutionContext context,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                plan.Approval == null || plan.Approval.ExpiresAt <= DateTimeOffset.UtcNow
+                    ? RuntimeToolApprovalDecision.Decline("The frozen approval binding is missing or expired.")
+                    : RuntimeToolApprovalDecision.Approve(reason));
+        }
+    }
+
+    internal sealed class CliV1ToolApprovalIntervention(
+        IReadOnlySet<string> approvalRequiredToolNames,
+        string? approvalReason) : IQueryRuntimeToolIntervention
+    {
+        private readonly IReadOnlySet<string> _approvalRequiredToolNames =
+            new HashSet<string>(approvalRequiredToolNames, StringComparer.OrdinalIgnoreCase);
+        private readonly string? _approvalReason = string.IsNullOrWhiteSpace(approvalReason)
+            ? null
+            : approvalReason.Trim();
+
+        public ValueTask<QueryRuntimeToolInterventionDecision> BeforeToolCallAsync(
+            QueryRuntimeToolCallContext context,
+            CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_approvalRequiredToolNames.Contains(context.ToolName))
+            {
+                return ValueTask.FromResult(QueryRuntimeToolInterventionDecision.Allow());
+            }
+
+            return ValueTask.FromResult(_approvalReason == null
+                ? QueryRuntimeToolInterventionDecision.FailClosed(
+                    "High-risk tool execution requires explicit CLI approval.",
+                    "bound_approval_unavailable")
+                : QueryRuntimeToolInterventionDecision.Allow(
+                    "Explicit CLI approval granted for high-risk tool execution."));
+        }
+
+        public ValueTask AfterToolExecutionAsync(
+            QueryRuntimeToolExecutionResultContext context,
+            CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
+        }
     }
 
     internal sealed record QreRunOutput(
@@ -3180,6 +4057,19 @@ internal static class QreCli
         string? ManifestPath,
         int EventCount,
         JsonElement? TerminalRecord);
+
+    internal sealed record QreV2TraceLatestOutput(
+        string Type,
+        string AuditFilePath,
+        string RunDirectory,
+        string ManifestPath,
+        int EventCount,
+        int SchemaVersion,
+        string DataMode,
+        string ReplayCapability,
+        string? Status,
+        string? TerminationReason,
+        string? ErrorCode);
 
     internal sealed record QreTraceJsonlEvent(
         string Type,
@@ -3255,7 +4145,9 @@ internal static class QreCli
         JsonElement? Manifest,
         int SchemaVersion,
         bool StrictReplayCompatible,
-        string? StrictReplayBlockedReason);
+        string? StrictReplayBlockedReason,
+        string DataMode,
+        string ReplayCapability);
 
     internal sealed record QreStrictReplayOutput(
         string Type,
@@ -3384,6 +4276,8 @@ internal static class QreCli
         string? ApprovalReason,
         string Network,
         string Mount,
+        string DataMode,
+        string ReplayCapability,
         DateTimeOffset Timestamp);
 
     internal sealed record QreSandboxPolicyDecisionTraceRecord(
@@ -3477,6 +4371,11 @@ internal static class QreCli
                 options.SeccompProfilePath,
                 options.RequireSeccompProfile,
                 options.CopyWorkspaceForWriteJobs);
+
+        public static QreSandboxRunnerConfiguration? PublicSummary(string runner)
+            => runner == "docker"
+                ? new("docker", null, null, null, null, null, null, null, null, null)
+                : null;
     }
 }
 
@@ -3485,6 +4384,9 @@ internal static class QreCli
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = false)]
 [JsonSerializable(typeof(QreCli.QreRunOutput))]
+[JsonSerializable(typeof(QreV2RunOutput))]
+[JsonSerializable(typeof(QreV2ReplayOutput))]
+[JsonSerializable(typeof(QreCli.QreV2TraceLatestOutput))]
 [JsonSerializable(typeof(QreCli.QreTraceLatestOutput))]
 [JsonSerializable(typeof(QreCli.QreTraceJsonlEvent))]
 [JsonSerializable(typeof(QreCli.QreToolListOutput))]

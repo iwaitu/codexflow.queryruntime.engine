@@ -1,5 +1,7 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CodexFlow.QueryRuntime.Abstractions;
@@ -9,6 +11,8 @@ namespace CodexFlow.QueryRuntime.Experimental;
 
 public static class ExternalStdioToolPack
 {
+    private const string RecoveryImplementationVersion = "external-stdio-v1";
+
     public static IReadOnlyList<AIFunction> Create(string workspacePath)
         => LoadManifests(workspacePath)
             .Select(manifest => CreateFunction(workspacePath, manifest))
@@ -46,6 +50,67 @@ public static class ExternalStdioToolPack
                 profile))
             .ToArray();
 
+    internal static ExternalStdioToolComposition CreateComposition(
+        QueryRuntimeToolProfile profile,
+        string workspacePath)
+    {
+        var manifests = LoadManifests(workspacePath);
+        return new ExternalStdioToolComposition(
+            manifests.Select(manifest => CreateFunction(workspacePath, manifest)).ToArray(),
+            manifests.Select(manifest => new QueryRuntimeToolDescriptor(
+                manifest.Name,
+                manifest.Description,
+                manifest.Capabilities,
+                profile)).ToArray(),
+            ComputeRecoveryCompatibilityDigest(manifests));
+    }
+
+    public static string GetRecoveryCompatibilityDigest(string workspacePath)
+        => ComputeRecoveryCompatibilityDigest(LoadManifests(workspacePath));
+
+    private static string ComputeRecoveryCompatibilityDigest(
+        IReadOnlyList<ExternalStdioToolManifest> manifests)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("implementation", RecoveryImplementationVersion);
+            writer.WritePropertyName("manifests");
+            writer.WriteStartArray();
+            foreach (var manifest in manifests)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", manifest.Name);
+                writer.WriteString("description", manifest.Description);
+                writer.WriteString("transport", manifest.Transport);
+                writer.WriteString("command", manifest.Command);
+                writer.WritePropertyName("args");
+                writer.WriteStartArray();
+                foreach (var argument in manifest.Args)
+                {
+                    writer.WriteStringValue(argument);
+                }
+                writer.WriteEndArray();
+                writer.WritePropertyName("capabilities");
+                writer.WriteStartArray();
+                foreach (var capability in manifest.Capabilities.Order(StringComparer.Ordinal))
+                {
+                    writer.WriteStringValue(capability);
+                }
+                writer.WriteEndArray();
+                writer.WritePropertyName("inputSchema");
+                WriteCanonicalJson(writer, manifest.InputSchema);
+                writer.WriteNumber("timeoutSeconds", manifest.TimeoutSeconds);
+                writer.WriteNumber("maxOutputBytes", manifest.MaxOutputBytes);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return Convert.ToHexString(SHA256.HashData(buffer.WrittenSpan)).ToLowerInvariant();
+    }
+
     private static IReadOnlyList<ExternalStdioToolManifest> LoadManifests(string workspacePath)
     {
         var toolsDirectory = Path.Combine(Path.GetFullPath(workspacePath), ".qre", "tools");
@@ -66,7 +131,53 @@ public static class ExternalStdioToolPack
 
         return manifests;
     }
+
+    private static void WriteCanonicalJson(Utf8JsonWriter writer, JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject().OrderBy(static property => property.Name, StringComparer.Ordinal))
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteCanonicalJson(writer, property.Value);
+                }
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                {
+                    WriteCanonicalJson(writer, item);
+                }
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.String:
+                writer.WriteStringValue(value.GetString());
+                break;
+            case JsonValueKind.Number:
+                writer.WriteRawValue(value.GetRawText(), skipInputValidation: false);
+                break;
+            case JsonValueKind.True:
+                writer.WriteBooleanValue(true);
+                break;
+            case JsonValueKind.False:
+                writer.WriteBooleanValue(false);
+                break;
+            case JsonValueKind.Null:
+                writer.WriteNullValue();
+                break;
+            default:
+                throw new InvalidDataException("External tool input schema contains an unsupported JSON value.");
+        }
+    }
 }
+
+internal sealed record ExternalStdioToolComposition(
+    IReadOnlyList<AIFunction> Functions,
+    IReadOnlyList<QueryRuntimeToolDescriptor> Descriptors,
+    string RecoveryCompatibilityDigest);
 
 internal sealed class ExternalStdioAIFunction(
     string workspacePath,
@@ -212,12 +323,14 @@ internal sealed class ExternalStdioAIFunction(
     {
         for (var current = exception; current != null; current = current.InnerException as IOException)
         {
-            if (current.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase))
+            if (current.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("Pipe is broken", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
 
-            if (current.InnerException?.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) == true)
+            if (current.InnerException?.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) == true ||
+                current.InnerException?.Message.Contains("Pipe is broken", StringComparison.OrdinalIgnoreCase) == true)
             {
                 return true;
             }

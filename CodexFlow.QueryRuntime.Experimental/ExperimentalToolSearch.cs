@@ -94,6 +94,15 @@ public sealed class ExperimentalToolSearchSession
         return activeTools;
     }
 
+    public IReadOnlyList<AIFunction> GetAllTools()
+    {
+        var tools = _tools.Values
+            .OrderBy(static tool => tool.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        tools.Insert(0, _toolSearchFunction);
+        return tools;
+    }
+
     public string Search(
         string query,
         int top_k = 0,

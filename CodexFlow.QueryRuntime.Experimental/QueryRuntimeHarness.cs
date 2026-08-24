@@ -46,6 +46,8 @@ public sealed record ExperimentalQueryRuntimeRequest
 
     public QreThinkingPolicy ThinkingPolicy { get; init; } = QreThinkingPolicy.Auto;
 
+    public QueryRuntimeTraceOptions Trace { get; init; } = new();
+
     /// <summary>
     /// Optional deterministic clock. When set (strict replay), the engine stamps every
     /// event with deterministic timestamps and durations instead of wall-clock time.
@@ -124,6 +126,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 ToolProfile = request.ToolProfile,
                 RequiresStructuredOutput = request.Output.RequestJson,
                 ThinkingPolicy = request.ModelPolicy.ThinkingPolicy,
+                Trace = request.Trace,
                 Options = request.Output.RequestJson
                     ? new ChatOptions { ResponseFormat = ChatResponseFormat.Json }
                     : null
@@ -183,6 +186,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 StopGate = request.StopGate,
                 RequiresStructuredOutput = request.Output.RequestJson,
                 ThinkingPolicy = request.ModelPolicy.ThinkingPolicy,
+                Trace = request.Trace,
                 TextDeltaSink = request.TextDeltaSink,
                 TimeProvider = request.TimeProvider,
                 QueryIdFactory = request.QueryIdFactory
@@ -219,27 +223,52 @@ public sealed class ExperimentalQueryRuntimeHarness(
     {
         ArgumentNullException.ThrowIfNull(request);
         var prompt = ResolvePrompt(request);
+        request.Trace.Validate();
 
         var runId = string.IsNullOrWhiteSpace(request.RunId)
             ? DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff")
             : request.RunId!;
+        ValidateRunId(runId);
         var sessionId = string.IsNullOrWhiteSpace(request.SessionId)
             ? $"qre-{runId}"
             : request.SessionId!;
         var traceRoot = ResolveTraceRoot(request.WorkspacePath, request.TraceRoot);
-        var traceFilePath = ResolveTraceFilePath(traceRoot, runId);
-        var started = ExperimentalRunStartedRecord.Create(runId, sessionId, request.WorkspacePath, prompt);
+        var persistedRunId = request.Trace.DataMode switch
+        {
+            QueryRuntimeTraceDataMode.PublicRedacted => $"public-{Guid.NewGuid():N}",
+            QueryRuntimeTraceDataMode.PrivateDiagnostic => $"private-{Guid.NewGuid():N}",
+            _ => runId
+        };
+        var traceFilePath = ResolveTraceFilePath(traceRoot, persistedRunId, request.Trace);
+        var started = ExperimentalRunStartedRecord.Create(
+            persistedRunId,
+            sessionId,
+            request.WorkspacePath,
+            prompt,
+            request.Trace);
 
-        await using var traceSink = await JsonlTraceEventSink.CreateAsync(traceFilePath, started, ct).ConfigureAwait(false);
+        await using var traceSink = await JsonlTraceEventSink.CreateAsync(
+            traceFilePath,
+            started,
+            request.Trace,
+            ct).ConfigureAwait(false);
         var engine = new QueryRuntimeEngine(modelClient, request.TimeProvider, request.QueryIdFactory);
 
         try
         {
             var runDirectory = JsonlTraceStore.GetRunDirectory(traceFilePath);
+            var sensitiveArtifactRunDirectory = request.Trace.DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+                ? null
+                : runDirectory;
             var descriptors = ResolveProfileToolDescriptors(request.ToolProfile, request.WorkspacePath);
             var tools = request.Tools.Count > 0
                 ? request.Tools
-                : ResolveProfileTools(request.ToolProfile, request.WorkspacePath, traceSink, runDirectory);
+                : ResolveProfileTools(
+                    request.ToolProfile,
+                    request.WorkspacePath,
+                    traceSink,
+                    sensitiveArtifactRunDirectory,
+                    request.Trace.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic);
             var toolsEnabled = request.EnableTools && tools.Count > 0;
             Func<QueryRuntimeToolResolutionContext, IReadOnlyList<AIFunction>>? toolProvider = null;
             var toolSearchCatalog = string.Empty;
@@ -289,15 +318,16 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 traceFilePath,
                 request.WorkspacePath,
                 ct).ConfigureAwait(false);
-            await traceSink.WriteCompletedAsync(ExperimentalRunCompletedRecord.Create(runId, sessionId, result), ct).ConfigureAwait(false);
+            await traceSink.WriteCompletedAsync(ExperimentalRunCompletedRecord.Create(persistedRunId, sessionId, result), ct).ConfigureAwait(false);
             await JsonlTraceEventSink.WriteManifestAsync(
                 traceFilePath,
                 ExperimentalRunManifest.Completed(
-                    runId,
+                    persistedRunId,
                     sessionId,
                     request.WorkspacePath,
                     traceFilePath,
                     request.ToolProfile.Name,
+                    request.Trace,
                     result),
                 ct).ConfigureAwait(false);
 
@@ -326,15 +356,16 @@ public sealed class ExperimentalQueryRuntimeHarness(
         }
         catch (Exception ex)
         {
-            await traceSink.WriteFailedAsync(ExperimentalRunFailedRecord.Create(runId, sessionId, ex), CancellationToken.None).ConfigureAwait(false);
+            await traceSink.WriteFailedAsync(ExperimentalRunFailedRecord.Create(persistedRunId, sessionId, ex), CancellationToken.None).ConfigureAwait(false);
             await JsonlTraceEventSink.WriteManifestAsync(
                 traceFilePath,
                 ExperimentalRunManifest.Failed(
-                    runId,
+                    persistedRunId,
                     sessionId,
                     request.WorkspacePath,
                     traceFilePath,
                     request.ToolProfile.Name,
+                    request.Trace,
                     ex),
                 CancellationToken.None).ConfigureAwait(false);
             throw;
@@ -434,7 +465,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
         var root = string.IsNullOrWhiteSpace(workspacePath)
             ? Directory.GetCurrentDirectory()
             : workspacePath;
-        return Path.Combine(Path.GetFullPath(root), ".qre");
+        return QueryRuntimePathSafety.ResolveUnderRoot(Path.GetFullPath(root), ".qre");
     }
 
     private static string ResolveTraceRoot(string? workspacePath, string? traceRoot)
@@ -449,17 +480,29 @@ public sealed class ExperimentalQueryRuntimeHarness(
             : workspacePath!;
         var fullTraceRoot = Path.IsPathFullyQualified(traceRoot)
             ? Path.GetFullPath(traceRoot)
-            : Path.GetFullPath(Path.Combine(basePath, traceRoot));
+            : QueryRuntimePathSafety.ResolveUnderRoot(basePath, traceRoot);
         RejectTraceRootSegments(fullTraceRoot);
         return fullTraceRoot;
     }
 
-    private static string ResolveTraceFilePath(string traceRoot, string runId)
+    private static string ResolveTraceFilePath(
+        string traceRoot,
+        string persistedRunId,
+        QueryRuntimeTraceOptions traceOptions)
     {
-        ValidateRunId(runId);
+        var runsRoot = traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic
+            ? PreparePrivateTraceRoot(traceRoot, traceOptions.PrivateDiagnosticRetention)
+            : QueryRuntimePathSafety.ResolveUnderRoot(traceRoot, "runs");
         return QueryRuntimePathSafety.ResolveUnderRoot(
-            traceRoot,
-            Path.Combine("runs", runId, "events.jsonl"));
+            runsRoot,
+            Path.Combine(persistedRunId, "events.jsonl"));
+    }
+
+    private static string PreparePrivateTraceRoot(string traceRoot, TimeSpan retention)
+    {
+        var privateRoot = QueryRuntimePathSafety.ResolveUnderRoot(traceRoot, "private");
+        TraceStorageSecurity.PreparePrivateRoot(privateRoot, retention);
+        return QueryRuntimePathSafety.ResolveUnderRoot(privateRoot, "runs");
     }
 
     private static void ValidateRunId(string runId)
@@ -467,8 +510,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         if (runId is "." or ".." ||
             runId.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0 ||
-            runId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-            QueryRuntimePathSafety.IsSecretLookingSegment(runId))
+            runId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
             throw new ArgumentException("RunId must be a single safe path segment.", nameof(runId));
         }
@@ -483,9 +525,9 @@ public sealed class ExperimentalQueryRuntimeHarness(
                 throw new InvalidOperationException("Trace root cannot be inside a .git directory.");
             }
 
-            if (QueryRuntimePathSafety.IsSecretLookingSegment(segment))
+            if (QueryRuntimePathSafety.IsProtectedCredentialSegment(segment))
             {
-                throw new InvalidOperationException("Trace root cannot contain secret-looking path segments.");
+                throw new InvalidOperationException("Trace root cannot contain protected credential path segments.");
             }
         }
     }
@@ -494,7 +536,8 @@ public sealed class ExperimentalQueryRuntimeHarness(
         QueryRuntimeToolProfile profile,
         string? workspacePath,
         IQueryRuntimePolicyDecisionSink? policyDecisionSink = null,
-        string? runDirectory = null)
+        string? runDirectory = null,
+        bool restrictRunArtifacts = false)
     {
         var profileName = profile.Name.Trim().ToLowerInvariant();
         if (profileName is "none")
@@ -513,7 +556,7 @@ public sealed class ExperimentalQueryRuntimeHarness(
             return profileName switch
             {
                 "verify" => [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalVerifyToolPack.Create(workspaceRoot, policyDecisionSink: policyDecisionSink)],
-                "repair" => [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalRepairToolPack.Create(workspaceRoot, runDirectory, policyDecisionSink: policyDecisionSink)],
+                "repair" => [.. ExperimentalReadOnlyToolPack.Create(workspaceRoot), .. ExperimentalRepairToolPack.Create(workspaceRoot, runDirectory, null, policyDecisionSink, restrictRunArtifacts)],
                 _ => ExperimentalReadOnlyToolPack.Create(workspaceRoot)
             };
         }

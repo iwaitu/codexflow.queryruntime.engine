@@ -55,8 +55,14 @@ validation, and replay debugging.
   for analysis-style work.
 - **Verify tool pack** — `qre_git_status`, `qre_git_diff`, `qre_dotnet_build`,
   `qre_dotnet_test`, executed under a capability policy in a trusted-local context.
-- **Trace / replay** — every run writes a JSONL trace; `replay latest` defaults to a
-  provider-free / tool-free recorded replay.
+- **Trace / replay** — every run writes a JSONL trace. Traces default to a redacted,
+  summary-only public projection; explicitly use `--trace-data sanitized` for reviewed
+  replay fixtures or `--trace-data private` for access-controlled diagnostics before
+  running provider-free / tool-free replay.
+- **Conservative crash resume (H1)** — sanitized/private runs atomically persist
+  stable checkpoints and RunAttempt lineage. `qre resume latest` continues an
+  unfinished same-version local Turn; uncertain tool outcomes stop as
+  `NeedsReconciliation` before any provider or tool call.
 - **Run artifacts** — each run writes `events.jsonl`, `manifest.json`, `run.json`,
   `diff.patch`, `usage.json`, and `artifacts/` under `.qre/runs/<run-id>/`. Large
   payloads spill to `blobs/sha256/...`, keeping only digest metadata in the trace.
@@ -79,6 +85,18 @@ validation, and replay debugging.
 - **Thinking policy** — thinking is disabled by default when tools or JSON output
   are requested, improving tool-call and schema-output compatibility.
 - **Native AOT** — `qre` ships as a single native binary (validated on `osx-arm64`).
+
+Crash resume is intentionally narrower than rerun or replay:
+
+```bash
+qre run --workspace . --trace-data sanitized --response "draft" "analyze this repo"
+qre resume latest --workspace . --response "continue safely" --json
+```
+
+Normal completed runs have terminal checkpoints and are skipped by `resume latest`.
+Public-redacted runs do not persist recovery material. H1 is local/single-process,
+same-contract-version recovery only; it does not provide lease/fencing,
+cross-version migration, or automatic recovery of uncertain tool side effects.
 
 ## Project layout
 
@@ -207,6 +225,11 @@ Important request fields:
 - `TextDeltaSink` receives streamed assistant text deltas for the host UI or API.
 - `TimeProvider` and `QueryIdFactory` are available for deterministic tests and
   replay-oriented host integrations.
+- `Trace` defaults to `PublicRedacted` / `SummaryOnly`. Set
+  `QueryRuntimeTraceDataMode.SanitizedFixture` for reviewed synthetic replay fixtures,
+  or `PrivateDiagnostic` for owner-only local diagnostics. Private traces use an isolated
+  directory and are pruned after seven days by default; hosts may shorten retention up to
+  the enforced 30-day maximum. Neither private nor sanitized traces are encrypted at rest.
 - `ToolSearch = new QueryRuntimeToolSearchOptions { Enabled = true }` enables
   lazy activation for the host facade. Set `TopK`, `AlwaysOnToolNames`, or
   `DeferredToolNames` when the host needs tighter control over the initial tool
@@ -317,10 +340,30 @@ Verify the CLI / trace / JSON output works end to end:
 qre run --workspace . --response "offline smoke" --json "analyze this repo"
 ```
 
-Emits a single `qre.run.completed` JSON object:
+Exercise the v2-only hosting facade, deterministic context, deferred frozen tool
+catalog, and versioned audit:
+
+```bash
+qre run --workspace . --profile readonly --tool-search \
+  --trace-data sanitized --response "offline v2 smoke" --json "exercise v2"
+qre replay latest --workspace . --strict --json
+```
+
+`qre run` now always uses v2; `--runtime v2` is optional compatibility syntax
+and `--runtime v1` fails before execution. v2 supports the none/readonly/verify/repair
+profiles and external stdio tools. Write and
+high-risk execution requires `--approve-risk <reason>`; approval is bound to
+the normalized arguments, workspace, policy, sandbox, and expiry. `--tool-search`
+now exposes a per-Step subset of the frozen execution registry: the first Step
+sees only `tool_search`, and activated schemas become visible on the next Step.
+The default v2 audit is `PublicRedacted / SummaryOnly`; only explicitly enabled
+sanitized/private data is recorded-replay capable, and replay calls no provider
+and executes no tool.
+
+Emits a single `qre.v2.run.completed` JSON object:
 
 ```json
-{"type":"qre.run.completed","finalText":"offline smoke","runId":"20260602145703992","termination":"NoToolCalls","profile":"none","tools":[],"traceFilePath":"./.qre/runs/20260602145703992/events.jsonl","totalRounds":1,"totalToolCalls":0,"totalDurationMs":52}
+{"type":"qre.v2.run.completed","finalText":"offline smoke","status":"Completed","terminationReason":"Completed","profile":"none","totalSteps":1,"totalToolCalls":0,"auditSchemaVersion":1}
 ```
 
 ### 2. Read-only codebase analysis
@@ -346,11 +389,12 @@ and activation status; activated tools are injected on later rounds.
 ```bash
 qre trace latest --workspace . --jsonl
 qre replay latest --workspace . --json
+qre replay latest --workspace . --summary --json
 ```
 
-`replay latest` defaults to a recorded replay: it reads the recorded model responses
-and tool results from the trace — it does **not** call the provider or re-execute the
-original tools.
+`replay latest` reads the v2 audit and performs data-only replay: it does **not**
+call the provider or re-execute tools. Legacy v1 traces remain available only via
+`--runtime v1 --summary`; v1 run/replay execution is disabled.
 
 ## Calling a real LLM provider
 
@@ -593,6 +637,9 @@ platform:
 - [docs/toolsearch.md](docs/toolsearch.md) — lazy tool activation design.
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — open-source harness strategy.
 - [docs/queryruntime-pre-release-work-plan.md](docs/queryruntime-pre-release-work-plan.md) — pre-release work plan ([中文](docs/queryruntime-pre-release-work-plan.zh-CN.md)).
+- [docs/vnext-core-parity-execution-plan.zh-CN.md](docs/vnext-core-parity-execution-plan.zh-CN.md) — active vNext Core Parity execution plan.
+- [docs/vnext-core-parity-baseline.zh-CN.md](docs/vnext-core-parity-baseline.zh-CN.md) — frozen C0 contracts and 3/10/25-step baseline.
+- [docs/migration-0.2-preview.md](docs/migration-0.2-preview.md) — v1/v2 API, CLI, host and rollback migration guide.
 - [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.md) — archived completed development plan.
 - [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — tool partition matrix.
 - [docs/tool-capabilities.md](docs/tool-capabilities.md), [docs/threat-model.md](docs/threat-model.md).

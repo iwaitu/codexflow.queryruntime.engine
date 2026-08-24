@@ -197,6 +197,42 @@ public sealed class QueryRuntimeContractTests
                 Qre.QueryRuntimePathSafety.ResolveUnderRoot(workspace.Path, ".git/config"),
                 "read"));
         Assert.True(Qre.QueryRuntimePathSafety.IsSecretLookingSegment(".env"));
+        Assert.True(Qre.QueryRuntimePathSafety.IsSecretLookingSegment("TokenService.cs"));
+        Assert.False(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment("TokenService.cs"));
+        Assert.True(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env"));
+        Assert.True(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env.staging"));
+        Assert.True(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env.qa"));
+        Assert.False(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env.example"));
+        Assert.False(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env.sample"));
+        Assert.False(Qre.QueryRuntimePathSafety.IsProtectedCredentialSegment(".env.template"));
+
+        var credential = Path.Combine(workspace.Path, ".env.staging");
+        var alias = Path.Combine(workspace.Path, "src", "credential-alias.txt");
+        File.WriteAllText(credential, "secret");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(alias, credential);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            Assert.Throws<InvalidOperationException>(() =>
+                Qre.QueryRuntimePathSafety.RejectProtectedWorkspacePath(
+                    workspace.Path,
+                    Qre.QueryRuntimePathSafety.ResolveUnderRoot(workspace.Path, alias),
+                    "read"));
+        }
+        finally
+        {
+            if (File.Exists(alias))
+            {
+                File.Delete(alias);
+            }
+        }
     }
 
     private static string ReadText(ChatMessage message)
