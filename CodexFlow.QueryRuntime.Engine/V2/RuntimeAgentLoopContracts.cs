@@ -38,6 +38,19 @@ public sealed record RuntimeAgentLoopRequest(
 
     public RuntimeAuditFailureMode AuditFailureMode { get; init; } = RuntimeAuditFailureMode.FailClosed;
 
+    public RuntimeRunAttempt? Attempt { get; init; }
+
+    public IRuntimeCheckpointSink? CheckpointSink { get; init; }
+
+    public RuntimeCheckpointFailureMode CheckpointFailureMode { get; init; } = RuntimeCheckpointFailureMode.FailClosed;
+
+    /// <summary>
+    /// Host-owned stable identifier for every non-serializable recovery
+    /// dependency (context, policy, approval, tool composition, and hooks).
+    /// It is mandatory whenever durable checkpoints are enabled.
+    /// </summary>
+    public string? RecoveryCompatibilityId { get; init; }
+
     public IRuntimeToolExecutor? ToolExecutor { get; init; }
 
     public IRuntimeToolAuthorization? ToolAuthorization { get; init; }
@@ -58,6 +71,10 @@ public sealed record RuntimeAgentLoopResult(
     public IReadOnlyList<RuntimeAuditEnvelope> AuditEvents { get; init; } = [];
 
     public IReadOnlyList<RuntimeWarning> AuditWarnings { get; init; } = [];
+
+    public IReadOnlyList<RuntimeWarning> CheckpointWarnings { get; init; } = [];
+
+    public RuntimeRunAttempt? Attempt { get; init; }
 
     public IReadOnlyDictionary<string, RuntimeHistoryBlob> HistoryBlobs { get; init; } =
         new ReadOnlyDictionary<string, RuntimeHistoryBlob>(

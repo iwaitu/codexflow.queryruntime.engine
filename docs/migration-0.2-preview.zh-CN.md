@@ -13,7 +13,8 @@
 
 v2 使用 `CodexFlow.QueryRuntime.Protocol` 下的 provider-neutral contract，以及
 `CodexFlow.QueryRuntime.Engine.V2` 下的 Hosting/Runtime 类型。主要入口是
-`IAgentRuntime.RunAsync(RuntimeRunRequest, ...)`。Session、Turn、Step、invocation、audit identity 均为
+`IAgentRuntime.RunAsync(RuntimeRunRequest, ...)`；从 `0.2.0-preview.21` 起，H1 恢复入口为
+`IResumableAgentRuntime.ResumeAsync(RuntimeResumeRequest, ...)`。Session、Turn、Step、invocation、audit identity 均为
 typed ID；model stream 分离 text、reasoning、usage、warning、tool call 和 completion；工具执行必须经过
 冻结 ToolRegistry 与 execution plan。
 
@@ -25,15 +26,18 @@ typed ID；model stream 分离 text、reasoning、usage、warning、tool call �
 ```bash
 qre run --profile readonly --response "offline smoke" --json "inspect this repository"
 qre replay latest --summary --json
+qre resume latest --workspace . --response "continue" --json
 ```
 
 v2 是唯一执行路径，支持 `none`、`readonly`、`verify`、`repair`；写入和高风险执行仍需
 绑定冻结计划的审批。公开审计默认脱敏且仅支持 summary；`--trace-data sanitized` 只用于经审查 fixture，
 `--trace-data private` 用于访问受控诊断。
+H1 checkpoint 只在这两种模式写入。恢复要求 Runtime contract、冻结请求、workspace 和宿主
+`RecoveryCompatibilityId` 一致；public run、terminal checkpoint、动态工具目录和不确定工具结果都会在执行前失败。
 
 ## 宿主迁移
 
-1. 升级到 `0.2.0-preview.17` 或更高版本，并把 backend 设为 `qre-v2`。
+1. 升级到 `0.2.0-preview.21` 或更高版本，并把 backend 设为 `qre-v2`。
 2. 运行宿主 contract kit，先验证 readonly、verify。
 3. 只有写审批、sandbox/write-back 门禁通过后才启用 repair。
 4. 对 policy decision、tool order、归一化 terminal reason、side-effect count 零容忍；final text 单独应用容差。

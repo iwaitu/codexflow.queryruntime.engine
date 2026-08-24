@@ -18,13 +18,38 @@ public sealed class RuntimeAgentLoop
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    public async Task<RuntimeAgentLoopResult> RunAsync(
+    public Task<RuntimeAgentLoopResult> RunAsync(
         RuntimeAgentLoopRequest request,
         RuntimeTurnHandle? handle = null,
         CancellationToken ct = default)
+        => RunCoreAsync(request, checkpoint: null, handle, ct);
+
+    public Task<RuntimeAgentLoopResult> ResumeAsync(
+        RuntimeAgentLoopRequest request,
+        RuntimeCheckpointDocument checkpoint,
+        RuntimeTurnHandle? handle = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        return RunCoreAsync(request, checkpoint, handle, ct);
+    }
+
+    private async Task<RuntimeAgentLoopResult> RunCoreAsync(
+        RuntimeAgentLoopRequest request,
+        RuntimeCheckpointDocument? checkpoint,
+        RuntimeTurnHandle? handle,
+        CancellationToken ct)
     {
         ValidateRequest(request);
         request = SnapshotRequest(request);
+        var attempt = request.Attempt ?? (checkpoint == null
+            ? RuntimeRunAttempt.Create()
+            : RuntimeRunAttempt.Resume(checkpoint));
+        request = request with { Attempt = attempt };
+        if (checkpoint != null)
+        {
+            ValidateResumeRequest(request, checkpoint, attempt);
+        }
         using var linkedCancellation = handle == null
             ? CancellationTokenSource.CreateLinkedTokenSource(ct)
             : CancellationTokenSource.CreateLinkedTokenSource(ct, handle.CancellationToken);
@@ -36,23 +61,49 @@ public sealed class RuntimeAgentLoop
             request.SessionId,
             request.TurnId,
             _timeProvider);
-        var history = RuntimeHistory.Create(
-            request.InitialMessages,
-            request.HistoryVersion,
-            contextManager.Options);
+        var checkpointEmitter = new RuntimeCheckpointEmitter(
+            request.CheckpointSink,
+            request.CheckpointFailureMode,
+            request,
+            attempt,
+            _timeProvider);
+        var history = checkpoint == null
+            ? RuntimeHistory.Create(
+                request.InitialMessages,
+                request.HistoryVersion,
+                contextManager.Options)
+            : RuntimeHistory.RestoreCanonical(
+                checkpoint.CanonicalHistory,
+                checkpoint.Session.HistoryVersion,
+                checkpoint.NextHistoryMessageSequence,
+                contextManager.Options,
+                checkpoint.HistoryBlobs);
         var preparedContexts = new List<PreparedRuntimeContext>();
         var contextEvents = new List<RuntimeContextEvent>();
         await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
-        var session = RuntimeSessionState.Create(request.SessionId, request.HistoryVersion);
-        session = RuntimeStateReducer.StartTurn(
-            session,
-            new RuntimeTurnContext(
-                request.SessionId,
-                request.TurnId,
-                request.Objective,
-                request.CreatedAt ?? _timeProvider.GetUtcNow(),
-                request.ModelParameters.RequiredToolName));
-        var finalText = string.Empty;
+        var session = checkpoint?.Session ?? RuntimeSessionState.Create(request.SessionId, request.HistoryVersion);
+        RuntimeCheckpointKind? resumeKind = checkpoint?.Kind;
+        if (checkpoint == null)
+        {
+            session = RuntimeStateReducer.StartTurn(
+                session,
+                new RuntimeTurnContext(
+                    request.SessionId,
+                    request.TurnId,
+                    request.Objective,
+                    request.CreatedAt ?? _timeProvider.GetUtcNow(),
+                    request.ModelParameters.RequiredToolName));
+        }
+        else
+        {
+            (session, resumeKind) = PrepareResumeState(session, history, checkpoint);
+            await PublishHistoryEventsAsync(
+                history,
+                request.ContextEventSink,
+                contextEvents,
+                token).ConfigureAwait(false);
+        }
+        var finalText = checkpoint?.FinalText ?? string.Empty;
 
         try
         {
@@ -61,13 +112,54 @@ public sealed class RuntimeAgentLoop
                 RuntimeAuditSensitivity.Sensitive,
                 new RuntimeTurnStartedAuditPayload(
                     request.Objective,
-                    request.HistoryVersion,
+                    session.HistoryVersion,
                     history.ToMessages(),
                     request.Policy,
                     request.Environment,
                     request.Budget),
                 token).ConfigureAwait(false);
-            for (var stepIndex = 0; stepIndex < request.Budget.MaxSteps; stepIndex++)
+            if (checkpoint == null)
+            {
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.TurnStarted,
+                    session,
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
+            }
+
+            if (resumeKind == RuntimeCheckpointKind.StepCommitted)
+            {
+                var postStep = await ApplyPostStepDecisionAsync(
+                    session,
+                    history,
+                    request,
+                    handle,
+                    contextEvents,
+                    token).ConfigureAwait(false);
+                session = postStep.Session;
+                if (postStep.Complete)
+                {
+                    return await CompleteResultAsync(
+                        session,
+                        history,
+                        finalText,
+                        preparedContexts,
+                        contextEvents,
+                        audit,
+                        checkpointEmitter).ConfigureAwait(false);
+                }
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.ContinuationCommitted,
+                    session,
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
+            }
+
+            for (var stepIndex = session.ActiveTurn!.Steps.Count;
+                 stepIndex < request.Budget.MaxSteps;
+                 stepIndex++)
             {
                 token.ThrowIfCancellationRequested();
                 if (handle != null)
@@ -202,6 +294,13 @@ public sealed class RuntimeAgentLoop
                     token,
                     stepId).ConfigureAwait(false);
 
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.StepPrepared,
+                    session,
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
+
                 (session, var output) = await SampleAsync(session, stepContext, token).ConfigureAwait(false);
                 session = RuntimeStateReducer.CommitModelOutput(session, stepId, output);
                 finalText = output.Text;
@@ -226,9 +325,29 @@ public sealed class RuntimeAgentLoop
                 {
                     throw new RuntimeAgentLoopCancelled(session);
                 }
+                if (output.ToolCalls.Count == 0 && string.IsNullOrEmpty(output.Text))
+                {
+                    throw new RuntimeAgentLoopFailure(
+                        RuntimeTerminationReason.FailClosed,
+                        new RuntimeError(
+                            RuntimeErrorCategory.ProviderProtocol,
+                            "empty_model_response",
+                            "The model completed without text or tool calls."));
+                }
                 if (output.ToolCalls.Count > 0)
                 {
                     EnsureToolStopReason(output.StopReason);
+                }
+
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.ModelCommitted,
+                    session,
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
+
+                if (output.ToolCalls.Count > 0)
+                {
                     var execution = await ExecuteToolsAsync(
                         session,
                         request,
@@ -267,16 +386,6 @@ public sealed class RuntimeAgentLoop
                             stepId,
                             output.ToolCalls[resultIndex].InvocationId).ConfigureAwait(false);
                     }
-                    if (request.ToolCatalogSelector != null)
-                    {
-                        for (var resultIndex = 0; resultIndex < execution.Results.Count; resultIndex++)
-                        {
-                            request.ToolCatalogSelector.Observe(
-                                output.ToolCalls[resultIndex],
-                                execution.Results[resultIndex]);
-                        }
-                    }
-
                     var policyFailure = execution.Results
                         .Select(static result => result.Error)
                         .FirstOrDefault(IsTerminalPolicyFailure);
@@ -297,17 +406,22 @@ public sealed class RuntimeAgentLoop
                                 "step_budget_exhausted",
                                 "The Turn ended after tool observations because no Step budget remained."));
                     }
+                    await checkpointEmitter.SaveAsync(
+                        RuntimeCheckpointKind.ToolBatchCommitted,
+                        session,
+                        history,
+                        finalText,
+                        token).ConfigureAwait(false);
+                    if (request.ToolCatalogSelector != null)
+                    {
+                        for (var resultIndex = 0; resultIndex < execution.Results.Count; resultIndex++)
+                        {
+                            request.ToolCatalogSelector.Observe(
+                                output.ToolCalls[resultIndex],
+                                execution.Results[resultIndex]);
+                        }
+                    }
                     continue;
-                }
-
-                if (string.IsNullOrEmpty(output.Text))
-                {
-                    throw new RuntimeAgentLoopFailure(
-                        RuntimeTerminationReason.FailClosed,
-                        new RuntimeError(
-                            RuntimeErrorCategory.ProviderProtocol,
-                            "empty_model_response",
-                            "The model completed without text or tool calls."));
                 }
 
                 session = RuntimeStateReducer.TransitionStep(
@@ -316,79 +430,37 @@ public sealed class RuntimeAgentLoop
                     RuntimeStepPhase.Completed);
                 session = CommitHistoryBatch(session, history, [CreateAssistantMessage(output)]);
                 await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
-                var canContinue = stepIndex + 1 < request.Budget.MaxSteps &&
-                    session.ActiveTurn!.Progress.ContinuationCount < request.Budget.MaxContinuations;
-                var decision = await DecideTerminationAsync(
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.StepCommitted,
                     session,
-                    history.ToMessages(),
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
+                var postStep = await ApplyPostStepDecisionAsync(
+                    session,
+                    history,
                     request,
                     handle,
-                    canContinue,
+                    contextEvents,
                     token).ConfigureAwait(false);
-
-                switch (decision.Kind)
+                session = postStep.Session;
+                if (postStep.Complete)
                 {
-                    case RuntimeTerminationDecisionKind.Accept:
-                        session = RuntimeStateReducer.FinishTurn(
-                            session,
-                            RuntimeTurnStatus.Completed,
-                            RuntimeTerminationReason.Completed);
-                        return await CompleteResultAsync(
-                            session,
-                            history,
-                            finalText,
-                            preparedContexts,
-                            contextEvents,
-                            audit).ConfigureAwait(false);
-                    case RuntimeTerminationDecisionKind.FailClosed:
-                        throw new RuntimeAgentLoopFailure(
-                            RuntimeTerminationReason.FailClosed,
-                            decision.Error ?? new RuntimeError(
-                                RuntimeErrorCategory.RuntimeInvariantViolation,
-                                "termination_policy_failed_closed",
-                                "The termination policy failed closed."));
-                    case RuntimeTerminationDecisionKind.Continue:
-                    case RuntimeTerminationDecisionKind.RequireTool:
-                        if (!canContinue)
-                        {
-                            var reason = decision.Kind == RuntimeTerminationDecisionKind.RequireTool
-                                ? RuntimeTerminationReason.RequiredToolMissing
-                                : RuntimeTerminationReason.MaxSteps;
-                            throw new RuntimeAgentLoopFailure(
-                                reason,
-                                new RuntimeError(
-                                    RuntimeErrorCategory.ResourceExhausted,
-                                    "continuation_budget_exhausted",
-                                    "The runtime could not honor the requested semantic continuation."));
-                        }
-                        if (decision.Kind == RuntimeTerminationDecisionKind.RequireTool)
-                        {
-                            EnsureRequiredToolAvailable(decision.RequiredToolName, request.Tools);
-                        }
-                        if (!string.IsNullOrWhiteSpace(decision.Feedback))
-                        {
-                            session = CommitHistoryBatch(
-                                session,
-                                history,
-                                [new RuntimeMessage(
-                                    RuntimeMessageRole.User,
-                                    [new RuntimeTextItem(decision.Feedback)])]);
-                            await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
-                        }
-                        session = RuntimeStateReducer.RecordContinuation(
-                            session,
-                            decision.Kind == RuntimeTerminationDecisionKind.RequireTool
-                                ? decision.RequiredToolName
-                                : null);
-                        break;
-                    default:
-                        throw new RuntimeAgentLoopFailure(
-                            RuntimeTerminationReason.FailClosed,
-                            new RuntimeError(
-                                RuntimeErrorCategory.RuntimeInvariantViolation,
-                                "unknown_termination_decision",
-                                "The termination policy returned an unknown decision."));
+                    return await CompleteResultAsync(
+                        session,
+                        history,
+                        finalText,
+                        preparedContexts,
+                        contextEvents,
+                        audit,
+                        checkpointEmitter).ConfigureAwait(false);
                 }
+                await checkpointEmitter.SaveAsync(
+                    RuntimeCheckpointKind.ContinuationCommitted,
+                    session,
+                    history,
+                    finalText,
+                    token).ConfigureAwait(false);
             }
 
             throw new RuntimeAgentLoopFailure(
@@ -402,13 +474,22 @@ public sealed class RuntimeAgentLoop
         {
             session = cancelled.Session ?? session;
             session = CancelTurn(session);
-            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit)
+            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit, checkpointEmitter)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             session = CancelTurn(session);
-            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit)
+            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit, checkpointEmitter)
+                .ConfigureAwait(false);
+        }
+        catch (RuntimeCheckpointWriteFailure failure)
+        {
+            session = FailTurn(
+                session,
+                RuntimeTerminationReason.FailClosed,
+                failure.Error);
+            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit, checkpointEmitter)
                 .ConfigureAwait(false);
         }
         catch (RuntimeAuditWriteFailure failure)
@@ -417,14 +498,14 @@ public sealed class RuntimeAgentLoop
                 session,
                 RuntimeTerminationReason.FailClosed,
                 failure.Error);
-            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit)
+            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit, checkpointEmitter)
                 .ConfigureAwait(false);
         }
         catch (RuntimeAgentLoopFailure failure)
         {
             session = failure.Session ?? session;
             session = FailTurn(session, failure.TerminationReason, failure.Error);
-            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit)
+            return await CompleteResultAsync(session, history, finalText, preparedContexts, contextEvents, audit, checkpointEmitter)
                 .ConfigureAwait(false);
         }
     }
@@ -1142,6 +1223,103 @@ public sealed class RuntimeAgentLoop
         }
     }
 
+    private static async ValueTask<PostStepDecision> ApplyPostStepDecisionAsync(
+        RuntimeSessionState session,
+        RuntimeHistory history,
+        RuntimeAgentLoopRequest request,
+        RuntimeTurnHandle? handle,
+        ICollection<RuntimeContextEvent> contextEvents,
+        CancellationToken ct)
+    {
+        var step = session.ActiveTurn?.Steps.LastOrDefault() ??
+            throw new RuntimeAgentLoopFailure(
+                RuntimeTerminationReason.FailClosed,
+                new RuntimeError(
+                    RuntimeErrorCategory.RuntimeInvariantViolation,
+                    "resume_step_missing",
+                    "A committed Step is required before applying the termination decision."));
+        if (step.Phase != RuntimeStepPhase.Completed || step.Output == null)
+        {
+            throw new RuntimeAgentLoopFailure(
+                RuntimeTerminationReason.FailClosed,
+                new RuntimeError(
+                    RuntimeErrorCategory.RuntimeInvariantViolation,
+                    "resume_step_not_committed",
+                    "The post-Step decision requires a completed Step with committed output."));
+        }
+        var canContinue = step.Context.Index + 1 < request.Budget.MaxSteps &&
+            session.ActiveTurn!.Progress.ContinuationCount < request.Budget.MaxContinuations;
+        var decision = await DecideTerminationAsync(
+            session,
+            history.ToMessages(),
+            request,
+            handle,
+            canContinue,
+            ct).ConfigureAwait(false);
+        switch (decision.Kind)
+        {
+            case RuntimeTerminationDecisionKind.Accept:
+                return new PostStepDecision(
+                    RuntimeStateReducer.FinishTurn(
+                        session,
+                        RuntimeTurnStatus.Completed,
+                        RuntimeTerminationReason.Completed),
+                    Complete: true);
+            case RuntimeTerminationDecisionKind.FailClosed:
+                throw new RuntimeAgentLoopFailure(
+                    RuntimeTerminationReason.FailClosed,
+                    decision.Error ?? new RuntimeError(
+                        RuntimeErrorCategory.RuntimeInvariantViolation,
+                        "termination_policy_failed_closed",
+                        "The termination policy failed closed."));
+            case RuntimeTerminationDecisionKind.Continue:
+            case RuntimeTerminationDecisionKind.RequireTool:
+                if (!canContinue)
+                {
+                    var reason = decision.Kind == RuntimeTerminationDecisionKind.RequireTool
+                        ? RuntimeTerminationReason.RequiredToolMissing
+                        : RuntimeTerminationReason.MaxSteps;
+                    throw new RuntimeAgentLoopFailure(
+                        reason,
+                        new RuntimeError(
+                            RuntimeErrorCategory.ResourceExhausted,
+                            "continuation_budget_exhausted",
+                            "The runtime could not honor the requested semantic continuation."));
+                }
+                if (decision.Kind == RuntimeTerminationDecisionKind.RequireTool)
+                {
+                    EnsureRequiredToolAvailable(decision.RequiredToolName, request.Tools);
+                }
+                if (!string.IsNullOrWhiteSpace(decision.Feedback))
+                {
+                    session = CommitHistoryBatch(
+                        session,
+                        history,
+                        [new RuntimeMessage(
+                            RuntimeMessageRole.User,
+                            [new RuntimeTextItem(decision.Feedback)])]);
+                    await PublishHistoryEventsAsync(
+                        history,
+                        request.ContextEventSink,
+                        contextEvents,
+                        ct).ConfigureAwait(false);
+                }
+                session = RuntimeStateReducer.RecordContinuation(
+                    session,
+                    decision.Kind == RuntimeTerminationDecisionKind.RequireTool
+                        ? decision.RequiredToolName
+                        : null);
+                return new PostStepDecision(session, Complete: false);
+            default:
+                throw new RuntimeAgentLoopFailure(
+                    RuntimeTerminationReason.FailClosed,
+                    new RuntimeError(
+                        RuntimeErrorCategory.RuntimeInvariantViolation,
+                        "unknown_termination_decision",
+                        "The termination policy returned an unknown decision."));
+        }
+    }
+
     private static RuntimeSessionState ObserveOutstandingTools(
         RuntimeSessionState session,
         RuntimeError error,
@@ -1224,7 +1402,8 @@ public sealed class RuntimeAgentLoop
         string finalText,
         IReadOnlyList<PreparedRuntimeContext> preparedContexts,
         IReadOnlyList<RuntimeContextEvent> contextEvents,
-        RuntimeAuditEmitter audit)
+        RuntimeAuditEmitter audit,
+        RuntimeCheckpointEmitter checkpoints)
     {
         var historySnapshot = history.Snapshot();
         return new RuntimeAgentLoopResult(
@@ -1237,7 +1416,9 @@ public sealed class RuntimeAgentLoop
             ContextEvents = Array.AsReadOnly(contextEvents.ToArray()),
             AuditEvents = audit.Events,
             AuditWarnings = audit.Warnings,
-            HistoryBlobs = historySnapshot.Blobs
+            CheckpointWarnings = checkpoints.Warnings,
+            HistoryBlobs = historySnapshot.Blobs,
+            Attempt = checkpoints.Attempt
         };
     }
 
@@ -1247,9 +1428,24 @@ public sealed class RuntimeAgentLoop
         string finalText,
         IReadOnlyList<PreparedRuntimeContext> preparedContexts,
         IReadOnlyList<RuntimeContextEvent> contextEvents,
-        RuntimeAuditEmitter audit)
+        RuntimeAuditEmitter audit,
+        RuntimeCheckpointEmitter checkpoints)
     {
-        var result = CreateResult(session, history, finalText, preparedContexts, contextEvents, audit);
+        var result = CreateResult(session, history, finalText, preparedContexts, contextEvents, audit, checkpoints);
+        try
+        {
+            await checkpoints.SaveAsync(
+                RuntimeCheckpointKind.Terminal,
+                session,
+                history,
+                finalText,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (RuntimeCheckpointWriteFailure failure)
+        {
+            session = ReplaceTerminalFailure(session, failure.Error);
+            result = CreateResult(session, history, finalText, preparedContexts, contextEvents, audit, checkpoints);
+        }
         try
         {
             await audit.EmitAsync(
@@ -1267,21 +1463,32 @@ public sealed class RuntimeAgentLoop
                     result.Session.HistoryVersion,
                     result.History),
                 CancellationToken.None).ConfigureAwait(false);
-            return CreateResult(session, history, finalText, preparedContexts, contextEvents, audit);
+            return CreateResult(session, history, finalText, preparedContexts, contextEvents, audit, checkpoints);
         }
         catch (RuntimeAuditWriteFailure failure)
         {
-            var terminal = session.TerminalTurns[^1] with
-            {
-                Status = RuntimeTurnStatus.Failed,
-                TerminationReason = RuntimeTerminationReason.FailClosed,
-                Error = failure.Error
-            };
-            var turns = session.TerminalTurns.ToArray();
-            turns[^1] = terminal;
-            session = session with { TerminalTurns = Array.AsReadOnly(turns) };
-            return CreateResult(session, history, finalText, preparedContexts, contextEvents, audit);
+            session = ReplaceTerminalFailure(session, failure.Error);
+            await checkpoints.TrySaveTerminalBestEffortAsync(
+                session,
+                history,
+                finalText).ConfigureAwait(false);
+            return CreateResult(session, history, finalText, preparedContexts, contextEvents, audit, checkpoints);
         }
+    }
+
+    private static RuntimeSessionState ReplaceTerminalFailure(
+        RuntimeSessionState session,
+        RuntimeError error)
+    {
+        var terminal = session.TerminalTurns[^1] with
+        {
+            Status = RuntimeTurnStatus.Failed,
+            TerminationReason = RuntimeTerminationReason.FailClosed,
+            Error = error
+        };
+        var turns = session.TerminalTurns.ToArray();
+        turns[^1] = terminal;
+        return session with { TerminalTurns = Array.AsReadOnly(turns) };
     }
 
     private static RuntimeSessionState CommitHistoryBatch(
@@ -1466,6 +1673,24 @@ public sealed class RuntimeAgentLoop
         {
             throw new ArgumentOutOfRangeException(nameof(request.HistoryVersion));
         }
+        if (request.CheckpointSink != null &&
+            (string.IsNullOrWhiteSpace(request.RecoveryCompatibilityId) ||
+             !string.Equals(
+                 request.RecoveryCompatibilityId,
+                 request.RecoveryCompatibilityId.Trim(),
+                 StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(
+                "Durable checkpointing requires a non-empty, normalized host RecoveryCompatibilityId.",
+                nameof(request));
+        }
+        if (request.CheckpointSink != null &&
+            request.CheckpointFailureMode != RuntimeCheckpointFailureMode.FailClosed)
+        {
+            throw new ArgumentException(
+                "Durable H1 recovery requires fail-closed checkpoint writes.",
+                nameof(request));
+        }
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var tool in request.Tools)
         {
@@ -1523,6 +1748,139 @@ public sealed class RuntimeAgentLoop
         }
     }
 
+    private static void ValidateResumeRequest(
+        RuntimeAgentLoopRequest request,
+        RuntimeCheckpointDocument checkpoint,
+        RuntimeRunAttempt attempt)
+    {
+        RuntimeJsonCheckpointStore.ValidateDocument(checkpoint);
+        if (request.CheckpointSink == null)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.RuntimeInvariantViolation,
+                "resume_checkpoint_sink_required",
+                "A resumed attempt requires a checkpoint sink."));
+        }
+        if (request.ToolCatalogSelector != null)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.RuntimeInvariantViolation,
+                "resume_dynamic_tool_catalog_unsupported",
+                "H1 cannot resume a mutable dynamic tool catalog because its activation state is not durable."));
+        }
+        if (checkpoint.Disposition == RuntimeCheckpointDisposition.Terminal ||
+            checkpoint.Kind == RuntimeCheckpointKind.Terminal)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.RuntimeInvariantViolation,
+                "checkpoint_already_terminal",
+                "A terminal checkpoint cannot be resumed."));
+        }
+        if (checkpoint.Disposition == RuntimeCheckpointDisposition.NeedsReconciliation)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.UncertainSideEffect,
+                "checkpoint_needs_reconciliation",
+                checkpoint.ReconciliationReason ??
+                "The checkpoint contains tool calls with an uncertain execution outcome."));
+        }
+        var fingerprint = RuntimeCheckpointFingerprint.Compute(
+            RuntimeCheckpointRequestSnapshot.Capture(request));
+        if (!string.Equals(fingerprint, checkpoint.RequestFingerprint, StringComparison.Ordinal))
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.RuntimeInvariantViolation,
+                "checkpoint_request_mismatch",
+                "The recovery request does not match the frozen checkpoint request."));
+        }
+        if (attempt.AttemptId == checkpoint.Attempt.AttemptId ||
+            attempt.ParentAttemptId != checkpoint.Attempt.AttemptId ||
+            attempt.RootAttemptId != checkpoint.Attempt.RootAttemptId ||
+            attempt.Ordinal != checkpoint.Attempt.Ordinal + 1)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.RuntimeInvariantViolation,
+                "checkpoint_attempt_lineage_invalid",
+                "The recovery attempt does not extend the checkpoint attempt lineage."));
+        }
+    }
+
+    private static (RuntimeSessionState Session, RuntimeCheckpointKind Kind) PrepareResumeState(
+        RuntimeSessionState session,
+        RuntimeHistory history,
+        RuntimeCheckpointDocument checkpoint)
+    {
+        var turn = session.ActiveTurn ??
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.TraceCorrupt,
+                "checkpoint_active_turn_missing",
+                "A resumable checkpoint must contain one active Turn."));
+        switch (checkpoint.Kind)
+        {
+            case RuntimeCheckpointKind.TurnStarted:
+            case RuntimeCheckpointKind.ToolBatchCommitted:
+            case RuntimeCheckpointKind.ContinuationCommitted:
+                return (session, checkpoint.Kind);
+            case RuntimeCheckpointKind.StepPrepared:
+            {
+                var step = turn.Steps.LastOrDefault();
+                if (step == null || step.Phase is not (RuntimeStepPhase.Preparing or RuntimeStepPhase.Sampling))
+                {
+                    throw ResumeCorrupt(
+                        "checkpoint_prepared_step_invalid",
+                        "A StepPrepared checkpoint must contain one incomplete preparing or sampling Step.");
+                }
+                var remaining = Array.AsReadOnly(turn.Steps.Take(turn.Steps.Count - 1).ToArray());
+                return (session with { ActiveTurn = turn with { Steps = remaining } }, checkpoint.Kind);
+            }
+            case RuntimeCheckpointKind.ModelCommitted:
+            {
+                var step = turn.Steps.LastOrDefault();
+                if (step?.Output == null || step.Phase != RuntimeStepPhase.CommittingObservation ||
+                    step.Output.ToolCalls.Count != 0)
+                {
+                    throw ResumeCorrupt(
+                        "checkpoint_model_boundary_invalid",
+                        "A resumable ModelCommitted checkpoint must contain a text-only committed model output.");
+                }
+                if (ExceedsTokenBudget(turn.Progress.Usage, checkpoint.Request.Budget) ||
+                    step.Output.StopReason == RuntimeModelStopReason.Cancelled ||
+                    string.IsNullOrEmpty(step.Output.Text))
+                {
+                    throw ResumeCorrupt(
+                        "checkpoint_model_output_invalid",
+                        "The committed model output is cancelled, empty, or exceeds the frozen token budget.");
+                }
+                session = RuntimeStateReducer.TransitionStep(
+                    session,
+                    step.Context.StepId,
+                    RuntimeStepPhase.Completed);
+                session = CommitHistoryBatch(session, history, [CreateAssistantMessage(step.Output)]);
+                return (session, RuntimeCheckpointKind.StepCommitted);
+            }
+            case RuntimeCheckpointKind.StepCommitted:
+                if (turn.Steps.LastOrDefault()?.Phase != RuntimeStepPhase.Completed)
+                {
+                    throw ResumeCorrupt(
+                        "checkpoint_committed_step_invalid",
+                        "A StepCommitted checkpoint must contain a completed Step.");
+                }
+                return (session, checkpoint.Kind);
+            case RuntimeCheckpointKind.Terminal:
+                throw new RuntimeResumeException(new RuntimeError(
+                    RuntimeErrorCategory.RuntimeInvariantViolation,
+                    "checkpoint_already_terminal",
+                    "A terminal checkpoint cannot be resumed."));
+            default:
+                throw ResumeCorrupt(
+                    "checkpoint_kind_invalid",
+                    "The checkpoint kind is not supported.");
+        }
+    }
+
+    private static RuntimeResumeException ResumeCorrupt(string code, string message)
+        => new(new RuntimeError(RuntimeErrorCategory.TraceCorrupt, code, message));
+
     private static RuntimeAgentLoopRequest SnapshotRequest(RuntimeAgentLoopRequest request)
         => request with
         {
@@ -1537,6 +1895,101 @@ public sealed class RuntimeAgentLoop
         RuntimeSessionState Session,
         IReadOnlyList<RuntimeToolResult> Results,
         RuntimeError? FatalError);
+
+    private sealed record PostStepDecision(RuntimeSessionState Session, bool Complete);
+
+    private sealed class RuntimeCheckpointEmitter(
+        IRuntimeCheckpointSink? sink,
+        RuntimeCheckpointFailureMode failureMode,
+        RuntimeAgentLoopRequest request,
+        RuntimeRunAttempt attempt,
+        TimeProvider timeProvider)
+    {
+        private readonly List<RuntimeWarning> _warnings = [];
+        private long _sequence;
+
+        public RuntimeRunAttempt Attempt => attempt;
+
+        public IReadOnlyList<RuntimeWarning> Warnings => Array.AsReadOnly(_warnings.ToArray());
+
+        public async ValueTask SaveAsync(
+            RuntimeCheckpointKind kind,
+            RuntimeSessionState session,
+            RuntimeHistory history,
+            string finalText,
+            CancellationToken ct)
+        {
+            if (sink == null)
+            {
+                return;
+            }
+            var historySnapshot = history.Snapshot();
+            var checkpoint = RuntimeCheckpointDocument.Capture(
+                Interlocked.Increment(ref _sequence),
+                attempt,
+                kind,
+                request,
+                session,
+                historySnapshot,
+                finalText,
+                timeProvider.GetUtcNow());
+            try
+            {
+                await sink.SaveAsync(checkpoint, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var error = new RuntimeError(
+                    RuntimeErrorCategory.TraceCorrupt,
+                    "checkpoint_write_failed",
+                    $"The H1 checkpoint could not be durably committed: {ex.Message}");
+                if (failureMode == RuntimeCheckpointFailureMode.FailClosed)
+                {
+                    throw new RuntimeCheckpointWriteFailure(error, ex);
+                }
+                _warnings.Add(new RuntimeWarning(error.Code, error.Message));
+            }
+        }
+
+        public async ValueTask TrySaveTerminalBestEffortAsync(
+            RuntimeSessionState session,
+            RuntimeHistory history,
+            string finalText)
+        {
+            if (sink == null)
+            {
+                return;
+            }
+            try
+            {
+                var historySnapshot = history.Snapshot();
+                var checkpoint = RuntimeCheckpointDocument.Capture(
+                    Interlocked.Increment(ref _sequence),
+                    attempt,
+                    RuntimeCheckpointKind.Terminal,
+                    request,
+                    session,
+                    historySnapshot,
+                    finalText,
+                    timeProvider.GetUtcNow());
+                await sink.SaveAsync(checkpoint, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The primary terminal/audit error remains authoritative.
+            }
+        }
+    }
+
+    private sealed class RuntimeCheckpointWriteFailure(RuntimeError error, Exception innerException)
+        : Exception(error.Message, innerException)
+    {
+        public RuntimeError Error { get; } = error;
+    }
 
     private sealed class RuntimeAuditEmitter(
         IRuntimeAuditSink? sink,

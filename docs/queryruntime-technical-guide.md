@@ -931,13 +931,37 @@ causation/correlation, kind/payload/identity shape, model request/response pairs
 tool-observation order, terminal text/usage/history, and manifest/file/blob path,
 length, SHA-256, and quota consistency. `providerCalls` and `toolExecutions` are
 always `false`. `--strict` requests complete trajectory validation and a stable
-`replayDigest`; it is not a live rerun and provides no crash-resume or exactly-once
-guarantee.
+`replayDigest`; it is not a live rerun and does not execute crash resume or provide
+an exactly-once guarantee.
+
+#### H1 local crash resume
+
+`0.2.0-preview.21` adds the hardened `checkpoint.v1.json` contract independently of audit v1. Complete
+recovery material is written only for `--trace-data sanitized` or `private`;
+public-redacted runs never write checkpoints. Checkpoints use atomic replacement,
+length/SHA-256 checks, bounded file/JSON depth, path containment, a frozen-request
+fingerprint, and a host-owned `RecoveryCompatibilityId`. Every recovery creates a
+new `RuntimeRunAttemptId` with root/parent/ordinal lineage and never appends to the
+prior attempt's audit.
+
+```bash
+qre resume latest --workspace . --response "offline continuation" --json
+```
+
+Resumable boundaries are TurnStarted, StepPrepared, text-only ModelCommitted,
+ToolBatchCommitted, StepCommitted, and ContinuationCommitted. A prepared Step may
+be sampled again; a committed text-only model output is appended to history without
+another provider call; a committed tool batch is never repeated. A ModelCommitted
+checkpoint that contains tool calls cannot prove whether execution occurred, so it
+returns `checkpoint_needs_reconciliation` with zero provider and tool calls. Terminal
+checkpoints, request/workspace/host-composition drift, mutable tool-search state, and
+cross-contract-version recovery also fail closed. H1 does not include lease/fencing,
+cross-version migration, a five-state side-effect ledger, or exactly-once semantics.
 
 `RuntimeAuditStoreOptions` bounds retention (at most 30 days), run count, all-run
 storage, per-run bytes, event count, JSON line/depth, and individual/aggregate blob
 bytes. Single-process writers share the total storage quota. Write failures use
-either `FailClosed` (default) or `BestEffort` with explicit warnings, and failed runs
+always fail closed for durable recovery; failed runs
 are eligible for terminal-only GC. Unknown/future schemas, non-terminal runs, public
 summaries, and any integrity conflict are rejected for replay.
 

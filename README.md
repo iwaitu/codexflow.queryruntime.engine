@@ -59,6 +59,10 @@ validation, and replay debugging.
   summary-only public projection; explicitly use `--trace-data sanitized` for reviewed
   replay fixtures or `--trace-data private` for access-controlled diagnostics before
   running provider-free / tool-free replay.
+- **Conservative crash resume (H1)** — sanitized/private runs atomically persist
+  stable checkpoints and RunAttempt lineage. `qre resume latest` continues an
+  unfinished same-version local Turn; uncertain tool outcomes stop as
+  `NeedsReconciliation` before any provider or tool call.
 - **Run artifacts** — each run writes `events.jsonl`, `manifest.json`, `run.json`,
   `diff.patch`, `usage.json`, and `artifacts/` under `.qre/runs/<run-id>/`. Large
   payloads spill to `blobs/sha256/...`, keeping only digest metadata in the trace.
@@ -81,6 +85,18 @@ validation, and replay debugging.
 - **Thinking policy** — thinking is disabled by default when tools or JSON output
   are requested, improving tool-call and schema-output compatibility.
 - **Native AOT** — `qre` ships as a single native binary (validated on `osx-arm64`).
+
+Crash resume is intentionally narrower than rerun or replay:
+
+```bash
+qre run --workspace . --trace-data sanitized --response "draft" "analyze this repo"
+qre resume latest --workspace . --response "continue safely" --json
+```
+
+Normal completed runs have terminal checkpoints and are skipped by `resume latest`.
+Public-redacted runs do not persist recovery material. H1 is local/single-process,
+same-contract-version recovery only; it does not provide lease/fencing,
+cross-version migration, or automatic recovery of uncertain tool side effects.
 
 ## Project layout
 

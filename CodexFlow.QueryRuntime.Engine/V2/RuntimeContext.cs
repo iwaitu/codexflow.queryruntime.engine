@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,7 +21,8 @@ public sealed record RuntimeHistoryMessage(
 public sealed record RuntimeHistorySnapshot(
     long Version,
     IReadOnlyList<RuntimeHistoryMessage> Messages,
-    IReadOnlyDictionary<string, RuntimeHistoryBlob> Blobs);
+    IReadOnlyDictionary<string, RuntimeHistoryBlob> Blobs,
+    long NextMessageSequence);
 
 public sealed record RuntimeHistoryBlob(
     string Digest,
@@ -188,6 +190,90 @@ public sealed class RuntimeHistory
         return history;
     }
 
+    public static RuntimeHistory RestoreCanonical(
+        IReadOnlyList<RuntimeHistoryMessage> canonicalMessages,
+        long version,
+        long nextMessageSequence,
+        RuntimeContextOptions? options = null,
+        IReadOnlyList<RuntimeHistoryBlob>? blobs = null)
+    {
+        ArgumentNullException.ThrowIfNull(canonicalMessages);
+        if (version < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(version));
+        }
+        if (nextMessageSequence < 0 || nextMessageSequence >= int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(nextMessageSequence));
+        }
+        var resolved = options ?? RuntimeContextOptions.Default;
+        resolved.Validate();
+        var history = new RuntimeHistory(version, resolved);
+        var messageIds = new HashSet<string>(StringComparer.Ordinal);
+        var itemIds = new HashSet<string>(StringComparer.Ordinal);
+        long previousSequence = -1;
+        long previousCommittedVersion = -1;
+        foreach (var entry in canonicalMessages)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(entry.Message);
+            ArgumentNullException.ThrowIfNull(entry.Message.Items);
+            ArgumentNullException.ThrowIfNull(entry.ItemIds);
+            var idPrefix = $"h{entry.CommittedVersion}:m";
+            var sequenceText = entry.Id.Value?.StartsWith(idPrefix, StringComparison.Ordinal) == true
+                ? entry.Id.Value[idPrefix.Length..]
+                : string.Empty;
+            var hasCanonicalSequence = long.TryParse(
+                sequenceText,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var sequence) &&
+                sequence > previousSequence &&
+                string.Equals(entry.Id.Value, $"{idPrefix}{sequence}", StringComparison.Ordinal);
+            if (entry.CommittedVersion < previousCommittedVersion || entry.CommittedVersion > version ||
+                string.IsNullOrWhiteSpace(entry.Id.Value) ||
+                !hasCanonicalSequence ||
+                !messageIds.Add(entry.Id.Value) ||
+                entry.ItemIds.Count != entry.Message.Items.Count)
+            {
+                throw new InvalidDataException("Canonical Runtime history message identity is invalid.");
+            }
+            for (var itemIndex = 0; itemIndex < entry.ItemIds.Count; itemIndex++)
+            {
+                var expectedItemId = $"{entry.Id.Value}:i{itemIndex}";
+                if (string.IsNullOrWhiteSpace(entry.ItemIds[itemIndex].Value) ||
+                    !string.Equals(entry.ItemIds[itemIndex].Value, expectedItemId, StringComparison.Ordinal) ||
+                    !itemIds.Add(entry.ItemIds[itemIndex].Value))
+                {
+                    throw new InvalidDataException("Canonical Runtime history item identity is invalid.");
+                }
+            }
+            var restored = SnapshotMessage(entry);
+            history._messages.Add(restored);
+            history.SeedCanonicalIndexes(restored.Message);
+            previousSequence = sequence;
+            previousCommittedVersion = entry.CommittedVersion;
+        }
+        if (previousSequence >= nextMessageSequence)
+        {
+            throw new InvalidDataException("Canonical Runtime history next message sequence is invalid.");
+        }
+        history._messageSequence = nextMessageSequence;
+        foreach (var blob in blobs ?? [])
+        {
+            ArgumentNullException.ThrowIfNull(blob);
+            var data = blob.Data.ToArray();
+            if (data.Length > resolved.MaxBlobBytes ||
+                history._blobBytes + data.Length > resolved.MaxTotalBlobBytes ||
+                !history._blobs.TryAdd(blob.Digest, blob with { Data = data }))
+            {
+                throw new InvalidDataException("Canonical Runtime history blobs exceed limits or contain duplicates.");
+            }
+            history._blobBytes = checked(history._blobBytes + data.Length);
+        }
+        return history;
+    }
+
     public long AppendBatch(IReadOnlyList<RuntimeMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
@@ -203,7 +289,8 @@ public sealed class RuntimeHistory
             new ReadOnlyDictionary<string, RuntimeHistoryBlob>(_blobs.ToDictionary(
                 static pair => pair.Key,
                 static pair => pair.Value with { Data = pair.Value.Data.ToArray() },
-                StringComparer.Ordinal)));
+                StringComparer.Ordinal)),
+            _messageSequence);
 
     public IReadOnlyList<RuntimeMessage> ToMessages()
         => Array.AsReadOnly(_messages.Select(static entry => Snapshot(entry.Message)).ToArray());
@@ -220,7 +307,9 @@ public sealed class RuntimeHistory
         foreach (var message in messages)
         {
             ArgumentNullException.ThrowIfNull(message);
-            var messageId = new RuntimeHistoryMessageId($"h{version}:m{_messageSequence++}");
+            var sequence = _messageSequence;
+            _messageSequence = checked(_messageSequence + 1);
+            var messageId = new RuntimeHistoryMessageId($"h{version}:m{sequence}");
             var normalized = Normalize(message, messageId, version);
             if (normalized == null)
             {
@@ -234,6 +323,25 @@ public sealed class RuntimeHistory
                 version,
                 normalized,
                 Array.AsReadOnly(itemIds)));
+        }
+    }
+
+    private void SeedCanonicalIndexes(RuntimeMessage message)
+    {
+        foreach (var item in message.Items)
+        {
+            switch (item)
+            {
+                case RuntimeTextItem text when message.Role == RuntimeMessageRole.System:
+                    _systemFragments.Add(text.Text);
+                    break;
+                case RuntimeToolCallItem toolCall:
+                    _toolCalls.Add(toolCall.Call.InvocationId.Value);
+                    break;
+                case RuntimeToolResultItem toolResult:
+                    _toolResults.Add(toolResult.Result.InvocationId.Value);
+                    break;
+            }
         }
     }
 

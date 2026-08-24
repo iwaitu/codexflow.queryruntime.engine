@@ -1,5 +1,13 @@
 using System.Text.Json;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using CodexFlow.QueryRuntime.Abstractions;
+using CodexFlow.QueryRuntime.Engine.V2;
+using CodexFlow.QueryRuntime.Experimental;
+using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Protocol;
+using CodexFlow.QueryRuntime.Sandbox.Docker;
 using Xunit;
 
 namespace CodexFlow.QueryRuntime.UnitTests.Cli;
@@ -14,7 +22,7 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.2.0-preview.17", result.StandardOutput);
+        Assert.Contains("0.2.0-preview.21", result.StandardOutput);
     }
 
     [Fact]
@@ -68,6 +76,157 @@ public sealed class QreCliSmokeTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("v1 execution has been removed", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(Path.Combine(workspace.Path, ".qre")));
+    }
+
+    [Fact]
+    public async Task ResumeLatest_FromPreparedCheckpointCreatesChildAttempt()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var captured = new InMemoryRuntimeCheckpointSink();
+        var request = new RuntimeAgentLoopRequest(
+            new RuntimeSessionId("cli-resume-session"),
+            new RuntimeTurnId("cli-resume-turn"),
+            "resume the interrupted turn",
+            [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("resume the interrupted turn")])],
+            [],
+            new RuntimeModelParameters(),
+            new RuntimePolicySnapshot("v2", "none"),
+            new RuntimeEnvironmentSnapshot("local", workspace.Path, "v2:none"),
+            new RuntimeBudgetSnapshot(3, 12, maxModelRetries: 1, maxContinuations: 1),
+            CreatedAt: DateTimeOffset.UnixEpoch)
+        {
+            Attempt = RuntimeRunAttempt.Create("attempt-cli-source"),
+            CheckpointSink = captured,
+            RecoveryCompatibilityId = LocalSanitizedCompatibilityId(workspace.Path)
+        };
+        var source = await new RuntimeAgentLoop(new StaticRuntimeModelClient("source response")).RunAsync(
+            request,
+            ct: TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeTurnStatus.Completed, source.Status);
+        var prepared = Assert.Single(captured.Checkpoints, static checkpoint =>
+            checkpoint.Kind == RuntimeCheckpointKind.StepPrepared);
+        var sourceDirectory = Path.Combine(workspace.Path, ".qre", "v2", "runs", "source-attempt");
+        var store = new RuntimeJsonCheckpointStore(sourceDirectory);
+        await store.SaveAsync(prepared, TestContext.Current.CancellationToken);
+
+        var result = await CaptureConsoleAsync(() => QreCli.RunAsync(
+            [
+                "resume",
+                "latest",
+                "--workspace",
+                workspace.Path,
+                "--response",
+                "resumed response",
+                "--json"
+            ],
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, result.ExitCode);
+        using var json = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal("qre.v2.resume.completed", json.RootElement.GetProperty("type").GetString());
+        Assert.Equal("resumed response", json.RootElement.GetProperty("finalText").GetString());
+        Assert.Equal("cli-resume-session", json.RootElement.GetProperty("sessionId").GetString());
+        Assert.Equal("cli-resume-turn", json.RootElement.GetProperty("turnId").GetString());
+        Assert.Equal("attempt-cli-source", json.RootElement.GetProperty("parentAttemptId").GetString());
+        Assert.Equal(1, json.RootElement.GetProperty("attemptOrdinal").GetInt32());
+        Assert.True(File.Exists(json.RootElement.GetProperty("checkpointPath").GetString()));
+    }
+
+    [Fact]
+    public async Task ResumeLatest_RejectsPrivateCheckpointStorageDowngrade()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var checkpoint = await CreatePreparedCheckpointAsync(
+            workspace.Path,
+            "private-source",
+            "private-storage-source");
+        var store = new RuntimeJsonCheckpointStore(
+            Path.Combine(workspace.Path, ".qre", "v2", "private", "runs", "private-source"),
+            new RuntimeJsonCheckpointStoreOptions { Private = true });
+        await store.SaveAsync(checkpoint, TestContext.Current.CancellationToken);
+
+        var result = await CaptureConsoleAsync(() => QreCli.RunAsync(
+            [
+                "resume", "latest", "--workspace", workspace.Path,
+                "--trace-data", "sanitized", "--response", "must not run", "--json"
+            ],
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("must preserve the same", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(workspace.Path, ".qre", "v2", "runs")));
+    }
+
+    [Fact]
+    public async Task ResumeLatest_RejectsEffectiveDockerImageDrift()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var originalImage = Environment.GetEnvironmentVariable("QRE_DOCKER_IMAGE");
+        const string sourceImage = "example.invalid/qre-source@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string changedImage = "example.invalid/qre-changed@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        try
+        {
+            var checkpoint = await CreatePreparedCheckpointAsync(
+                workspace.Path,
+                "docker-source",
+                DockerSanitizedCompatibilityId(workspace.Path, sourceImage),
+                executionMode: "docker");
+            var store = new RuntimeJsonCheckpointStore(Path.Combine(
+                workspace.Path, ".qre", "v2", "runs", "docker-source"));
+            await store.SaveAsync(checkpoint, TestContext.Current.CancellationToken);
+            Environment.SetEnvironmentVariable("QRE_DOCKER_IMAGE", changedImage);
+
+            var result = await CaptureConsoleAsync(() => QreCli.RunAsync(
+                [
+                    "resume", "latest", "--workspace", workspace.Path,
+                    "--runner", "docker", "--response", "must not run", "--json"
+                ],
+                TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains("checkpoint_request_mismatch", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("QRE_DOCKER_IMAGE", originalImage);
+        }
+    }
+
+    [Fact]
+    public async Task ResumeLatest_RejectsExternalManifestCommandDriftBeforeExecution()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var toolsDirectory = Path.Combine(workspace.Path, ".qre", "tools");
+        Directory.CreateDirectory(toolsDirectory);
+        var manifestPath = Path.Combine(toolsDirectory, "resume-tool.json");
+        WriteExternalResumeManifest(manifestPath, "safe-command");
+        var composition = ExperimentalV2ToolComposition.CreateRuntime(
+            QueryRuntimeToolProfile.None,
+            workspace.Path,
+            includeExternal: true);
+        var checkpoint = await CreatePreparedCheckpointAsync(
+            workspace.Path,
+            "external-source",
+            LocalSanitizedCompatibilityId(
+                workspace.Path,
+                includeExternal: true,
+                composition.RecoveryCompatibilityDigest),
+            tools: composition.Pipeline.Descriptors,
+            toolPipeline: composition.Pipeline);
+        var store = new RuntimeJsonCheckpointStore(Path.Combine(
+            workspace.Path, ".qre", "v2", "runs", "external-source"));
+        await store.SaveAsync(checkpoint, TestContext.Current.CancellationToken);
+
+        WriteExternalResumeManifest(manifestPath, "changed-command-must-not-run");
+        var result = await CaptureConsoleAsync(() => QreCli.RunAsync(
+            [
+                "resume", "latest", "--workspace", workspace.Path,
+                "--external", "--response", "must not run", "--json"
+            ],
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("checkpoint_request_mismatch", result.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1738,6 +1897,95 @@ public sealed class QreCliSmokeTests
         Assert.Equal("Allow", json.RootElement.GetProperty("decision").GetString());
         Assert.Equal(0, json.RootElement.GetProperty("exitCode").GetInt32());
     }
+
+    private static async Task<RuntimeCheckpointDocument> CreatePreparedCheckpointAsync(
+        string workspacePath,
+        string attemptId,
+        string compatibilityId,
+        string executionMode = "local",
+        IReadOnlyList<RuntimeToolDescriptor>? tools = null,
+        RuntimeToolExecutionPipeline? toolPipeline = null)
+    {
+        var checkpoints = new InMemoryRuntimeCheckpointSink();
+        const string objective = "resume the interrupted turn";
+        var request = new RuntimeAgentLoopRequest(
+            new RuntimeSessionId($"{attemptId}-session"),
+            new RuntimeTurnId($"{attemptId}-turn"),
+            objective,
+            [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(objective)])],
+            tools ?? [],
+            new RuntimeModelParameters(),
+            new RuntimePolicySnapshot("v2", "none"),
+            new RuntimeEnvironmentSnapshot(executionMode, workspacePath, "v2:none"),
+            new RuntimeBudgetSnapshot(3, 12, maxModelRetries: 1, maxContinuations: 1),
+            CreatedAt: DateTimeOffset.UnixEpoch)
+        {
+            Attempt = RuntimeRunAttempt.Create(attemptId),
+            CheckpointSink = checkpoints,
+            RecoveryCompatibilityId = compatibilityId,
+            ToolPipeline = toolPipeline
+        };
+        var result = await new RuntimeAgentLoop(new StaticRuntimeModelClient("source response")).RunAsync(
+            request,
+            ct: TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeTurnStatus.Completed, result.Status);
+        return Assert.Single(checkpoints.Checkpoints, static value =>
+            value.Kind == RuntimeCheckpointKind.StepPrepared);
+    }
+
+    private static string LocalSanitizedCompatibilityId(
+        string workspacePath,
+        bool includeExternal = false,
+        string? compositionDigest = null)
+    {
+        var runnerDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("local")))
+            .ToLowerInvariant();
+        compositionDigest ??= ExperimentalV2ToolComposition.CreateRuntime(
+            QueryRuntimeToolProfile.None,
+            workspacePath,
+            includeExternal: includeExternal).RecoveryCompatibilityDigest;
+        return $"qre-cli-h1:v3:provider=static:runner=local:runner-config={runnerDigest}:storage=sanitizedfixture:profile=none:external={includeExternal.ToString().ToLowerInvariant()}:tool-composition={compositionDigest}:tool-search=false:thinking=auto:approval=none";
+    }
+
+    private static string DockerSanitizedCompatibilityId(string workspacePath, string image)
+    {
+        var options = new DockerSandboxOptions { Image = image };
+        var runnerIdentity = string.Join('|',
+            "docker",
+            options.Image,
+            options.ContainerUser,
+            options.DropAllCapabilities,
+            options.NoNewPrivileges,
+            options.ReadOnlyRootFilesystem,
+            options.TmpfsMount,
+            options.SeccompProfilePath,
+            options.RequireSeccompProfile,
+            options.CopyWorkspaceForWriteJobs);
+        var runnerDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(runnerIdentity)))
+            .ToLowerInvariant();
+        var compositionDigest = ExperimentalV2ToolComposition.CreateRuntime(
+            QueryRuntimeToolProfile.None,
+            workspacePath,
+            sandboxKind: RuntimeSandboxKind.Docker).RecoveryCompatibilityDigest;
+        return $"qre-cli-h1:v3:provider=static:runner=docker:runner-config={runnerDigest}:storage=sanitizedfixture:profile=none:external=false:tool-composition={compositionDigest}:tool-search=false:thinking=auto:approval=none";
+    }
+
+    private static void WriteExternalResumeManifest(string path, string command)
+        => File.WriteAllText(
+            path,
+            $$"""
+            {
+              "name": "resume_external_tool",
+              "description": "External resume compatibility fixture.",
+              "transport": "stdio",
+              "command": "{{command}}",
+              "args": ["--fixed"],
+              "capabilities": ["read_file_system"],
+              "inputSchema": { "type": "object", "additionalProperties": false },
+              "timeoutSeconds": 30,
+              "maxOutputBytes": 200000
+            }
+            """);
 
     private static async Task<CapturedConsole> CaptureConsoleAsync(Func<Task<int>> action)
     {

@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -38,6 +40,7 @@ internal static class QreCli
             "policy" => Policy(args[1..]),
             "replay" => await Replay(args[1..], ct).ConfigureAwait(false),
             "rerun" => await Rerun(args[1..], ct).ConfigureAwait(false),
+            "resume" => await Resume(args[1..], ct).ConfigureAwait(false),
             "diff" => await Diff(args[1..], ct).ConfigureAwait(false),
             "sandbox" => await Sandbox(args[1..], ct).ConfigureAwait(false),
             "doctor" => await Doctor(args[1..], ct).ConfigureAwait(false),
@@ -113,6 +116,13 @@ internal static class QreCli
                     {
                         return Fail("v1 execution has been removed from qre run. --runtime accepts only v2 and is now optional.");
                     }
+                    break;
+                case "--resume-checkpoint":
+                    if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        return Fail("--resume-checkpoint requires a path.");
+                    }
+                    options.ResumeCheckpointPath = args[i];
                     break;
                 case "--required-tool":
                     if (++i >= args.Length || string.IsNullOrWhiteSpace(args[i]))
@@ -234,11 +244,61 @@ internal static class QreCli
             return Fail($"Unsupported profile value: {options.ToolProfile.Name}");
         }
 
+        RuntimeCheckpointDocument? resumeCheckpoint = null;
+        RuntimeAuditDataMode? resumeStorageMode = null;
+        if (!string.IsNullOrWhiteSpace(options.ResumeCheckpointPath))
+        {
+            var requestedStorageMode = ToV2AuditDataMode(options.Trace.DataMode);
+            if (requestedStorageMode == RuntimeAuditDataMode.PublicRedacted)
+            {
+                return Fail("H1 resume requires --trace-data sanitized or private; public-redacted storage cannot persist recovery state.");
+            }
+            try
+            {
+                resumeStorageMode = ResolveCheckpointStorageMode(
+                    resolvedWorkspace,
+                    options.ResumeCheckpointPath);
+                if (resumeStorageMode != requestedStorageMode)
+                {
+                    return Fail(
+                        $"Checkpoint storage class is {resumeStorageMode}; resume must preserve the same --trace-data class.");
+                }
+                resumeCheckpoint = RuntimeJsonCheckpointStore.Read(options.ResumeCheckpointPath);
+            }
+            catch (RuntimeResumeException ex)
+            {
+                return Fail($"Could not safely read v2 checkpoint ({ex.Error.Code}): {ex.Message}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                       InvalidDataException or JsonException or InvalidOperationException)
+            {
+                return Fail($"Could not safely read v2 checkpoint: {ex.Message}");
+            }
+            if (resumeCheckpoint.Disposition == RuntimeCheckpointDisposition.NeedsReconciliation)
+            {
+                return Fail("Checkpoint requires reconciliation because tool outcomes may be uncertain; no provider or tool was executed.");
+            }
+            if (resumeCheckpoint.Disposition == RuntimeCheckpointDisposition.Terminal)
+            {
+                return Fail("Latest checkpoint is terminal and cannot be resumed.");
+            }
+            if (!string.Equals(resumeCheckpoint.Request.Policy.Profile, normalizedProfile, StringComparison.Ordinal) ||
+                !string.Equals(
+                    resumeCheckpoint.Request.Environment.WorkspaceIdentity,
+                    resolvedWorkspace,
+                    OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+            {
+                return Fail("Checkpoint profile or workspace does not match the resume request.");
+            }
+        }
+
         var sandboxRunner = CreateSandboxRunner(
             options.Runner,
             options.DockerImage,
             out var runnerName,
-            out _,
+            out var runnerConfiguration,
             out var runnerError);
         if (sandboxRunner == null)
         {
@@ -254,6 +314,14 @@ internal static class QreCli
             resolvedWorkspace,
             $"v2-{runSuffix}",
             auditOptions);
+        RuntimeJsonCheckpointStore? checkpointStore = auditOptions.DataMode == RuntimeAuditDataMode.PublicRedacted
+            ? null
+            : new RuntimeJsonCheckpointStore(
+                auditStore.RunDirectory,
+                new RuntimeJsonCheckpointStoreOptions
+                {
+                    Private = auditOptions.DataMode == RuntimeAuditDataMode.PrivateDiagnostic
+                });
 
         ExperimentalV2RuntimeComposition composition;
         try
@@ -297,49 +365,71 @@ internal static class QreCli
 
         try
         {
-            var sessionId = new RuntimeSessionId($"qre-cli-{runSuffix}");
-            var turnId = new RuntimeTurnId($"qre-cli-turn-{runSuffix}");
+            var sessionId = resumeCheckpoint?.Request.SessionId ?? new RuntimeSessionId($"qre-cli-{runSuffix}");
+            var turnId = resumeCheckpoint?.Request.TurnId ?? new RuntimeTurnId($"qre-cli-turn-{runSuffix}");
             var toolPipeline = composition.Pipeline;
             var runtime = new AgentRuntime(modelClient);
             using var handle = new RuntimeTurnHandle();
             var eventSink = options.Output.Stream
                 ? new CliV2EventSink(options.Output.Stream)
                 : null;
-            var result = await runtime.RunAsync(
-                new RuntimeRunRequest(new RuntimeAgentLoopRequest(
-                    sessionId,
-                    turnId,
-                    prompt,
-                    string.IsNullOrWhiteSpace(composition.CapabilityCatalog)
-                        ? [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])]
-                        :
-                        [
-                            new RuntimeMessage(
-                                RuntimeMessageRole.System,
-                                [new RuntimeTextItem(composition.CapabilityCatalog)]),
-                            new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])
-                        ],
-                    toolPipeline.Descriptors,
-                    new RuntimeModelParameters(
-                        Model: FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL")),
-                        RequireJsonObject: options.Output.RequestJson,
-                        RequiredToolName: options.RequiredToolName),
-                    new RuntimePolicySnapshot("v2", normalizedProfile),
-                    new RuntimeEnvironmentSnapshot(runnerName, resolvedWorkspace, $"v2:{normalizedProfile}"),
-                    new RuntimeBudgetSnapshot(
-                        Math.Max(1, options.Runtime.MaxRounds),
-                        maxToolCalls: Math.Max(4, options.Runtime.MaxRounds * 4),
-                        maxModelRetries: 1,
-                        maxContinuations: Math.Max(0, options.Runtime.MaxStopGateContinuations)))
+            var baseRequest = resumeCheckpoint?.Request.ToLoopRequest() ?? new RuntimeAgentLoopRequest(
+                sessionId,
+                turnId,
+                prompt,
+                string.IsNullOrWhiteSpace(composition.CapabilityCatalog)
+                    ? [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])]
+                    :
+                    [
+                        new RuntimeMessage(
+                            RuntimeMessageRole.System,
+                            [new RuntimeTextItem(composition.CapabilityCatalog)]),
+                        new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(prompt)])
+                    ],
+                toolPipeline.Descriptors,
+                new RuntimeModelParameters(
+                    Model: FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL")),
+                    RequireJsonObject: options.Output.RequestJson,
+                    RequiredToolName: options.RequiredToolName),
+                new RuntimePolicySnapshot("v2", normalizedProfile),
+                new RuntimeEnvironmentSnapshot(runnerName, resolvedWorkspace, $"v2:{normalizedProfile}"),
+                new RuntimeBudgetSnapshot(
+                    Math.Max(1, options.Runtime.MaxRounds),
+                    maxToolCalls: Math.Max(4, options.Runtime.MaxRounds * 4),
+                    maxModelRetries: 1,
+                    maxContinuations: Math.Max(0, options.Runtime.MaxStopGateContinuations)));
+            var loopRequest = baseRequest with
+            {
+                Attempt = resumeCheckpoint == null
+                    ? RuntimeRunAttempt.Create($"attempt-{runSuffix}")
+                    : RuntimeRunAttempt.Resume(resumeCheckpoint, $"attempt-{runSuffix}"),
+                CheckpointSink = checkpointStore,
+                CheckpointFailureMode = RuntimeCheckpointFailureMode.FailClosed,
+                RecoveryCompatibilityId = BuildCliRecoveryCompatibilityId(
+                    options,
+                    runnerName,
+                    runnerConfiguration,
+                    normalizedProfile,
+                    auditOptions.DataMode,
+                    composition.RecoveryCompatibilityDigest),
+                ToolPipeline = toolPipeline,
+                ToolCatalogSelector = composition.ToolCatalogSelector,
+                AuditSink = auditStore,
+                AuditFailureMode = RuntimeAuditFailureMode.FailClosed,
+                ToolApproval = options.ApprovalReason == null
+                    ? null
+                    : new CliV2ToolApproval(options.ApprovalReason)
+            };
+            var result = resumeCheckpoint == null
+                ? await runtime.RunAsync(
+                    new RuntimeRunRequest(loopRequest)
                 {
-                    ToolPipeline = toolPipeline,
-                    ToolCatalogSelector = composition.ToolCatalogSelector,
-                    AuditSink = auditStore,
-                    AuditFailureMode = RuntimeAuditFailureMode.FailClosed,
-                    ToolApproval = options.ApprovalReason == null
-                        ? null
-                        : new CliV2ToolApproval(options.ApprovalReason)
-                })
+                    Handle = handle
+                },
+                    eventSink,
+                    ct).ConfigureAwait(false)
+                : await runtime.ResumeAsync(
+                    new RuntimeResumeRequest(loopRequest, resumeCheckpoint)
                 {
                     Handle = handle
                 },
@@ -356,7 +446,7 @@ internal static class QreCli
             if (options.Output.Json)
             {
                 WriteJson(new QreV2RunOutput(
-                    "qre.v2.run.completed",
+                    resumeCheckpoint == null ? "qre.v2.run.completed" : "qre.v2.resume.completed",
                     result.FinalText,
                     sessionId.Value,
                     turnId.Value,
@@ -386,7 +476,12 @@ internal static class QreCli
                     AuditFilePath = auditStore.AuditFilePath,
                     RunDirectory = auditStore.RunDirectory,
                     AuditDataMode = auditOptions.DataMode.ToString(),
-                    AuditReplayCapability = auditOptions.ReplayCapability.ToString()
+                    AuditReplayCapability = auditOptions.ReplayCapability.ToString(),
+                    AttemptId = result.Attempt?.AttemptId.Value,
+                    ParentAttemptId = result.Attempt?.ParentAttemptId?.Value,
+                    RootAttemptId = result.Attempt?.RootAttemptId.Value,
+                    AttemptOrdinal = result.Attempt?.Ordinal ?? 0,
+                    CheckpointPath = checkpointStore?.CheckpointPath
                 });
             }
             else
@@ -411,9 +506,24 @@ internal static class QreCli
                 Console.WriteLine($"audit_events: {result.LoopResult.AuditEvents.Count}");
                 Console.WriteLine($"audit_data_mode: {auditOptions.DataMode}");
                 Console.WriteLine($"audit_replay: {auditOptions.ReplayCapability}");
+                Console.WriteLine($"attempt_id: {result.Attempt?.AttemptId.Value}");
+                Console.WriteLine($"parent_attempt_id: {result.Attempt?.ParentAttemptId?.Value}");
+                Console.WriteLine($"attempt_ordinal: {result.Attempt?.Ordinal ?? 0}");
+                if (checkpointStore != null)
+                {
+                    Console.WriteLine($"checkpoint: {checkpointStore.CheckpointPath}");
+                }
             }
 
             return result.Status == RuntimeTurnStatus.Completed ? 0 : 1;
+        }
+        catch (RuntimeResumeException ex)
+        {
+            return Fail($"Resume failed ({ex.Error.Code}): {ex.Message}");
+        }
+        catch (ArgumentException ex) when (resumeCheckpoint != null)
+        {
+            return Fail($"Resume request is incompatible with the checkpoint: {ex.Message}");
         }
         finally
         {
@@ -452,6 +562,94 @@ internal static class QreCli
                     : null
             });
     }
+
+    private static string BuildCliRecoveryCompatibilityId(
+        QreRunOptions options,
+        string runnerName,
+        QreSandboxRunnerConfiguration? runnerConfiguration,
+        string normalizedProfile,
+        RuntimeAuditDataMode storageMode,
+        string toolCompositionDigest)
+    {
+        var providerIdentity = !string.IsNullOrWhiteSpace(options.Provider.StaticResponse)
+            ? "static"
+            : string.Join('|',
+                FirstNonEmpty(options.Provider.ApiUrl, Environment.GetEnvironmentVariable("QRE_API_URL")),
+                FirstNonEmpty(options.Provider.Model, Environment.GetEnvironmentVariable("QRE_MODEL")),
+                FirstNonEmpty(options.Provider.ApiMode, Environment.GetEnvironmentVariable("QRE_API_MODE")));
+        var providerDigest = providerIdentity == "static"
+            ? "static"
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerIdentity)))
+                .ToLowerInvariant();
+        var runnerIdentity = runnerConfiguration == null
+            ? runnerName
+            : string.Join('|',
+                runnerConfiguration.Type,
+                runnerConfiguration.Image,
+                runnerConfiguration.ContainerUser,
+                runnerConfiguration.DropAllCapabilities,
+                runnerConfiguration.NoNewPrivileges,
+                runnerConfiguration.ReadOnlyRootFilesystem,
+                runnerConfiguration.TmpfsMount,
+                runnerConfiguration.SeccompProfilePath,
+                runnerConfiguration.RequireSeccompProfile,
+                runnerConfiguration.CopyWorkspaceForWriteJobs);
+        var runnerDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(runnerIdentity)))
+            .ToLowerInvariant();
+        var approvalDigest = string.IsNullOrEmpty(options.ApprovalReason)
+            ? "none"
+            : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(options.ApprovalReason)))
+                .ToLowerInvariant();
+        return string.Join(':',
+            "qre-cli-h1",
+            "v3",
+            $"provider={providerDigest}",
+            $"runner={runnerName}",
+            $"runner-config={runnerDigest}",
+            $"storage={storageMode.ToString().ToLowerInvariant()}",
+            $"profile={normalizedProfile}",
+            $"external={options.IncludeExternalTools.ToString().ToLowerInvariant()}",
+            $"tool-composition={toolCompositionDigest}",
+            $"tool-search={options.ToolSearch.Enabled.ToString().ToLowerInvariant()}",
+            $"thinking={options.ModelPolicy.ThinkingPolicy.ToString().ToLowerInvariant()}",
+            $"approval={approvalDigest}");
+    }
+
+    private static RuntimeAuditDataMode ResolveCheckpointStorageMode(
+        string workspacePath,
+        string checkpointPath)
+    {
+        var workspace = Path.GetFullPath(workspacePath);
+        var checkpoint = Path.GetFullPath(checkpointPath);
+        var runDirectory = Path.GetDirectoryName(checkpoint) ??
+            throw new InvalidDataException("Checkpoint path has no run directory.");
+        var expected = QueryRuntimePathSafety.ResolveUnderRoot(runDirectory, "checkpoint.v1.json");
+        if (!string.Equals(checkpoint, expected, CliPathComparison()))
+        {
+            throw new InvalidDataException("Checkpoint must use the canonical checkpoint filename.");
+        }
+        var runsRoot = Path.GetDirectoryName(runDirectory) ??
+            throw new InvalidDataException("Checkpoint path has no runs root.");
+        var v2Root = QueryRuntimePathSafety.ResolveUnderRoot(workspace, Path.Combine(".qre", "v2"));
+        var sanitizedRoot = QueryRuntimePathSafety.ResolveUnderRoot(v2Root, "runs");
+        var privateRoot = QueryRuntimePathSafety.ResolveUnderRoot(v2Root, Path.Combine("private", "runs"));
+        QueryRuntimePathSafety.RejectWorkspaceLinks(runDirectory, checkpoint, "read for recovery");
+        if (string.Equals(runsRoot, sanitizedRoot, CliPathComparison()))
+        {
+            return RuntimeAuditDataMode.SanitizedFixture;
+        }
+        if (string.Equals(runsRoot, privateRoot, CliPathComparison()))
+        {
+            return RuntimeAuditDataMode.PrivateDiagnostic;
+        }
+        throw new InvalidDataException(
+            "Checkpoint must be directly under the workspace .qre/v2 runs or private/runs tree.");
+    }
+
+    private static StringComparison CliPathComparison()
+        => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
     private static QueryRuntimeToolSearchOptions ResolveV2ToolSearchOptions(
         QueryRuntimeToolSearchOptions source,
@@ -2779,6 +2977,70 @@ internal static class QreCli
         return await ExecuteReplayAsync(workspace, traceFile, summary, json, ct).ConfigureAwait(false);
     }
 
+    private static async Task<int> Resume(string[] args, CancellationToken ct)
+    {
+        if (args.Length == 0 || args[0] is "--help" or "-h")
+        {
+            PrintResumeHelp();
+            return 0;
+        }
+        if (args[0] != "latest")
+        {
+            return Fail($"Unknown resume command: {args[0]}");
+        }
+
+        var forwarded = args[1..].ToList();
+        var workspace = Directory.GetCurrentDirectory();
+        for (var i = 0; i < forwarded.Count; i++)
+        {
+            if (forwarded[i] is "--workspace" or "-w")
+            {
+                if (++i >= forwarded.Count)
+                {
+                    return Fail("--workspace requires a path.");
+                }
+                workspace = forwarded[i];
+            }
+        }
+
+        string checkpointPath;
+        RuntimeCheckpointDocument checkpoint;
+        RuntimeAuditDataMode checkpointStorageMode;
+        try
+        {
+            checkpointPath = RuntimeJsonCheckpointStore.FindLatestCheckpoint(workspace);
+            checkpointStorageMode = ResolveCheckpointStorageMode(workspace, checkpointPath);
+            checkpoint = RuntimeJsonCheckpointStore.Read(checkpointPath);
+        }
+        catch (RuntimeResumeException ex)
+        {
+            return Fail($"Could not safely read the latest v2 checkpoint ({ex.Error.Code}): {ex.Message}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                   InvalidDataException or JsonException or InvalidOperationException)
+        {
+            return Fail($"Could not safely read the latest v2 checkpoint: {ex.Message}");
+        }
+
+        if (!forwarded.Contains("--profile", StringComparer.Ordinal) &&
+            !forwarded.Contains("--tools", StringComparer.Ordinal))
+        {
+            forwarded.Add("--profile");
+            forwarded.Add(checkpoint.Request.Policy.Profile);
+        }
+        if (!forwarded.Contains("--trace-data", StringComparer.Ordinal))
+        {
+            forwarded.Add("--trace-data");
+            forwarded.Add(checkpointStorageMode == RuntimeAuditDataMode.PrivateDiagnostic
+                ? "private"
+                : "sanitized");
+        }
+        forwarded.Add("--resume-checkpoint");
+        forwarded.Add(checkpointPath);
+        forwarded.Add(checkpoint.Request.Objective);
+        return await RunQueryAsync(forwarded.ToArray(), ct).ConfigureAwait(false);
+    }
+
     private static async Task FinalizeV2RunArtifactsAsync(
         string runDirectory,
         string workspacePath,
@@ -3344,6 +3606,8 @@ internal static class QreCli
         Console.WriteLine();
         PrintRerunHelp();
         Console.WriteLine();
+        PrintResumeHelp();
+        Console.WriteLine();
         PrintDiffHelp();
         Console.WriteLine();
         PrintSandboxHelp();
@@ -3419,6 +3683,14 @@ internal static class QreCli
     {
         Console.WriteLine("Usage:");
         Console.WriteLine("  qre rerun latest --workspace . [--json] [--response text] [--trace-data public|private|sanitized]");
+    }
+
+    private static void PrintResumeHelp()
+    {
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  qre resume latest --workspace . [--json] [--response text] [provider options]");
+        Console.WriteLine("    Resumes the latest sanitized/private H1 checkpoint as a new RunAttempt.");
+        Console.WriteLine("    Public checkpoints, terminal Turns, request drift, and uncertain tool outcomes fail before execution.");
     }
 
     private static void PrintDiffHelp()
@@ -3682,6 +3954,8 @@ internal static class QreCli
         public string? RequiredToolName { get; set; }
 
         public string? ApprovalReason { get; set; }
+
+        public string? ResumeCheckpointPath { get; set; }
     }
 
     private sealed class CliV2ToolApproval(string reason) : IRuntimeToolApproval

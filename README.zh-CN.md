@@ -38,6 +38,9 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
 - **Trace / Replay**：每次运行写入 JSONL trace；默认公开投影会脱敏宿主运行/查询标识且仅可查看摘要。
   只有经过审查的合成 fixture 才显式使用 `--trace-data sanitized`。`--trace-data private`
   写入独立 owner-only 目录，默认保留 7 天、最长 30 天，随后才能执行 provider-free / tool-free replay。
+- **保守的崩溃恢复（H1）**：sanitized/private 运行会原子保存稳定 checkpoint 和
+  RunAttempt lineage。`qre resume latest` 可以继续同版本、本地、未完成的 Turn；工具结果不确定时会在
+  provider/tool 调用前进入 `NeedsReconciliation`。
 - **Run artifacts**：公开/合成运行在 `.qre/runs/<persisted-id>/` 写入 `events.jsonl`、
   `manifest.json`、`run.json`、`diff.patch`、`usage.json` 与 `artifacts/`；
   private 运行写入 `.qre/private/runs/<private-id>/`。大 payload 落到 `blobs/sha256/...`，
@@ -58,6 +61,16 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
 - **Thinking 策略**：启用工具或要求 JSON 输出时默认关闭 thinking，提升工具调用
   与 schema 输出兼容性。
 - **Native AOT**：`qre` 已在本地 `osx-arm64` 通过 Native AOT publish 与 smoke。
+
+Crash resume 与 rerun/replay 的语义不同：
+
+```bash
+qre run --workspace . --trace-data sanitized --response "draft" "analyze this repo"
+qre resume latest --workspace . --response "continue safely" --json
+```
+
+正常完成的运行只有 terminal checkpoint，`resume latest` 会跳过它。Public-redacted 运行不保存恢复材料。
+H1 只承诺同 contract 版本、本地单进程恢复；不包含 lease/fencing、跨版本迁移或不确定工具副作用的自动恢复。
 
 ## 项目结构
 

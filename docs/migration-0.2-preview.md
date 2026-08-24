@@ -13,7 +13,8 @@ shipped in `0.2.0-preview.*` packages.
 ## API changes
 
 v2 uses the provider-neutral contracts under `CodexFlow.QueryRuntime.Protocol` and the hosting/runtime types under
-`CodexFlow.QueryRuntime.Engine.V2`. The main entry point is `IAgentRuntime.RunAsync(RuntimeRunRequest, ...)`.
+`CodexFlow.QueryRuntime.Engine.V2`. The main entry point is `IAgentRuntime.RunAsync(RuntimeRunRequest, ...)`;
+`IResumableAgentRuntime.ResumeAsync(RuntimeResumeRequest, ...)` is available from `0.2.0-preview.21` for H1 recovery.
 Session, Turn, Step, invocation and audit identities are typed. Model streams distinguish text, reasoning, usage,
 warnings, tool calls and completion. Tool execution requires a frozen registry and execution plan.
 
@@ -26,15 +27,19 @@ context and audit contracts.
 ```bash
 qre run --profile readonly --response "offline smoke" --json "inspect this repository"
 qre replay latest --summary --json
+qre resume latest --workspace . --response "continue" --json
 ```
 
 v2 is the only execution path and supports `none`, `readonly`, `verify` and `repair`.
 Write/high-risk work still requires a frozen approval binding. Public audit is redacted and summary-only; use
 `--trace-data sanitized` only for reviewed fixtures or `--trace-data private` for access-controlled diagnostics.
+H1 checkpoints are written only in those two modes. Resume requires the same Runtime contract, frozen request,
+workspace and host `RecoveryCompatibilityId`; public runs, terminal checkpoints, dynamic tool catalogs and uncertain
+tool outcomes fail before execution.
 
 ## Host migration
 
-1. Upgrade to `0.2.0-preview.17` or later and set the backend to `qre-v2`.
+1. Upgrade to `0.2.0-preview.21` or later and set the backend to `qre-v2`.
 2. Run the host contract kit, starting with readonly and verify.
 3. Enable repair only after write approval and sandbox/write-back gates pass.
 4. Compare policy decisions, tool order, normalized terminal reason and side-effect count with zero tolerance. Apply

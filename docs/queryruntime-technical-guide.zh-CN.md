@@ -857,11 +857,30 @@ v2 replay 是纯数据验证 reducer：API 不接收 model client、provider 或
 连续 sequence、causation/correlation、kind/payload/identity、model request/response、工具 observation 顺序、
 terminal text/usage/history，以及 manifest/file/blob 的路径、长度、SHA-256 和配额一致性。输出中的
 `providerCalls` 与 `toolExecutions` 固定为 `false`。`--strict` 表示完整轨迹验证并输出稳定
-`replayDigest`；它不是 live rerun，也不提供 crash resume 或 exactly-once。
+`replayDigest`；它不是 live rerun，也不执行 crash resume 或 exactly-once。
+
+#### H1 本地 Crash Resume
+
+`0.2.0-preview.21` 增加独立于 audit v1 的加固版 `checkpoint.v1.json`。只有 `--trace-data sanitized`
+或 `private` 才保存完整恢复材料；public-redacted run 不写 checkpoint。checkpoint 使用原子替换、长度和
+SHA-256 校验、文件/JSON 深度配额、路径 containment、稳定请求指纹和宿主
+`RecoveryCompatibilityId`。每次恢复创建新的 `RuntimeRunAttemptId`，保留 root/parent/ordinal lineage，
+不续写旧 attempt 的 audit。
+
+```bash
+qre resume latest --workspace . --response "offline continuation" --json
+```
+
+可恢复边界包括 TurnStarted、StepPrepared、无工具的 ModelCommitted、ToolBatchCommitted、
+StepCommitted 和 ContinuationCommitted。StepPrepared 允许重新采样；无工具的已提交模型输出直接写入历史，
+不会再次调用 provider；已提交工具批次不会重复执行。若最后证据是包含工具调用的 ModelCommitted，运行时
+无法证明工具是否已经执行，因此返回 `checkpoint_needs_reconciliation`，provider/tool 调用均为 0。
+Terminal checkpoint、请求/工作区/宿主组合漂移、动态 tool-search 状态和跨 contract 版本恢复同样 fail closed。
+H1 不包含 lease/fencing、跨版本 migration、五态副作用 ledger 或 exactly-once。
 
 存储默认上限由 `RuntimeAuditStoreOptions` 控制，包括最长 30 天 retention、run 数、全部 runs、单 run、
 事件数、JSON line/depth、单 blob 和总 blob。单进程 writer 共享总磁盘配额；写入失败可选择
-`FailClosed`（默认）或显式 warning 的 `BestEffort`，失败 run 会进入 terminal-only GC。未知/未来 schema、
+持久恢复固定使用 `FailClosed`，失败 run 会进入 terminal-only GC。未知/未来 schema、
 非终态 run、public summary 和任何完整性冲突均拒绝 replay。
 
 ### 5.9 Diff 输出

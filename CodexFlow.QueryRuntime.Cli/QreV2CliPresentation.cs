@@ -45,6 +45,16 @@ internal sealed record QreV2RunOutput(
     public string AuditDataMode { get; init; } = string.Empty;
 
     public string AuditReplayCapability { get; init; } = string.Empty;
+
+    public string? AttemptId { get; init; }
+
+    public string? ParentAttemptId { get; init; }
+
+    public string? RootAttemptId { get; init; }
+
+    public int AttemptOrdinal { get; init; }
+
+    public string? CheckpointPath { get; init; }
 }
 
 internal sealed record QreV2ReplayOutput(

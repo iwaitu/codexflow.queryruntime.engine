@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 using CodexFlow.QueryRuntime.Protocol;
 
 namespace CodexFlow.QueryRuntime.Engine.V2;
@@ -137,7 +138,8 @@ public sealed record RuntimeToolInvocationState(
 
 public sealed record RuntimeStepContext
 {
-    private RuntimeStepContext(
+    [JsonConstructor]
+    internal RuntimeStepContext(
         RuntimeStepId stepId,
         int index,
         RuntimeModelRequest modelRequest,

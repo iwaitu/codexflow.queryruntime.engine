@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexFlow.QueryRuntime.Abstractions;
@@ -63,17 +65,20 @@ public static class ExperimentalV2ToolComposition
             ],
             _ => throw new ArgumentException($"Unsupported v2 tool profile '{profile.Name}'.", nameof(profile))
         };
-        if (includeExternal)
+        var externalComposition = includeExternal
+            ? ExternalStdioToolPack.CreateComposition(profile, workspaceRoot)
+            : null;
+        if (externalComposition != null)
         {
-            functions = [.. ExternalStdioToolPack.Create(workspaceRoot), .. functions];
+            functions = [.. externalComposition.Functions, .. functions];
         }
 
         var legacyDescriptors = new List<QueryRuntimeToolDescriptor>(
             new ExperimentalToolRegistry().ListTools(profile));
         var externalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (includeExternal)
+        if (externalComposition != null)
         {
-            var externalDescriptors = ExternalStdioToolPack.ListDescriptors(profile, workspaceRoot);
+            var externalDescriptors = externalComposition.Descriptors;
             legacyDescriptors.AddRange(externalDescriptors);
             externalNames.UnionWith(externalDescriptors.Select(static descriptor => descriptor.Name));
         }
@@ -121,12 +126,42 @@ public static class ExperimentalV2ToolComposition
             new ExperimentalV2PolicyEvaluator(profile),
             sandboxes,
             timeProvider);
+        var recoveryCompatibilityDigest = CreateRecoveryCompatibilityDigest(
+            normalizedProfile,
+            sandboxKind,
+            includeExternal,
+            externalComposition?.RecoveryCompatibilityDigest ?? "none",
+            toolSearch);
         return new ExperimentalV2RuntimeComposition(
             pipeline,
             toolSearchSession == null
                 ? null
                 : new ExperimentalV2ToolCatalogSelector(toolSearchSession, pipeline.Descriptors),
-            toolSearchSession?.GetCapabilityCatalog());
+            toolSearchSession?.GetCapabilityCatalog(),
+            recoveryCompatibilityDigest);
+    }
+
+    private static string CreateRecoveryCompatibilityDigest(
+        string profile,
+        RuntimeSandboxKind sandboxKind,
+        bool includeExternal,
+        string externalDigest,
+        QueryRuntimeToolSearchOptions? toolSearch)
+    {
+        const string implementationVersion = "experimental-v2-composition-v1";
+        var identity = string.Join('|',
+            implementationVersion,
+            profile,
+            sandboxKind,
+            includeExternal,
+            externalDigest,
+            toolSearch?.Enabled ?? false,
+            toolSearch?.TopK ?? 0,
+            toolSearch?.IncludeAlreadyActive ?? false,
+            toolSearch?.IncludeUnavailable ?? false,
+            string.Join(',', (toolSearch?.AlwaysOnToolNames ?? []).Order(StringComparer.OrdinalIgnoreCase)),
+            string.Join(',', (toolSearch?.DeferredToolNames ?? []).Order(StringComparer.OrdinalIgnoreCase)));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
     }
 
     private static RuntimeToolDefinition CreateDefinition(
@@ -413,4 +448,5 @@ public static class ExperimentalV2ToolComposition
 public sealed record ExperimentalV2RuntimeComposition(
     RuntimeToolExecutionPipeline Pipeline,
     IRuntimeToolCatalogSelector? ToolCatalogSelector,
-    string? CapabilityCatalog);
+    string? CapabilityCatalog,
+    string RecoveryCompatibilityDigest);

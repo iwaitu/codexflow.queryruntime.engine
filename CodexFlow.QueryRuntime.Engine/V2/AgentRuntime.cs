@@ -14,7 +14,22 @@ public interface IAgentRuntime
         CancellationToken ct);
 }
 
+public interface IResumableAgentRuntime : IAgentRuntime
+{
+    Task<RuntimeTurnResult> ResumeAsync(
+        RuntimeResumeRequest request,
+        IRuntimeEventSink? eventSink,
+        CancellationToken ct);
+}
+
 public sealed record RuntimeRunRequest(RuntimeAgentLoopRequest LoopRequest)
+{
+    public RuntimeTurnHandle? Handle { get; init; }
+}
+
+public sealed record RuntimeResumeRequest(
+    RuntimeAgentLoopRequest LoopRequest,
+    RuntimeCheckpointDocument Checkpoint)
 {
     public RuntimeTurnHandle? Handle { get; init; }
 }
@@ -36,6 +51,8 @@ public sealed record RuntimeTurnResult(RuntimeAgentLoopResult LoopResult)
     public RuntimeError? Error => LoopResult.Error;
 
     public RuntimeUsageTotals Usage => LoopResult.Usage;
+
+    public RuntimeRunAttempt? Attempt => LoopResult.Attempt;
 }
 
 public interface IRuntimeEventSink
@@ -86,7 +103,7 @@ public sealed record RuntimePresentationEvent(
     RuntimeError? Error = null,
     RuntimeContextEvent? ContextEvent = null);
 
-public sealed class AgentRuntime : IAgentRuntime
+public sealed class AgentRuntime : IResumableAgentRuntime
 {
     private readonly IRuntimeModelClient _modelClient;
     private readonly TimeProvider _timeProvider;
@@ -145,6 +162,69 @@ public sealed class AgentRuntime : IAgentRuntime
             error: result.Error).ConfigureAwait(false);
         return new RuntimeTurnResult(result);
     }
+
+    public async Task<RuntimeTurnResult> ResumeAsync(
+        RuntimeResumeRequest request,
+        IRuntimeEventSink? eventSink,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.LoopRequest);
+        ArgumentNullException.ThrowIfNull(request.Checkpoint);
+
+        var emitter = new RuntimePresentationEmitter(
+            eventSink,
+            request.LoopRequest.SessionId,
+            request.LoopRequest.TurnId,
+            _timeProvider);
+        await emitter.EmitAsync(RuntimePresentationEventType.TurnStarted, ct).ConfigureAwait(false);
+        var loopRequest = Present(request.LoopRequest, emitter);
+        var loop = new RuntimeAgentLoop(
+            new PresentingModelClient(_modelClient, emitter),
+            _timeProvider);
+        var result = await loop.ResumeAsync(
+            loopRequest,
+            request.Checkpoint,
+            request.Handle,
+            ct).ConfigureAwait(false);
+        await EmitTerminalAsync(emitter, result).ConfigureAwait(false);
+        return new RuntimeTurnResult(result);
+    }
+
+    private static RuntimeAgentLoopRequest Present(
+        RuntimeAgentLoopRequest request,
+        RuntimePresentationEmitter emitter)
+        => request with
+        {
+            ToolPipeline = request.ToolPipeline == null
+                ? null
+                : new PresentingToolPipeline(request.ToolPipeline, emitter),
+            ToolExecutor = request.ToolExecutor == null
+                ? null
+                : new PresentingToolExecutor(request.ToolExecutor, emitter),
+            ContextEventSink = new PresentingContextEventSink(
+                request.ContextEventSink,
+                emitter)
+        };
+
+    private static ValueTask EmitTerminalAsync(
+        RuntimePresentationEmitter emitter,
+        RuntimeAgentLoopResult result)
+        => emitter.EmitAsync(
+            result.Status switch
+            {
+                RuntimeTurnStatus.Completed => RuntimePresentationEventType.TurnCompleted,
+                RuntimeTurnStatus.Cancelled => RuntimePresentationEventType.TurnCancelled,
+                _ => RuntimePresentationEventType.TurnFailed
+            },
+            CancellationToken.None,
+            text: result.FinalText,
+            turnStatus: result.Status,
+            terminationReason: result.TerminationReason,
+            totalSteps: result.Turn.Steps.Count,
+            totalToolCalls: result.Turn.Progress.ToolCallCount,
+            continuationCount: result.Turn.Progress.ContinuationCount,
+            error: result.Error);
 
     private sealed class PresentingModelClient(
         IRuntimeModelClient inner,
