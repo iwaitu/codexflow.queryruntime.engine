@@ -454,8 +454,9 @@ public sealed class RuntimeToolPipelineTests
     }
 
     [Fact]
-    public async Task AgentRuntime_PipelineDoesNotUseInvocationOnlyTurnHandleForApproval()
+    public async Task AgentRuntime_MissingPlanBoundApprovalFailsClosedAndReplaysWithoutExecution()
     {
+        var audit = new InMemoryRuntimeAuditSink();
         var pipeline = Pipeline(
             [Tool(
                 "write_file",
@@ -483,7 +484,8 @@ public sealed class RuntimeToolPipelineTests
             new RuntimeEnvironmentSnapshot("local", "workspace", "capabilities"),
             new RuntimeBudgetSnapshot(1, 1))
         {
-            ToolPipeline = pipeline
+            ToolPipeline = pipeline,
+            AuditSink = audit
         };
 
         var result = await new AgentRuntime(model).RunAsync(
@@ -491,8 +493,24 @@ public sealed class RuntimeToolPipelineTests
             null,
             TestContext.Current.CancellationToken);
 
+        Assert.Equal(RuntimeTurnStatus.Failed, result.Status);
+        Assert.Equal(RuntimeTerminationReason.FailClosed, result.TerminationReason);
+        Assert.Equal("bound_approval_unavailable", result.Error!.Code);
+        Assert.Single(result.Turn.Steps);
+        Assert.Equal(1, model.Calls);
+        Assert.Equal(0, result.Turn.Progress.ToolCallCount);
         Assert.Equal(RuntimeToolInvocationStatus.Denied, result.Turn.Steps[0].ToolInvocations![0].Status);
         Assert.Equal("bound_approval_unavailable", result.Turn.Steps[0].ToolInvocations![0].Result!.Error!.Code);
+
+        var replay = RuntimeRecordedReplay.Replay(new RuntimeAuditRecording(
+            RuntimeAuditDataMode.SanitizedFixture,
+            RuntimeAuditReplayCapability.Recorded,
+            audit.Events));
+        Assert.Equal(RuntimeTurnStatus.Failed, replay.Status);
+        Assert.Equal(RuntimeTerminationReason.FailClosed, replay.TerminationReason);
+        Assert.Equal(0, replay.TotalToolCalls);
+        Assert.False(replay.ProviderCalls);
+        Assert.False(replay.ToolExecutions);
     }
 
     [Fact]
@@ -665,6 +683,8 @@ public sealed class RuntimeToolPipelineTests
         IReadOnlyList<IReadOnlyList<RuntimeModelStreamEvent>> responses) : IRuntimeModelClient
     {
         private int _index;
+
+        public int Calls => Volatile.Read(ref _index);
 
         public async IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
             RuntimeModelRequest request,

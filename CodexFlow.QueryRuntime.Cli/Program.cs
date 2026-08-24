@@ -261,6 +261,10 @@ internal static class QreCli
         {
             return Fail($"Unsupported profile value: {options.ToolProfile.Name}");
         }
+        var approvalRequiredToolNames = ResolveApprovalRequiredToolNames(
+            options.ToolProfile,
+            resolvedWorkspace,
+            options.IncludeExternalTools);
 
         try
         {
@@ -280,6 +284,11 @@ internal static class QreCli
                     Trace = options.Trace,
                     Options = BuildChatOptions(options),
                     RequiredToolName = options.RequiredToolName,
+                    ToolIntervention = approvalRequiredToolNames.Count == 0
+                        ? null
+                        : new CliV1ToolApprovalIntervention(
+                            approvalRequiredToolNames,
+                            options.ApprovalReason),
                     TextDeltaSink = options.Output.Stream
                         ? (delta, _) =>
                         {
@@ -357,7 +366,12 @@ internal static class QreCli
                 Console.WriteLine($"write_tool_calls: {result.WriteToolCalls}");
             }
 
-            return 0;
+            return IsSuccessfulV1Run(
+                result.TerminationReason,
+                result.RequiredToolName,
+                result.RequiredToolSatisfied)
+                ? 0
+                : 1;
         }
         finally
         {
@@ -651,6 +665,33 @@ internal static class QreCli
             ? [.. ExternalStdioToolPack.Create(resolvedWorkspace), .. tools]
             : tools;
     }
+
+    private static IReadOnlySet<string> ResolveApprovalRequiredToolNames(
+        QueryRuntimeToolProfile profile,
+        string workspacePath,
+        bool includeExternal)
+    {
+        var names = new ExperimentalToolRegistry()
+            .ListTools(profile)
+            .Where(static descriptor => descriptor.Capabilities.Contains(QueryRuntimeCapabilities.WriteFileSystem))
+            .Select(static descriptor => descriptor.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (includeExternal)
+        {
+            names.UnionWith(ExternalStdioToolPack
+                .ListDescriptors(profile, workspacePath)
+                .Select(static descriptor => descriptor.Name));
+        }
+
+        return names;
+    }
+
+    internal static bool IsSuccessfulV1Run(
+        string terminationReason,
+        string? requiredToolName,
+        bool requiredToolSatisfied)
+        => string.Equals(terminationReason, "NoToolCalls", StringComparison.Ordinal) &&
+           (string.IsNullOrWhiteSpace(requiredToolName) || requiredToolSatisfied);
 
     private static ChatOptions? BuildChatOptions(QreRunOptions options)
     {
@@ -3646,6 +3687,43 @@ internal static class QreCli
                 plan.Approval == null || plan.Approval.ExpiresAt <= DateTimeOffset.UtcNow
                     ? RuntimeToolApprovalDecision.Decline("The frozen approval binding is missing or expired.")
                     : RuntimeToolApprovalDecision.Approve(reason));
+        }
+    }
+
+    internal sealed class CliV1ToolApprovalIntervention(
+        IReadOnlySet<string> approvalRequiredToolNames,
+        string? approvalReason) : IQueryRuntimeToolIntervention
+    {
+        private readonly IReadOnlySet<string> _approvalRequiredToolNames =
+            new HashSet<string>(approvalRequiredToolNames, StringComparer.OrdinalIgnoreCase);
+        private readonly string? _approvalReason = string.IsNullOrWhiteSpace(approvalReason)
+            ? null
+            : approvalReason.Trim();
+
+        public ValueTask<QueryRuntimeToolInterventionDecision> BeforeToolCallAsync(
+            QueryRuntimeToolCallContext context,
+            CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_approvalRequiredToolNames.Contains(context.ToolName))
+            {
+                return ValueTask.FromResult(QueryRuntimeToolInterventionDecision.Allow());
+            }
+
+            return ValueTask.FromResult(_approvalReason == null
+                ? QueryRuntimeToolInterventionDecision.FailClosed(
+                    "High-risk tool execution requires explicit CLI approval.",
+                    "bound_approval_unavailable")
+                : QueryRuntimeToolInterventionDecision.Allow(
+                    "Explicit CLI approval granted for high-risk tool execution."));
+        }
+
+        public ValueTask AfterToolExecutionAsync(
+            QueryRuntimeToolExecutionResultContext context,
+            CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ValueTask.CompletedTask;
         }
     }
 

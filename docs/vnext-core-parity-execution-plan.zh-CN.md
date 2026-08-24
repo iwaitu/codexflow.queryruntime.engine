@@ -167,14 +167,19 @@ exactly-once、加密 full-fidelity tape 或生产 shadow；这些仍受路线�
   没有为拆分新增 package，也没有复制 Agent Loop。
 - CodexFlow backend 继续显式支持 `core`、`qre`、`qre-v2`，非法 backend 和非正 model timeout 通过
   `ValidateOnStart` 启动失败，不再静默回落。in-flight Turn 不跨 backend 恢复。
-- 新增中英文 `0.2` preview 迁移指南；本地 `0.2.0-preview.15` package 通过 checksum、内容和 clean consumer，
+- 新增中英文 `0.2` preview 迁移指南；本地 `0.2.0-preview.16` package 通过 checksum、内容和 clean consumer，
   旧 `0.1.2` 未被重发或修改。
-- Runtime Linux unit/security regression 402/402、CodexFlow Core 975/975、Runtime Windows Release build
+- Runtime Linux unit/security regression 409/409、CodexFlow Core 975/975、Runtime Windows Release build
   0 warning/0 error、CodexFlow solution 0 error、Windows/Linux Native AOT 和原生 v2 audit/replay smoke、
   dependency vulnerability/license gate 均通过。
 - 真实 qwen3.8 vLLM verify E2E 强制 `qre_git_status`：2 Step、1 次工具执行、9 个 audit events，usage
   3003/145/3148，最终文本经单独 whitespace 容差为 `C7_VERIFY_E2E_OK`；两次 data-only strict replay
   均为 provider/tool false，digest 相同。
+- C7 修复后使用最终 Windows Native AOT 二进制重新执行真实 qwen3.8 vLLM 门禁矩阵：v1/v2 verify 与
+  获批 repair 均为 2 个 phase、1 次工具执行并成功结束；拒绝 repair 均以 exit 1 fail-closed，工具执行和
+  workspace 写入均为 0。repair 文件为 UTF-8 无 BOM；verify 的非零子进程退出会进入工具失败，而不是伪成功。
+- v2 verify、repair、deny 各执行两次 strict replay：digest 分别稳定一致，且均为
+  `providerCalls=false`、`toolExecutions=false`；deny 轨迹允许保留拒绝 observation，但执行计数保持 0。
 
 C7 的工程代码已经完成，但默认切换是独立运营门禁：当前只生成了本地 preview artifact，未代替正式发布和
 约定观察窗口。因此 v1 feature flag 回退与重复 Agent Loop 继续保留，v2 不会被静默设为默认；只有至少两个

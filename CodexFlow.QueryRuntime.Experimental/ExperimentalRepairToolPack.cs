@@ -8,6 +8,7 @@ namespace CodexFlow.QueryRuntime.Experimental;
 public static class ExperimentalRepairToolPack
 {
     private const int MaxWriteChars = 1_000_000;
+    private static readonly Encoding Utf8WithoutBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> EditLogLocks = new(StringComparer.Ordinal);
 
     private static readonly IReadOnlySet<string> RepairFileCapabilities = CapabilitySet(
@@ -86,7 +87,7 @@ public static class ExperimentalRepairToolPack
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        await File.WriteAllTextAsync(target, content, Encoding.UTF8).ConfigureAwait(false);
+        await File.WriteAllTextAsync(target, content, Utf8WithoutBom).ConfigureAwait(false);
         await RecordEditedPathAsync(workspaceRoot, runDirectory, target, restrictRunArtifacts).ConfigureAwait(false);
         return $"wrote {Path.GetRelativePath(workspaceRoot, target).Replace('\\', '/')}";
     }
@@ -124,7 +125,7 @@ public static class ExperimentalRepairToolPack
         var updated = replaceAll
             ? original.Replace(oldText, newText, StringComparison.Ordinal)
             : ReplaceFirst(original, oldText, newText);
-        await File.WriteAllTextAsync(target, updated, Encoding.UTF8).ConfigureAwait(false);
+        await File.WriteAllTextAsync(target, updated, Utf8WithoutBom).ConfigureAwait(false);
         await RecordEditedPathAsync(workspaceRoot, runDirectory, target, restrictRunArtifacts).ConfigureAwait(false);
         return $"patched {Path.GetRelativePath(workspaceRoot, target).Replace('\\', '/')}";
     }

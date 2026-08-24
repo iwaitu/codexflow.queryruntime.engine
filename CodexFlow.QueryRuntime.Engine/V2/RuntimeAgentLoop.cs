@@ -277,6 +277,13 @@ public sealed class RuntimeAgentLoop
                         }
                     }
 
+                    var policyFailure = execution.Results
+                        .Select(static result => result.Error)
+                        .FirstOrDefault(IsTerminalPolicyFailure);
+                    if (policyFailure != null)
+                    {
+                        throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.FailClosed, policyFailure);
+                    }
                     if (execution.FatalError != null)
                     {
                         throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.Error, execution.FatalError);
@@ -1378,12 +1385,31 @@ public sealed class RuntimeAgentLoop
             additional);
     }
 
+    private static bool IsTerminalPolicyFailure(RuntimeError? error)
+        => error is
+        {
+            Retryable: false,
+            Category: RuntimeErrorCategory.ApprovalDeclined or
+                      RuntimeErrorCategory.ApprovalTimeout
+        };
+
     private static RuntimeToolResult FailureResult(
         RuntimeToolCall call,
         RuntimeErrorCategory category,
         string code,
         string message)
-        => new(call.InvocationId, null, false, new RuntimeError(category, code, message));
+        => new(
+            call.InvocationId,
+            null,
+            false,
+            new RuntimeError(category, code, message),
+            Details: new RuntimeToolResultDetails(category switch
+            {
+                RuntimeErrorCategory.Cancelled => RuntimeToolOutcome.Cancelled,
+                RuntimeErrorCategory.SandboxTimeout => RuntimeToolOutcome.TimedOut,
+                RuntimeErrorCategory.ToolFailed or RuntimeErrorCategory.UncertainSideEffect => RuntimeToolOutcome.Failed,
+                _ => RuntimeToolOutcome.Denied
+            }));
 
     private static bool ExceedsTokenBudget(RuntimeUsageTotals usage, RuntimeBudgetSnapshot budget)
         => budget.MaxInputTokens.HasValue && usage.InputTokens > budget.MaxInputTokens.Value ||

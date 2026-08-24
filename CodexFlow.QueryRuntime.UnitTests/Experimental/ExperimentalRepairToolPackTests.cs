@@ -21,7 +21,10 @@ public sealed class ExperimentalRepairToolPackTests
         });
 
         Assert.Contains("wrote src/notes.txt", result, StringComparison.Ordinal);
-        Assert.Equal("hello repair" + Environment.NewLine, File.ReadAllText(Path.Combine(workspace.Path, "src", "notes.txt")));
+        var writtenPath = Path.Combine(workspace.Path, "src", "notes.txt");
+        Assert.Equal("hello repair" + Environment.NewLine, File.ReadAllText(writtenPath));
+        var bytes = File.ReadAllBytes(writtenPath);
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
         Assert.Equal("src/notes.txt", File.ReadAllText(Path.Combine(runDirectory, "repair-edits.txt")).Trim());
     }
 

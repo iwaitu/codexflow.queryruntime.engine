@@ -298,6 +298,7 @@ public static class RuntimeRecordedReplay
         var calls = new HashSet<string>(StringComparer.Ordinal);
         var observations = new HashSet<string>(StringComparer.Ordinal);
         var expectedObservationOrder = new Queue<string>();
+        var executedObservationCount = 0;
         var committedUsage = RuntimeUsageTotals.Empty;
         string? lastCommittedText = null;
         RuntimeTurnTerminalAuditPayload? terminal = null;
@@ -376,6 +377,11 @@ public static class RuntimeRecordedReplay
                     {
                         throw Corrupt("audit_tool_observation_invalid", "A tool observation is orphaned, duplicated, or has mismatched identity.");
                     }
+                    if (observation.Result.Details?.Outcome is not (
+                            RuntimeToolOutcome.Denied or RuntimeToolOutcome.Cancelled))
+                    {
+                        executedObservationCount++;
+                    }
                     break;
                 case RuntimeTurnTerminalAuditPayload value:
                     if (index != recording.Events.Count - 1 || terminal != null)
@@ -396,10 +402,10 @@ public static class RuntimeRecordedReplay
         var trajectoryCountsInvalid = completed
             ? requests.Count != responses.Count ||
               terminal.TotalSteps != responses.Count ||
-              terminal.TotalToolCalls != observations.Count
+              terminal.TotalToolCalls != executedObservationCount
             : responses.Count > requests.Count ||
               terminal.TotalSteps < responses.Count ||
-              observations.Count > terminal.TotalToolCalls;
+              executedObservationCount > terminal.TotalToolCalls;
         if (trajectoryCountsInvalid)
         {
             throw Corrupt("audit_terminal_counts_mismatch", "Terminal counts do not match the replayed trajectory.");

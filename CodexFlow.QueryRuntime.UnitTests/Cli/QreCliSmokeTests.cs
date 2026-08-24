@@ -216,6 +216,58 @@ public sealed class QreCliSmokeTests
     }
 
     [Fact]
+    public async Task RunV1_HighRiskToolApprovalFailsClosedUnlessExplicitlyApproved()
+    {
+        var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "qre_write_file" };
+        var context = new CodexFlow.QueryRuntime.Abstractions.QueryRuntimeToolCallContext(
+            "run",
+            "session",
+            "workspace",
+            0,
+            "qre_write_file",
+            "call",
+            new Dictionary<string, object?>(),
+            ["qre_read_file", "qre_write_file"],
+            "qre_write_file",
+            []);
+
+        var denied = await new QreCli.CliV1ToolApprovalIntervention(required, null)
+            .BeforeToolCallAsync(context, TestContext.Current.CancellationToken);
+        var approved = await new QreCli.CliV1ToolApprovalIntervention(required, "operator approved")
+            .BeforeToolCallAsync(context, TestContext.Current.CancellationToken);
+        var readOnly = await new QreCli.CliV1ToolApprovalIntervention(required, null)
+            .BeforeToolCallAsync(
+                context with { ToolName = "qre_read_file" },
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            CodexFlow.QueryRuntime.Abstractions.QueryRuntimeToolInterventionDecisionKind.FailClosed,
+            denied.Kind);
+        Assert.Equal("bound_approval_unavailable", denied.DetailCode);
+        Assert.Equal(
+            CodexFlow.QueryRuntime.Abstractions.QueryRuntimeToolInterventionDecisionKind.Allow,
+            approved.Kind);
+        Assert.Equal(
+            CodexFlow.QueryRuntime.Abstractions.QueryRuntimeToolInterventionDecisionKind.Allow,
+            readOnly.Kind);
+    }
+
+    [Theory]
+    [InlineData("NoToolCalls", null, false, true)]
+    [InlineData("NoToolCalls", "qre_dotnet_build", true, true)]
+    [InlineData("NoToolCalls", "qre_dotnet_build", false, false)]
+    [InlineData("MaxRounds", null, false, false)]
+    [InlineData("FailClosed", null, false, false)]
+    public void RunV1_ExitSuccessRequiresCompletedTerminalAndSatisfiedRequiredTool(
+        string terminationReason,
+        string? requiredToolName,
+        bool requiredToolSatisfied,
+        bool expected)
+        => Assert.Equal(
+            expected,
+            QreCli.IsSuccessfulV1Run(terminationReason, requiredToolName, requiredToolSatisfied));
+
+    [Fact]
     public async Task RunV2_C5DeferredToolSearchUsesFrozenSupersetAndStepSelector()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -689,7 +741,7 @@ public sealed class QreCliSmokeTests
                 ],
                 TestContext.Current.CancellationToken));
 
-        Assert.Equal(0, run.ExitCode);
+        Assert.Equal(1, run.ExitCode);
         using var runJson = JsonDocument.Parse(run.StandardOutput);
         var traceFile = runJson.RootElement.GetProperty("traceFilePath").GetString()!;
         var traceEvents = File.ReadAllLines(traceFile)
