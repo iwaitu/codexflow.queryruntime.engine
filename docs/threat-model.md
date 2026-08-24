@@ -14,8 +14,9 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 - Workspace files and generated artifacts.
 - Provider credentials inherited from the user environment.
 - Git remotes and publish/deploy credentials available on the host.
-- QRE traces under `.qre/runs`, including prompts, model output, tool
-  arguments, tool output, and policy decisions.
+- QRE traces under `.qre/runs`. Public traces contain redacted metadata; explicitly
+  opted-in private diagnostic and sanitized-fixture traces can contain prompts,
+  model output, tool arguments, tool output, commands, and policy decisions.
 - Host filesystem locations outside the declared workspace.
 
 ## Actors
@@ -43,7 +44,9 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 - `repair` exposes controlled workspace file tools (`qre_write_file` and
   `qre_apply_patch`) instead of arbitrary shell execution. The tools reject
   workspace escape, symlink escape, protected `.git` / `.qre` artifacts, and
-  secret-looking paths.
+  exact high-confidence credential paths. Fuzzy secret-looking names are
+  advisory signals, not mandatory deny rules, so ordinary files such as
+  `TokenService.cs` remain usable.
 - Explicit approvals are local CLI policy inputs and must include an operator
   reason. They do not override unknown command classification.
 - Denied or approval-gated `qre sandbox exec` commands produce policy decision
@@ -57,8 +60,20 @@ verification, but it is not a hostile multi-tenant isolation boundary.
   plus runner configuration in sandbox trace events.
 - Write-capable Docker jobs use a staged copy-in/copy-out workspace by default
   instead of a direct writable bind mount. `.git` and `.qre` are excluded from
-  copy-in/copy-out, and symlinks are skipped so host-side copy operations do
-  not resolve links to files outside the workspace.
+  copy-in/copy-out. Copy-back builds a bounded change manifest, rejects deletion,
+  protected/high-confidence credential paths, reparse links, device files, quota violations,
+  and concurrent host edits, then applies same-directory temporary files with
+  rollback backups.
+- Trace readers treat JSONL, manifests, and blobs as untrusted input. They enforce
+  file/line/event/depth/blob limits, workspace-to-`.qre` ancestor and run-root
+  link containment, stable opened-file reads, declared length, and SHA-256
+  integrity before returning blob text.
+- `PublicRedacted` is the default trace data mode and is tagged `SummaryOnly`.
+  It replaces host run/query identifiers with unlinkable or redacted values.
+  `PrivateDiagnostic` and `SanitizedFixture` are explicit opt-ins tagged
+  `FullFidelity`; only full-fidelity traces can enter recorded or strict replay.
+  Private traces use an isolated directory, owner-only Windows ACLs or Unix
+  `0700/0600` modes, and a bounded retention policy.
 
 ## Explicit Non-Goals
 
@@ -75,14 +90,18 @@ verification, but it is not a hostile multi-tenant isolation boundary.
 
 - A wrongly classified command could execute with more authority than intended.
 - Commands allowed under the local runner still execute as the local user.
-- Trace files may contain sensitive data and should not be committed.
+- Private diagnostic and sanitized-fixture traces may contain sensitive data.
+  The runtime enforces local private permissions and bounded retention for private
+  mode, but artifacts still must not be committed or uploaded without an explicit policy.
+- Public redaction reduces accidental disclosure but is not encryption and does not
+  make trace directories suitable for untrusted multi-tenant storage.
 - Tools that read files can expose private repository content to a provider if
   the model client is configured for live LLM calls.
 
 ## Next Hardening Steps
 
 - Add an approval broker for `RequireApproval` decisions.
-- Tighten copy-out policy for write-capable runs, especially around deletion
-  propagation and failed-run diagnostic artifacts.
+- Add an explicit, journaled deletion mode only if a future product requirement
+  needs Docker copy-back to propagate deletions.
 - Keep expanding command classification through tests before exposing broader
   command execution.

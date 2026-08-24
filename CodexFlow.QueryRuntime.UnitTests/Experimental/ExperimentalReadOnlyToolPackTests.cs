@@ -67,6 +67,7 @@ public sealed class ExperimentalReadOnlyToolPackTests
     [InlineData(".git/config")]
     [InlineData(".qre/runs/events.jsonl")]
     [InlineData(".env")]
+    [InlineData(".env.staging")]
     public async Task ReadFile_RejectsProtectedAndSecretLookingPaths(string path)
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -84,6 +85,147 @@ public sealed class ExperimentalReadOnlyToolPackTests
         Assert.Contains("cannot be read", ex.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(".env.example")]
+    [InlineData(".env.sample")]
+    [InlineData(".env.template")]
+    public async Task ReadFile_AllowsEnvironmentTemplates(string path)
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        File.WriteAllText(System.IO.Path.Combine(workspace.Path, path), "safe template");
+        var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+
+        var result = await InvokeAsync(tools, "qre_read_file", new() { ["path"] = path });
+
+        Assert.Contains("safe template", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadFile_RejectsInWorkspaceAliasToProtectedCredential()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var credential = Path.Combine(workspace.Path, ".env.staging");
+        var alias = Path.Combine(workspace.Path, "safe.txt");
+        File.WriteAllText(credential, "API_KEY=must-not-read");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(alias, credential);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await InvokeAsync(tools, "qre_read_file", new() { ["path"] = "safe.txt" }));
+
+            Assert.Contains("Linked workspace paths cannot be read", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteFileIfExists(alias);
+        }
+    }
+
+    [Fact]
+    public async Task SearchFiles_SkipsProtectedCredentialsButAllowsEnvironmentTemplates()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        File.WriteAllText(Path.Combine(workspace.Path, ".env.staging"), "QRE_SEARCH_CANARY=secret");
+        File.WriteAllText(Path.Combine(workspace.Path, ".env.example"), "QRE_SEARCH_CANARY=template");
+        var nested = Path.Combine(workspace.Path, "nested");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(nested, ".env.qa"), "QRE_SEARCH_CANARY=nested-secret");
+        var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+
+        var result = await InvokeAsync(tools, "qre_search_files", new()
+        {
+            ["pattern"] = "QRE_SEARCH_CANARY",
+            ["path"] = "."
+        });
+
+        Assert.Contains(".env.example", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(".env.staging", result, StringComparison.Ordinal);
+        Assert.DoesNotContain(".env.qa", result, StringComparison.Ordinal);
+        Assert.DoesNotContain("nested-secret", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SearchFiles_DoesNotFollowDirectoryLinkOutsideWorkspace()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var outside = Path.Combine(Path.GetTempPath(), $"qre-search-outside-{Guid.NewGuid():N}");
+        var link = Path.Combine(workspace.Path, "linked-directory");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "outside.txt"), "QRE_OUTSIDE_SEARCH_CANARY");
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(link, outside);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+            var result = await InvokeAsync(tools, "qre_search_files", new()
+            {
+                ["pattern"] = "QRE_OUTSIDE_SEARCH_CANARY",
+                ["path"] = "."
+            });
+
+            Assert.Equal("(no matches)", result);
+        }
+        finally
+        {
+            if (Directory.Exists(link))
+            {
+                Directory.Delete(link);
+            }
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ListFiles_HidesProtectedAndLinkedEntries()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var credential = Path.Combine(workspace.Path, ".env.staging");
+        var alias = Path.Combine(workspace.Path, "safe.txt");
+        File.WriteAllText(credential, "secret");
+        File.WriteAllText(Path.Combine(workspace.Path, ".env.example"), "template");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(alias, credential);
+            }
+            catch (Exception createLinkException) when (createLinkException is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                return;
+            }
+
+            var tools = ExperimentalReadOnlyToolPack.Create(workspace.Path);
+            var result = await InvokeAsync(tools, "qre_list_files", new() { ["path"] = "." });
+
+            Assert.Contains(".env.example", result, StringComparison.Ordinal);
+            Assert.DoesNotContain(".env.staging", result, StringComparison.Ordinal);
+            Assert.DoesNotContain("safe.txt", result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteFileIfExists(alias);
+        }
+    }
+
     private static async Task<string> InvokeAsync(
         IReadOnlyList<AIFunction> tools,
         string name,
@@ -92,6 +234,14 @@ public sealed class ExperimentalReadOnlyToolPackTests
         var tool = tools.Single(tool => tool.Name == name);
         var result = await tool.InvokeAsync(new AIFunctionArguments(arguments), TestContext.Current.CancellationToken);
         return result?.ToString() ?? string.Empty;
+    }
+
+    private static void DeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     private sealed class TemporaryWorkspace : IDisposable

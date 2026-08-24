@@ -23,4 +23,12 @@ public sealed record DockerSandboxOptions
     public bool RequireSeccompProfile { get; init; }
 
     public bool CopyWorkspaceForWriteJobs { get; init; } = true;
+
+    public int MaxWriteBackFileCount { get; init; } = 10_000;
+
+    public long MaxWriteBackFileBytes { get; init; } = 16L * 1024 * 1024;
+
+    public long MaxWriteBackTotalBytes { get; init; } = 256L * 1024 * 1024;
+
+    public int MaxWriteBackDiffBytes { get; init; } = 1024 * 1024;
 }

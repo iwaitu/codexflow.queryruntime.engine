@@ -63,6 +63,51 @@ public sealed record QueryRuntimeExecutionOptions
     public int MaxStopGateContinuations { get; set; } = 1;
 }
 
+/// <summary>
+/// Controls which potentially sensitive values are persisted in trace artifacts.
+/// Public redacted traces are the safe default. The other modes require an explicit opt-in.
+/// </summary>
+public enum QueryRuntimeTraceDataMode
+{
+    PublicRedacted = 0,
+    PrivateDiagnostic = 1,
+    SanitizedFixture = 2
+}
+
+public enum QueryRuntimeReplayCapability
+{
+    SummaryOnly = 0,
+    FullFidelity = 1
+}
+
+public sealed record QueryRuntimeTraceOptions
+{
+    public QueryRuntimeTraceDataMode DataMode { get; init; } = QueryRuntimeTraceDataMode.PublicRedacted;
+
+    /// <summary>
+    /// Maximum age for private diagnostic run directories. Private traces may
+    /// contain prompts and tool payloads, so the harness prunes expired runs
+    /// whenever a new private trace starts.
+    /// </summary>
+    public TimeSpan PrivateDiagnosticRetention { get; init; } = TimeSpan.FromDays(7);
+
+    public QueryRuntimeReplayCapability ReplayCapability
+        => DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+            ? QueryRuntimeReplayCapability.SummaryOnly
+            : QueryRuntimeReplayCapability.FullFidelity;
+
+    public void Validate()
+    {
+        if (DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic &&
+            (PrivateDiagnosticRetention <= TimeSpan.Zero || PrivateDiagnosticRetention > TimeSpan.FromDays(30)))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(PrivateDiagnosticRetention),
+                "Private diagnostic trace retention must be between zero and 30 days.");
+        }
+    }
+}
+
 public enum QreThinkingPolicy
 {
     Auto = 0,

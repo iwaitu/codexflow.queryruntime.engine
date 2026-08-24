@@ -23,22 +23,100 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
 
     private readonly StreamWriter _writer;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly QueryRuntimeTraceOptions _traceOptions;
 
-    private JsonlTraceEventSink(string traceFilePath)
+    private JsonlTraceEventSink(string traceFilePath, QueryRuntimeTraceOptions traceOptions)
     {
         TraceFilePath = traceFilePath;
-        Directory.CreateDirectory(Path.GetDirectoryName(traceFilePath)!);
+        _traceOptions = traceOptions;
+        var runDirectory = Path.GetDirectoryName(traceFilePath)!;
+        if (traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(runDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(runDirectory);
+        }
+
         _writer = new StreamWriter(new FileStream(traceFilePath, FileMode.Create, FileAccess.Write, FileShare.Read));
+        if (traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            TraceStorageSecurity.RestrictPrivateFile(traceFilePath);
+        }
     }
 
     public string TraceFilePath { get; }
 
+    public static QueryRuntimeTraceRunLocation PrepareAuxiliaryRunLocation(
+        string traceRoot,
+        string requestedRunId,
+        QueryRuntimeTraceOptions traceOptions)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(traceRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestedRunId);
+        ArgumentNullException.ThrowIfNull(traceOptions);
+        traceOptions.Validate();
+
+        var persistedRunId = traceOptions.DataMode switch
+        {
+            QueryRuntimeTraceDataMode.PublicRedacted => $"public-{Guid.NewGuid():N}",
+            QueryRuntimeTraceDataMode.PrivateDiagnostic => $"private-{Guid.NewGuid():N}",
+            _ => requestedRunId
+        };
+        var normalizedTraceRoot = Path.GetFullPath(traceRoot);
+        var runsRoot = QueryRuntimePathSafety.ResolveUnderRoot(normalizedTraceRoot, "runs");
+        if (traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            var privateRoot = QueryRuntimePathSafety.ResolveUnderRoot(normalizedTraceRoot, "private");
+            TraceStorageSecurity.PreparePrivateRoot(privateRoot, traceOptions.PrivateDiagnosticRetention);
+            runsRoot = QueryRuntimePathSafety.ResolveUnderRoot(privateRoot, "runs");
+        }
+
+        var traceFilePath = QueryRuntimePathSafety.ResolveUnderRoot(
+            runsRoot,
+            Path.Combine(persistedRunId, "events.jsonl"));
+        var runDirectory = Path.GetDirectoryName(traceFilePath)!;
+        if (traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(runDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(runDirectory);
+        }
+
+        return new QueryRuntimeTraceRunLocation(persistedRunId, runDirectory, traceFilePath);
+    }
+
+    public static void ApplyAuxiliaryArtifactSecurity(
+        string path,
+        QueryRuntimeTraceOptions traceOptions,
+        bool isDirectory = false)
+    {
+        if (traceOptions.DataMode != QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            return;
+        }
+
+        if (isDirectory)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(path);
+        }
+        else
+        {
+            TraceStorageSecurity.RestrictPrivateFile(path);
+        }
+    }
+
     public static async Task<JsonlTraceEventSink> CreateAsync(
         string traceFilePath,
         ExperimentalRunStartedRecord started,
+        QueryRuntimeTraceOptions traceOptions,
         CancellationToken ct = default)
     {
-        var sink = new JsonlTraceEventSink(traceFilePath);
+        ArgumentNullException.ThrowIfNull(traceOptions);
+        var sink = new JsonlTraceEventSink(traceFilePath, traceOptions);
         await sink.WriteRecordAsync(started, ct).ConfigureAwait(false);
         return sink;
     }
@@ -47,19 +125,37 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
 
     public async ValueTask OnEventAsync(QueryRuntimeEvent runtimeEvent)
     {
-        await WriteRecordAsync(TraceRecord.FromRuntimeEvent(runtimeEvent), CancellationToken.None).ConfigureAwait(false);
+        await WriteRecordAsync(
+            TraceRecord.FromRuntimeEvent(runtimeEvent, _traceOptions),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     public Task WriteCompletedAsync(ExperimentalRunCompletedRecord completed, CancellationToken ct = default)
-        => WriteRecordAsync(completed, ct);
+        => WriteRecordAsync(
+            _traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+                ? completed with
+                {
+                    SessionId = "[redacted]",
+                    TerminalDetailCode = null,
+                    LastFunctionCall = null,
+                    RequiredToolName = null,
+                    ExecutedToolNames = [],
+                    SuccessfulToolNames = []
+                }
+                : completed,
+            ct);
 
     public Task WriteFailedAsync(ExperimentalRunFailedRecord failed, CancellationToken ct = default)
-        => WriteRecordAsync(failed, ct);
+        => WriteRecordAsync(
+            _traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+                ? failed with { SessionId = "[redacted]", ErrorType = "RuntimeError", Message = "[redacted]" }
+                : failed,
+            ct);
 
     public Task OnPolicyDecisionAsync(
         QueryRuntimePolicyDecisionRecord decision,
         CancellationToken ct = default)
-        => WriteRecordAsync(ExperimentalPolicyDecisionTraceRecord.Create(decision), ct);
+        => WriteRecordAsync(ExperimentalPolicyDecisionTraceRecord.Create(decision, _traceOptions), ct);
 
     public static async Task WriteManifestAsync(
         string traceFilePath,
@@ -72,13 +168,30 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
             throw new ArgumentException("Trace file path must include a run directory.", nameof(traceFilePath));
         }
 
-        Directory.CreateDirectory(runDirectory);
-        Directory.CreateDirectory(Path.Combine(runDirectory, "artifacts"));
+        var isPrivate = string.Equals(
+            manifest.DataMode,
+            QueryRuntimeTraceDataMode.PrivateDiagnostic.ToString(),
+            StringComparison.Ordinal);
+        if (isPrivate)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(runDirectory);
+            TraceStorageSecurity.CreatePrivateDirectory(Path.Combine(runDirectory, "artifacts"));
+        }
+        else
+        {
+            Directory.CreateDirectory(runDirectory);
+            Directory.CreateDirectory(Path.Combine(runDirectory, "artifacts"));
+        }
         var manifestPath = Path.Combine(runDirectory, "manifest.json");
         var runJsonPath = Path.Combine(runDirectory, "run.json");
         var json = JsonSerializer.Serialize(manifest, QueryRuntimeExperimentalJsonContext.Default.ExperimentalRunManifest);
         await File.WriteAllTextAsync(manifestPath, json + Environment.NewLine, ct).ConfigureAwait(false);
         await File.WriteAllTextAsync(runJsonPath, json + Environment.NewLine, ct).ConfigureAwait(false);
+        if (isPrivate)
+        {
+            TraceStorageSecurity.RestrictPrivateFile(manifestPath);
+            TraceStorageSecurity.RestrictPrivateFile(runJsonPath);
+        }
     }
 
     private async Task WriteRecordAsync(object record, CancellationToken ct)
@@ -140,10 +253,22 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
         var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         var blobRelativePath = Path.Combine("blobs", "sha256", digest[..2], digest);
         var blobPath = Path.Combine(Path.GetDirectoryName(TraceFilePath)!, blobRelativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(blobPath)!);
+        var blobDirectory = Path.GetDirectoryName(blobPath)!;
+        if (_traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(blobDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(blobDirectory);
+        }
         if (!File.Exists(blobPath))
         {
             File.WriteAllBytes(blobPath, bytes);
+            if (_traceOptions.DataMode == QueryRuntimeTraceDataMode.PrivateDiagnostic)
+            {
+                TraceStorageSecurity.RestrictPrivateFile(blobPath);
+            }
         }
 
         data[propertyName] = null;
@@ -157,28 +282,43 @@ public sealed class JsonlTraceEventSink : IQueryRuntimeEventSink, IQueryRuntimeP
     }
 }
 
+public sealed record QueryRuntimeTraceRunLocation(
+    string PersistedRunId,
+    string RunDirectory,
+    string TraceFilePath);
+
 public sealed record ExperimentalRunStartedRecord(
     string Type,
     int SchemaVersion,
     string RunId,
     string SessionId,
     string? WorkspacePath,
-    string Prompt,
+    string? Prompt,
+    int PromptLength,
+    string DataMode,
+    string ReplayCapability,
     DateTimeOffset Timestamp)
 {
     public static ExperimentalRunStartedRecord Create(
         string runId,
         string sessionId,
         string? workspacePath,
-        string prompt)
-        => new(
+        string prompt,
+        QueryRuntimeTraceOptions traceOptions)
+    {
+        var isPublic = traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted;
+        return new(
             "run.started",
             QueryRuntimeTraceSchema.CurrentVersion,
             runId,
-            sessionId,
-            workspacePath,
-            prompt,
+            isPublic ? "[redacted]" : sessionId,
+            isPublic ? null : workspacePath,
+            isPublic ? null : prompt,
+            prompt.Length,
+            traceOptions.DataMode.ToString(),
+            traceOptions.ReplayCapability.ToString(),
             DateTimeOffset.UtcNow);
+    }
 }
 
 public sealed record ExperimentalRunCompletedRecord(
@@ -246,19 +386,24 @@ public sealed record ExperimentalPolicyDecisionTraceRecord(
     string Reason,
     DateTimeOffset Timestamp)
 {
-    public static ExperimentalPolicyDecisionTraceRecord Create(QueryRuntimePolicyDecisionRecord decision)
-        => new(
+    public static ExperimentalPolicyDecisionTraceRecord Create(
+        QueryRuntimePolicyDecisionRecord decision,
+        QueryRuntimeTraceOptions traceOptions)
+    {
+        var isPublic = traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted;
+        return new(
             "policy.decision",
-            decision.Profile,
-            decision.ToolName,
-            decision.Capabilities,
-            decision.Command,
-            decision.Network,
-            decision.Mount,
-            decision.Decision,
+            isPublic ? "[redacted]" : decision.Profile,
+            isPublic ? "[redacted]" : decision.ToolName,
+            isPublic ? new HashSet<string>(StringComparer.Ordinal) : decision.Capabilities,
+            isPublic ? [] : decision.Command,
+            isPublic ? "[redacted]" : decision.Network,
+            isPublic ? "[redacted]" : decision.Mount,
+            isPublic ? (decision.Allowed ? "allowed" : "blocked") : decision.Decision,
             decision.Allowed,
-            decision.Reason,
+            isPublic ? "[redacted]" : decision.Reason,
             decision.Timestamp);
+    }
 }
 
 public sealed record ExperimentalRunManifest(
@@ -282,6 +427,8 @@ public sealed record ExperimentalRunManifest(
     string? LastFunctionCall,
     string? RequiredToolName,
     bool RequiredToolSatisfied,
+    string DataMode,
+    string ReplayCapability,
     DateTimeOffset Timestamp)
 {
     public static ExperimentalRunManifest Completed(
@@ -290,29 +437,35 @@ public sealed record ExperimentalRunManifest(
         string? workspacePath,
         string traceFilePath,
         string toolProfile,
+        QueryRuntimeTraceOptions traceOptions,
         EngineQueryRuntimeResult result)
-        => new(
+    {
+        var isPublic = traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted;
+        return new(
             QueryRuntimeTraceSchema.CurrentVersion,
             "qre.run.manifest",
             runId,
-            sessionId,
-            workspacePath,
-            traceFilePath,
-            Path.GetDirectoryName(traceFilePath)!,
-            toolProfile,
+            isPublic ? "[redacted]" : sessionId,
+            isPublic ? null : workspacePath,
+            isPublic ? "events.jsonl" : traceFilePath,
+            isPublic ? "." : Path.GetDirectoryName(traceFilePath)!,
+            isPublic ? "[redacted]" : toolProfile,
             "completed",
             result.TerminationReason.ToString(),
             result.TotalRounds,
             result.TotalToolCalls,
             result.TotalDurationMs,
-            result.TerminalDetailCode,
+            isPublic ? null : result.TerminalDetailCode,
             result.ZeroToolCallRounds,
             result.ContinuationCount,
             result.WriteToolCalls,
-            result.LastFunctionCall,
-            result.RequiredToolName,
+            isPublic ? null : result.LastFunctionCall,
+            isPublic ? null : result.RequiredToolName,
             result.RequiredToolSatisfied,
+            traceOptions.DataMode.ToString(),
+            traceOptions.ReplayCapability.ToString(),
             DateTimeOffset.UtcNow);
+    }
 
     public static ExperimentalRunManifest Failed(
         string runId,
@@ -320,18 +473,21 @@ public sealed record ExperimentalRunManifest(
         string? workspacePath,
         string traceFilePath,
         string toolProfile,
+        QueryRuntimeTraceOptions traceOptions,
         Exception exception)
-        => new(
+    {
+        var isPublic = traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted;
+        return new(
             QueryRuntimeTraceSchema.CurrentVersion,
             "qre.run.manifest",
             runId,
-            sessionId,
-            workspacePath,
-            traceFilePath,
-            Path.GetDirectoryName(traceFilePath)!,
-            toolProfile,
+            isPublic ? "[redacted]" : sessionId,
+            isPublic ? null : workspacePath,
+            isPublic ? "events.jsonl" : traceFilePath,
+            isPublic ? "." : Path.GetDirectoryName(traceFilePath)!,
+            isPublic ? "[redacted]" : toolProfile,
             "failed",
-            exception.GetType().Name,
+            isPublic ? "RuntimeError" : exception.GetType().Name,
             0,
             0,
             0,
@@ -342,7 +498,10 @@ public sealed record ExperimentalRunManifest(
             null,
             null,
             false,
+            traceOptions.DataMode.ToString(),
+            traceOptions.ReplayCapability.ToString(),
             DateTimeOffset.UtcNow);
+    }
 }
 
 internal sealed record TraceRecord(
@@ -355,16 +514,22 @@ internal sealed record TraceRecord(
     DateTimeOffset Timestamp,
     JsonObject Data)
 {
-    public static TraceRecord FromRuntimeEvent(QueryRuntimeEvent runtimeEvent)
+    public static TraceRecord FromRuntimeEvent(
+        QueryRuntimeEvent runtimeEvent,
+        QueryRuntimeTraceOptions traceOptions)
         => new(
             MapType(runtimeEvent),
             runtimeEvent.Seq,
             runtimeEvent.GetType().Name,
-            runtimeEvent.QueryId.ToString("N"),
-            runtimeEvent.SessionId,
+            traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+                ? "[redacted]"
+                : runtimeEvent.QueryId.ToString("N"),
+            traceOptions.DataMode == QueryRuntimeTraceDataMode.PublicRedacted
+                ? "[redacted]"
+                : runtimeEvent.SessionId,
             "qre",
             runtimeEvent.Timestamp == default ? DateTimeOffset.UtcNow : runtimeEvent.Timestamp,
-            ProjectData(runtimeEvent));
+            ProjectData(runtimeEvent, traceOptions));
 
     private static string MapType(QueryRuntimeEvent runtimeEvent)
         => runtimeEvent switch
@@ -383,8 +548,17 @@ internal sealed record TraceRecord(
             _ => "runtime.event"
         };
 
-    private static JsonObject ProjectData(QueryRuntimeEvent runtimeEvent)
-        => runtimeEvent switch
+    private static JsonObject ProjectData(
+        QueryRuntimeEvent runtimeEvent,
+        QueryRuntimeTraceOptions traceOptions)
+    {
+        var includeSensitiveData = traceOptions.DataMode != QueryRuntimeTraceDataMode.PublicRedacted;
+        if (!includeSensitiveData)
+        {
+            return ProjectPublicData(runtimeEvent);
+        }
+
+        return runtimeEvent switch
         {
             PromptAssemblySnapshotEvent evt => Obj(
                 ("Round", evt.Round),
@@ -397,14 +571,14 @@ internal sealed record TraceRecord(
                 ("Round", evt.Round),
                 ("AssistantTextLength", evt.AssistantTextLength),
                 ("StructuredToolCallCount", evt.StructuredToolCallCount),
-                ("AssistantText", evt.AssistantText),
-                ("ToolCalls", ToolCallArray(evt.ToolCalls))),
+                ("AssistantText", includeSensitiveData ? evt.AssistantText : null),
+                ("ToolCalls", ToolCallArray(evt.ToolCalls, includeSensitiveData))),
             ToolCallRequestedEvent evt => Obj(
                 ("Round", evt.Round),
                 ("ToolName", evt.ToolName),
                 ("CallId", evt.CallId),
-                ("ArgumentHash", ComputeArgumentHash(evt.Arguments)),
-                ("Arguments", DictionaryObject(evt.Arguments))),
+                ("ArgumentHash", includeSensitiveData ? ComputeArgumentHash(evt.Arguments) : null),
+                ("Arguments", includeSensitiveData ? DictionaryObject(evt.Arguments) : null)),
             ToolExecutionStartedEvent evt => Obj(
                 ("Round", evt.Round),
                 ("ToolName", evt.ToolName),
@@ -415,22 +589,22 @@ internal sealed record TraceRecord(
                 ("CallId", evt.CallId),
                 ("Success", evt.Success),
                 ("ResultLength", evt.ResultLength),
-                ("Result", evt.Result)),
+                ("Result", includeSensitiveData ? evt.Result : null)),
             PolicyInterventionDecisionEvent evt => Obj(
                 ("Round", evt.Round),
                 ("ToolName", evt.ToolName),
                 ("CallId", evt.CallId),
                 ("Decision", evt.Decision),
-                ("Reason", evt.Reason),
+                ("Reason", includeSensitiveData ? evt.Reason : null),
                 ("DetailCode", evt.DetailCode),
-                ("Feedback", evt.Feedback)),
+                ("Feedback", includeSensitiveData ? evt.Feedback : null)),
             StopGateDecisionEvent evt => Obj(
                 ("Round", evt.Round),
                 ("Decision", evt.Decision),
                 ("RequiredToolName", evt.RequiredToolName),
-                ("Reason", evt.Reason),
+                ("Reason", includeSensitiveData ? evt.Reason : null),
                 ("DetailCode", evt.DetailCode),
-                ("Feedback", evt.Feedback),
+                ("Feedback", includeSensitiveData ? evt.Feedback : null),
                 ("ContinuationCount", evt.ContinuationCount)),
             RoundStartedEvent evt => Obj(("Round", evt.Round), ("MaxRounds", evt.MaxRounds)),
             RoundCompletedEvent evt => Obj(
@@ -453,8 +627,54 @@ internal sealed record TraceRecord(
                 ("RequiredToolSatisfied", evt.RequiredToolSatisfied)),
             ErrorEvent evt => Obj(
                 ("ErrorType", evt.ErrorType),
-                ("Message", evt.Message),
+                ("Message", includeSensitiveData ? evt.Message : null),
                 ("ExceptionType", evt.Exception?.GetType().Name)),
+            _ => []
+        };
+    }
+
+    // Public traces intentionally enumerate every retained field. Never derive
+    // this projection by subtracting a deny-list from the private payload: new
+    // event properties must remain private until explicitly reviewed here.
+    private static JsonObject ProjectPublicData(QueryRuntimeEvent runtimeEvent)
+        => runtimeEvent switch
+        {
+            PromptAssemblySnapshotEvent evt => Obj(
+                ("Round", evt.Round),
+                ("MessageCount", evt.MessageCount),
+                ("ToolCallsAllowed", evt.ToolCallsAllowed),
+                ("ToolCount", evt.ToolNames.Count),
+                ("RequiredToolSatisfied", evt.RequiredToolSatisfied)),
+            ModelResponseSampledEvent evt => Obj(
+                ("Round", evt.Round),
+                ("AssistantTextLength", evt.AssistantTextLength),
+                ("StructuredToolCallCount", evt.StructuredToolCallCount)),
+            ToolCallRequestedEvent evt => Obj(("Round", evt.Round)),
+            ToolExecutionStartedEvent evt => Obj(("Round", evt.Round)),
+            ToolExecutionCompletedEvent evt => Obj(
+                ("Round", evt.Round),
+                ("Success", evt.Success),
+                ("ResultLength", evt.ResultLength)),
+            PolicyInterventionDecisionEvent evt => Obj(("Round", evt.Round)),
+            StopGateDecisionEvent evt => Obj(
+                ("Round", evt.Round),
+                ("ContinuationCount", evt.ContinuationCount)),
+            RoundStartedEvent evt => Obj(("Round", evt.Round), ("MaxRounds", evt.MaxRounds)),
+            RoundCompletedEvent evt => Obj(
+                ("Round", evt.Round),
+                ("ToolCallCount", evt.ToolCallCount),
+                ("HasText", evt.HasText),
+                ("TextLength", evt.TextLength)),
+            TerminatedEvent evt => Obj(
+                ("Reason", evt.Reason.ToString()),
+                ("TotalRounds", evt.TotalRounds),
+                ("TotalToolCalls", evt.TotalToolCalls),
+                ("TotalDurationMs", evt.TotalDurationMs),
+                ("ZeroToolCallRounds", evt.ZeroToolCallRounds),
+                ("ContinuationCount", evt.ContinuationCount),
+                ("WriteToolCalls", evt.WriteToolCalls),
+                ("RequiredToolSatisfied", evt.RequiredToolSatisfied)),
+            ErrorEvent => [],
             _ => []
         };
 
@@ -491,7 +711,9 @@ internal sealed record TraceRecord(
         return obj;
     }
 
-    private static JsonArray ToolCallArray(IEnumerable<QueryRuntimeFunctionCallSnapshot> calls)
+    private static JsonArray ToolCallArray(
+        IEnumerable<QueryRuntimeFunctionCallSnapshot> calls,
+        bool includeSensitiveData)
     {
         var array = new JsonArray();
         foreach (var call in calls)
@@ -499,8 +721,8 @@ internal sealed record TraceRecord(
             array.Add((JsonNode?)Obj(
                 ("CallId", call.CallId),
                 ("Name", call.Name),
-                ("ArgumentHash", ComputeArgumentHash(call.Arguments)),
-                ("Arguments", DictionaryObject(call.Arguments))));
+                ("ArgumentHash", includeSensitiveData ? ComputeArgumentHash(call.Arguments) : null),
+                ("Arguments", includeSensitiveData ? DictionaryObject(call.Arguments) : null)));
         }
 
         return array;

@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeAbstractionsAssemblyInPackage</TargetsForTfmSpecificBuildOutput>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeSupportAssembliesInPackage</TargetsForTfmSpecificBuildOutput>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,15 +13,22 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" PrivateAssets="all" />
   </ItemGroup>
 
-  <Target Name="IncludeAbstractionsAssemblyInPackage">
+  <Target Name="IncludeSupportAssembliesInPackage">
     <ItemGroup>
       <BuildOutputInPackage
         Include="..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll"
         Condition="Exists('..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll')">
         <FinalOutputPath>$([System.IO.Path]::GetFullPath('..\CodexFlow.QueryRuntime.Abstractions\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Abstractions.dll'))</FinalOutputPath>
         <TargetPath>CodexFlow.QueryRuntime.Abstractions.dll</TargetPath>
+      </BuildOutputInPackage>
+      <BuildOutputInPackage
+        Include="..\CodexFlow.QueryRuntime.Protocol\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Protocol.dll"
+        Condition="Exists('..\CodexFlow.QueryRuntime.Protocol\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Protocol.dll')">
+        <FinalOutputPath>$([System.IO.Path]::GetFullPath('..\CodexFlow.QueryRuntime.Protocol\bin\$(Configuration)\$(TargetFramework)\CodexFlow.QueryRuntime.Protocol.dll'))</FinalOutputPath>
+        <TargetPath>CodexFlow.QueryRuntime.Protocol.dll</TargetPath>
       </BuildOutputInPackage>
     </ItemGroup>
   </Target>

@@ -58,6 +58,7 @@ public static class ExperimentalReadOnlyToolPack
         var sb = new StringBuilder();
         foreach (var entry in Directory.EnumerateFileSystemEntries(target)
                      .Order(StringComparer.OrdinalIgnoreCase)
+                     .Where(entry => IsSafeWorkspaceEntry(workspaceRoot, entry, "listed by read-only tools"))
                      .Take(maxEntries))
         {
             var marker = Directory.Exists(entry) ? "/" : string.Empty;
@@ -175,7 +176,8 @@ public static class ExperimentalReadOnlyToolPack
 
             foreach (var file in files)
             {
-                if (!ShouldSkipFile(file))
+                if (IsSafeWorkspaceEntry(workspaceRoot, file, "searched by read-only tools") &&
+                    !ShouldSkipFile(file))
                 {
                     yield return file;
                 }
@@ -193,7 +195,8 @@ public static class ExperimentalReadOnlyToolPack
 
             foreach (var directory in directories)
             {
-                if (!ShouldSkipDirectory(workspaceRoot, directory))
+                if (!ShouldSkipDirectory(workspaceRoot, directory) &&
+                    IsSafeWorkspaceEntry(workspaceRoot, directory, "searched by read-only tools"))
                 {
                     pending.Push(directory);
                 }
@@ -205,7 +208,26 @@ public static class ExperimentalReadOnlyToolPack
     {
         var relative = Path.GetRelativePath(workspaceRoot, directory);
         var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Any(static segment => segment is ".git" or "bin" or "obj" or "node_modules" or ".qre");
+        return segments.Any(static segment =>
+            segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".qre", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSafeWorkspaceEntry(string workspaceRoot, string entry, string operation)
+    {
+        try
+        {
+            var resolved = QueryRuntimePathSafety.ResolveUnderRoot(workspaceRoot, entry);
+            QueryRuntimePathSafety.RejectProtectedWorkspacePath(workspaceRoot, resolved, operation);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private static bool ShouldSkipFile(string file)

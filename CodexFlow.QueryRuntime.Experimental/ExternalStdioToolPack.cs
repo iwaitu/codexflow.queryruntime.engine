@@ -212,12 +212,14 @@ internal sealed class ExternalStdioAIFunction(
     {
         for (var current = exception; current != null; current = current.InnerException as IOException)
         {
-            if (current.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase))
+            if (current.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("Pipe is broken", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
 
-            if (current.InnerException?.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) == true)
+            if (current.InnerException?.Message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase) == true ||
+                current.InnerException?.Message.Contains("Pipe is broken", StringComparison.OrdinalIgnoreCase) == true)
             {
                 return true;
             }

@@ -19,6 +19,19 @@ public static class ExperimentalRepairToolPack
         string? runDirectory = null,
         IQueryRuntimeCapabilityPolicy? capabilityPolicy = null,
         IQueryRuntimePolicyDecisionSink? policyDecisionSink = null)
+        => Create(
+            workspacePath,
+            runDirectory,
+            capabilityPolicy,
+            policyDecisionSink,
+            restrictRunArtifacts: false);
+
+    internal static IReadOnlyList<AIFunction> Create(
+        string workspacePath,
+        string? runDirectory,
+        IQueryRuntimeCapabilityPolicy? capabilityPolicy,
+        IQueryRuntimePolicyDecisionSink? policyDecisionSink,
+        bool restrictRunArtifacts)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
         var workspaceRoot = QueryRuntimePathSafety.NormalizeRoot(workspacePath);
@@ -32,7 +45,7 @@ public static class ExperimentalRepairToolPack
         [
             AIFunctionFactory.Create(
                 (string path, string content, bool overwrite = true) =>
-                    WriteFileAsync(workspaceRoot, runDirectory, capabilityPolicy, policyDecisionSink, path, content, overwrite),
+                    WriteFileAsync(workspaceRoot, runDirectory, capabilityPolicy, policyDecisionSink, path, content, overwrite, restrictRunArtifacts),
                 new AIFunctionFactoryOptions
                 {
                     Name = "qre_write_file",
@@ -40,7 +53,7 @@ public static class ExperimentalRepairToolPack
                 }),
             AIFunctionFactory.Create(
                 (string path, string old_text, string new_text, bool replace_all = false) =>
-                    ApplyPatchAsync(workspaceRoot, runDirectory, capabilityPolicy, policyDecisionSink, path, old_text, new_text, replace_all),
+                    ApplyPatchAsync(workspaceRoot, runDirectory, capabilityPolicy, policyDecisionSink, path, old_text, new_text, replace_all, restrictRunArtifacts),
                 new AIFunctionFactoryOptions
                 {
                     Name = "qre_apply_patch",
@@ -56,7 +69,8 @@ public static class ExperimentalRepairToolPack
         IQueryRuntimePolicyDecisionSink? policyDecisionSink,
         string path,
         string content,
-        bool overwrite)
+        bool overwrite,
+        bool restrictRunArtifacts)
     {
         content ??= string.Empty;
         if (content.Length > MaxWriteChars)
@@ -73,7 +87,7 @@ public static class ExperimentalRepairToolPack
 
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         await File.WriteAllTextAsync(target, content, Encoding.UTF8).ConfigureAwait(false);
-        await RecordEditedPathAsync(workspaceRoot, runDirectory, target).ConfigureAwait(false);
+        await RecordEditedPathAsync(workspaceRoot, runDirectory, target, restrictRunArtifacts).ConfigureAwait(false);
         return $"wrote {Path.GetRelativePath(workspaceRoot, target).Replace('\\', '/')}";
     }
 
@@ -85,7 +99,8 @@ public static class ExperimentalRepairToolPack
         string path,
         string oldText,
         string newText,
-        bool replaceAll)
+        bool replaceAll,
+        bool restrictRunArtifacts)
     {
         if (string.IsNullOrEmpty(oldText))
         {
@@ -110,7 +125,7 @@ public static class ExperimentalRepairToolPack
             ? original.Replace(oldText, newText, StringComparison.Ordinal)
             : ReplaceFirst(original, oldText, newText);
         await File.WriteAllTextAsync(target, updated, Encoding.UTF8).ConfigureAwait(false);
-        await RecordEditedPathAsync(workspaceRoot, runDirectory, target).ConfigureAwait(false);
+        await RecordEditedPathAsync(workspaceRoot, runDirectory, target, restrictRunArtifacts).ConfigureAwait(false);
         return $"patched {Path.GetRelativePath(workspaceRoot, target).Replace('\\', '/')}";
     }
 
@@ -166,7 +181,11 @@ public static class ExperimentalRepairToolPack
         return target;
     }
 
-    private static async Task RecordEditedPathAsync(string workspaceRoot, string? runDirectory, string target)
+    private static async Task RecordEditedPathAsync(
+        string workspaceRoot,
+        string? runDirectory,
+        string target,
+        bool restrictRunArtifacts)
     {
         if (string.IsNullOrWhiteSpace(runDirectory))
         {
@@ -174,7 +193,14 @@ public static class ExperimentalRepairToolPack
         }
 
         var relative = Path.GetRelativePath(workspaceRoot, target).Replace('\\', '/');
-        Directory.CreateDirectory(runDirectory);
+        if (restrictRunArtifacts)
+        {
+            TraceStorageSecurity.CreatePrivateDirectory(runDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(runDirectory);
+        }
         var editLogPath = Path.Combine(runDirectory, "repair-edits.txt");
         var editLogLock = EditLogLocks.GetOrAdd(editLogPath, static _ => new SemaphoreSlim(1, 1));
         await editLogLock.WaitAsync().ConfigureAwait(false);
@@ -184,6 +210,10 @@ public static class ExperimentalRepairToolPack
                 editLogPath,
                 relative + Environment.NewLine,
                 Encoding.UTF8).ConfigureAwait(false);
+            if (restrictRunArtifacts)
+            {
+                TraceStorageSecurity.RestrictPrivateFile(editLogPath);
+            }
         }
         finally
         {

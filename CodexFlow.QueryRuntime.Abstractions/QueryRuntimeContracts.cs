@@ -39,6 +39,8 @@ public sealed record QueryRuntimeRequest
     public QueryRuntimeExecutionOptions Execution { get; init; } = new();
 
     public QueryRuntimeToolSearchOptions ToolSearch { get; init; } = new();
+
+    public QueryRuntimeTraceOptions Trace { get; init; } = new();
 }
 
 public sealed record QueryRuntimeHostRequest
@@ -72,6 +74,8 @@ public sealed record QueryRuntimeHostRequest
     public QueryRuntimeExecutionOptions Execution { get; init; } = new();
 
     public QueryRuntimeToolSearchOptions ToolSearch { get; init; } = new();
+
+    public QueryRuntimeTraceOptions Trace { get; init; } = new();
 
     public ChatOptions? Options { get; init; }
 

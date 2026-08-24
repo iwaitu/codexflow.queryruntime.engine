@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="VllmChatClient" Version="2.0.21" />
+    <PackageReference Include="VllmChatClient" Version="2.0.22" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
@@ -24,7 +24,9 @@
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.Docker\CodexFlow.QueryRuntime.Sandbox.Docker.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Engine\CodexFlow.QueryRuntime.Engine.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -22,8 +22,13 @@
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Cli\CodexFlow.QueryRuntime.Cli.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.Docker\CodexFlow.QueryRuntime.Sandbox.Docker.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Sandbox.LocalProcess\CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Protocol\Fixtures\protocol-v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

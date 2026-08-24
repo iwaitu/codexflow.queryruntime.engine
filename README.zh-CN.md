@@ -35,11 +35,13 @@ CI、代码库分析、工具执行验证和 replay 调试工具来用。
   分析型任务。
 - **verify 工具包**：`qre_git_status`、`qre_git_diff`、`qre_dotnet_build`、
   `qre_dotnet_test`，在 trusted-local 环境下经 capability policy 受控执行。
-- **Trace / Replay**：每次运行写入 JSONL trace；`replay latest` 默认做
-  provider-free / tool-free 的 recorded replay。
-- **Run artifacts**：每次运行在 `.qre/runs/<run-id>/` 写入 `events.jsonl`、
+- **Trace / Replay**：每次运行写入 JSONL trace；默认公开投影会脱敏宿主运行/查询标识且仅可查看摘要。
+  只有经过审查的合成 fixture 才显式使用 `--trace-data sanitized`。`--trace-data private`
+  写入独立 owner-only 目录，默认保留 7 天、最长 30 天，随后才能执行 provider-free / tool-free replay。
+- **Run artifacts**：公开/合成运行在 `.qre/runs/<persisted-id>/` 写入 `events.jsonl`、
   `manifest.json`、`run.json`、`diff.patch`、`usage.json` 与 `artifacts/`；
-  大 payload 落到 `blobs/sha256/...`，trace 中只保留 digest metadata。
+  private 运行写入 `.qre/private/runs/<private-id>/`。大 payload 落到 `blobs/sha256/...`，
+  trace 中只保留 digest metadata。
 - **Capability policy**：`profile`（`none` / `readonly` / `verify`）决定允许哪些
   capability、命令、网络与挂载行为。
 - **Sandbox runner**：`LocalProcessSandboxRunner`（可信本地开发）与
@@ -110,6 +112,10 @@ var result = await runtime.RunAsync(
         RequiredToolName = "repo_context",
         Execution = new Qre.QueryRuntimeExecutionOptions { MaxRounds = 4 },
         ToolSearch = new Qre.QueryRuntimeToolSearchOptions { Enabled = true, TopK = 3 },
+        Trace = new Qre.QueryRuntimeTraceOptions
+        {
+            DataMode = Qre.QueryRuntimeTraceDataMode.PublicRedacted
+        },
         Options = chatOptions,
         TextDeltaSink = (delta, ct) => StreamToClientAsync(delta, ct)
     },
@@ -184,6 +190,21 @@ QRE_PACKAGE_VERSION=0.1.2 scripts/qre-pack-nuget.sh Release
 qre run --workspace . --response "offline smoke" --json "analyze this repo"
 ```
 
+显式验证路线二 C6 的 v2 Hosting facade、确定性 context、延迟冻结工具目录和 versioned audit（preview）：
+
+```bash
+qre run --runtime v2 --workspace . --profile readonly --tool-search \
+  --trace-data sanitized --response "offline v2 smoke" --json "exercise v2"
+qre replay latest --runtime v2 --workspace . --strict --json
+```
+
+未传 `--runtime v2` 时继续使用 v1。C6 v2 已支持 none/readonly/verify/repair 与 external stdio
+工具；写入和高风险执行需要 `--approve-risk <reason>`，审批绑定规范化参数、workspace、policy、
+sandbox 与有效期。`--tool-search` 现在以冻结执行目录的逐 Step 子集工作：首轮只暴露
+`tool_search`，激活后的 schema 从下一 Step 开始可见。v2 默认审计是
+`PublicRedacted / SummaryOnly`；只有显式 `sanitized/private` 数据可 recorded replay，回放不调用 provider、
+不执行工具。
+
 输出一条 `qre.run.completed` JSON：
 
 ```json
@@ -212,6 +233,7 @@ qre run --workspace . --profile readonly --tool-search --tool-search-top-k 3 \
 ```bash
 qre trace latest --workspace . --jsonl
 qre replay latest --workspace . --json
+qre replay latest --runtime v2 --workspace . --summary --json
 ```
 
 `replay latest` 默认走 recorded replay：从 trace 读取已记录的模型响应与工具结果，
@@ -439,6 +461,9 @@ RUN_QUERY_RUNTIME_REAL_INTEGRATION_TESTS=true dotnet test \
 - [docs/toolsearch.md](docs/toolsearch.md) — `tool_search` 延迟工具激活设计。
 - [docs/queryruntime-harness-open-source-strategy.md](docs/queryruntime-harness-open-source-strategy.md) — 开源 harness 策略（英文）。
 - [docs/queryruntime-pre-release-work-plan.zh-CN.md](docs/queryruntime-pre-release-work-plan.zh-CN.md) — pre-release 工作计划。
+- [docs/vnext-core-parity-execution-plan.zh-CN.md](docs/vnext-core-parity-execution-plan.zh-CN.md) — 当前 vNext Core Parity 执行计划。
+- [docs/vnext-core-parity-baseline.zh-CN.md](docs/vnext-core-parity-baseline.zh-CN.md) — C0 冻结契约与 3/10/25-step 基线。
+- [docs/migration-0.2-preview.zh-CN.md](docs/migration-0.2-preview.zh-CN.md) — v1/v2 API、CLI、宿主与回退迁移指南。
 - [docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md](docs/archive/queryruntime-next-development-plan.completed-2026-06-04.zh-CN.md) — 已归档的完成态开发计划。
 - [docs/queryruntime-tool-partition-matrix.md](docs/queryruntime-tool-partition-matrix.md) — 工具分区矩阵（英文）。
 - [docs/tool-capabilities.md](docs/tool-capabilities.md)、[docs/threat-model.md](docs/threat-model.md)（英文）。

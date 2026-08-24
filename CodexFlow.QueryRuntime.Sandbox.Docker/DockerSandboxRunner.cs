@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using CodexFlow.QueryRuntime.Abstractions;
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
 
@@ -36,12 +37,17 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
         var containerWorkspaceSource = workspaceRoot;
         var containerWorkingDirectory = ResolveContainerWorkingDirectory(_options, relativeWorkingDirectory);
         string? stagedWorkspace = null;
+        string? stagedContainerUser = null;
+        IReadOnlyDictionary<string, DockerWorkspaceFileSnapshot>? baseline = null;
         try
         {
             if (useStagedWorkspace)
             {
                 stagedWorkspace = CreateStagedWorkspacePath(workspaceRoot);
+                baseline = DockerWorkspaceWriteBack.CaptureBaseline(workspaceRoot);
                 CopyWorkspace(workspaceRoot, stagedWorkspace);
+                DockerWorkspaceWriteBack.ValidateStagedBaseline(stagedWorkspace, baseline);
+                stagedContainerUser = ResolveStagedContainerUser(stagedWorkspace, _options.ContainerUser);
             }
 
             containerWorkspaceSource = stagedWorkspace ?? workspaceRoot;
@@ -51,7 +57,8 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
                 spec,
                 containerWorkspaceSource,
                 containerName,
-                containerWorkingDirectory);
+                containerWorkingDirectory,
+                stagedContainerUser);
             SandboxResult result;
             try
             {
@@ -84,7 +91,11 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
 
             if (result.ExitCode == 0 && stagedWorkspace != null)
             {
-                CopyWorkspaceChangesBack(stagedWorkspace, workspaceRoot);
+                DockerWorkspaceWriteBack.Apply(
+                    stagedWorkspace,
+                    workspaceRoot,
+                    baseline!,
+                    _options);
             }
 
             return result;
@@ -103,7 +114,8 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
         SandboxJobSpec spec,
         string hostWorkspaceSource,
         string containerName,
-        string? containerWorkingDirectory = null)
+        string? containerWorkingDirectory = null,
+        string? containerUserOverride = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(spec);
@@ -133,10 +145,13 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
             "1"
         };
 
-        if (!string.IsNullOrWhiteSpace(options.ContainerUser))
+        var containerUser = string.IsNullOrWhiteSpace(containerUserOverride)
+            ? options.ContainerUser
+            : containerUserOverride;
+        if (!string.IsNullOrWhiteSpace(containerUser))
         {
             args.Add("--user");
-            args.Add(options.ContainerUser);
+            args.Add(containerUser);
         }
 
         if (options.DropAllCapabilities)
@@ -325,42 +340,17 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
         }
     }
 
-    private static void CopyWorkspaceChangesBack(string stagedRoot, string destinationRoot)
-    {
-        foreach (var directory in EnumerateWorkspaceDirectories(stagedRoot))
-        {
-            var relative = Path.GetRelativePath(stagedRoot, directory);
-            if (ShouldSkipWorkspacePath(relative))
-            {
-                continue;
-            }
-
-            Directory.CreateDirectory(Path.Combine(destinationRoot, relative));
-        }
-
-        foreach (var file in EnumerateWorkspaceFiles(stagedRoot))
-        {
-            var relative = Path.GetRelativePath(stagedRoot, file);
-            if (ShouldSkipWorkspacePath(relative))
-            {
-                continue;
-            }
-
-            var destination = Path.Combine(destinationRoot, relative);
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(file, destination, overwrite: true);
-        }
-    }
-
-    private static bool ShouldSkipWorkspacePath(string relativePath)
+    internal static bool ShouldSkipWorkspacePath(string relativePath)
     {
         var segments = relativePath.Split(
             [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
             StringSplitOptions.RemoveEmptyEntries);
-        return segments.Any(static segment => segment is ".git" or ".qre");
+        return segments.Any(static segment =>
+            segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".qre", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static IEnumerable<string> EnumerateWorkspaceDirectories(string root)
+    internal static IEnumerable<string> EnumerateWorkspaceDirectories(string root)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -381,7 +371,7 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
         }
     }
 
-    private static IEnumerable<string> EnumerateWorkspaceFiles(string root)
+    internal static IEnumerable<string> EnumerateWorkspaceFiles(string root)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -409,7 +399,7 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
         }
     }
 
-    private static bool IsSymbolicLink(string path)
+    internal static bool IsSymbolicLink(string path)
     {
         try
         {
@@ -429,20 +419,73 @@ public sealed class DockerSandboxRunner(DockerSandboxOptions? options = null) : 
             return;
         }
 
+        File.SetUnixFileMode(
+            path,
+            isDirectory
+                ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
+    private static string? ResolveStagedContainerUser(string stagedWorkspace, string? configuredContainerUser)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
         try
         {
-            File.SetUnixFileMode(
-                path,
-                isDirectory
-                    ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                      UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-                      UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute
-                    : UnixFileMode.UserRead | UnixFileMode.UserWrite |
-                      UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
-                      UnixFileMode.OtherRead | UnixFileMode.OtherWrite);
+            var effectiveUserId = GetEffectiveUserId();
+            var effectiveGroupId = GetEffectiveGroupId();
+            if (effectiveUserId != 0)
+            {
+                return $"{effectiveUserId}:{effectiveGroupId}";
+            }
+
+            if (!TryParseContainerIdentity(configuredContainerUser, out var containerUserId, out var containerGroupId) ||
+                containerUserId == 0)
+            {
+                throw new InvalidOperationException(
+                    "Root-owned Docker staging requires a configured non-root numeric ContainerUser.");
+            }
+
+            foreach (var path in EnumerateWorkspaceDirectories(stagedWorkspace)
+                         .Append(stagedWorkspace)
+                         .Concat(EnumerateWorkspaceFiles(stagedWorkspace)))
+            {
+                if (ChangeOwner(path, containerUserId, containerGroupId) != 0)
+                {
+                    throw new IOException(
+                        $"Unable to assign private Docker staging ownership (errno {Marshal.GetLastWin32Error()}).");
+                }
+            }
+
+            return $"{containerUserId}:{containerGroupId}";
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
+            throw new InvalidOperationException(
+                "Unable to resolve the host UID/GID required for a private Docker staging workspace.",
+                ex);
         }
     }
+
+    private static bool TryParseContainerIdentity(string? value, out uint userId, out uint groupId)
+    {
+        userId = 0;
+        groupId = 0;
+        var segments = value?.Split(':', StringSplitOptions.TrimEntries);
+        return segments is { Length: 2 } &&
+               uint.TryParse(segments[0], NumberStyles.None, CultureInfo.InvariantCulture, out userId) &&
+               uint.TryParse(segments[1], NumberStyles.None, CultureInfo.InvariantCulture, out groupId);
+    }
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint GetEffectiveUserId();
+
+    [DllImport("libc", EntryPoint = "getegid")]
+    private static extern uint GetEffectiveGroupId();
+
+    [DllImport("libc", EntryPoint = "chown", SetLastError = true)]
+    private static extern int ChangeOwner(string path, uint owner, uint group);
 }

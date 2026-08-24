@@ -31,8 +31,9 @@ trace、replay、sandbox、CLI 自动化”这些 Agent 基础设施抽出来，
   的通用 adapter。
 - 默认模型策略：当启用工具或要求模型 JSON 输出时，默认关闭 thinking，
   以提高工具调用和 schema 输出的兼容性。
-- `--json` 机器输出、`qre trace latest --jsonl`、`qre replay latest`
-  recorded replay，以及 `qre replay latest --summary` 的只读摘要模式。
+- `--json` 机器输出、`qre trace latest --jsonl`，以及
+  `qre replay latest --summary` 的只读摘要模式。默认 public trace 仅支持摘要；
+  recorded replay 只接受显式启用的 full-fidelity private/sanitized trace。
 - `qre diff latest` 优先读取 latest run 的 run-scoped `diff.patch`；没有
   run patch 时才回退到 workspace git diff。
 - 外部工具 manifest：`.qre/tools/*.json` 可声明 `stdio` 或最小
@@ -122,9 +123,11 @@ artifact，后续再由别的系统决定是否阻断构建。
 
 ### 3.4 教学、评测和 replay
 
-**Today**：实验 CLI 的 `replay latest` 默认执行 recorded replay：从 trace
-读取已记录的模型响应和工具结果，不调用 provider，不执行原始工具。`--summary`
-保留只读 trace 摘要模式。当前通过 `qre replay latest ...` 调用。
+**Today**：实验 CLI 默认写 `PublicRedacted / SummaryOnly` trace；
+`replay latest --summary` 可安全读取摘要，而对 summary-only trace 发起 recorded replay
+会 fail closed。只有显式使用 `--trace-data sanitized` 的已审查 fixture，或访问受控的
+`--trace-data private` 诊断轨迹，才具备 full-fidelity recorded replay 数据；回放过程
+不调用 provider，也不执行原始工具。
 
 Agent 开发最难调试的是“这次为什么这么回答”。Recorded replay 已能重放一条
 provider-free / tool-free 决策轨迹；`replay latest --strict` 进一步加入
@@ -712,9 +715,11 @@ endpoint 在 thinking 模式下会拒绝 required/object `tool_choice`。因此 
 
 ### 5.8 Trace、run artifacts 和 replay
 
-**Today**：trace 以 JSONL 写入，并带有显式、durable 的 `SchemaVersion`；
-`replay latest` 默认走 recorded replay，不调用 provider，也不执行原始工具。
-`--summary` 保留只读摘要模式，`--strict` 走下文描述的确定性、byte-stable replay。
+**Today**：trace 以 JSONL 写入，并带有显式、durable 的 `SchemaVersion`、`DataMode`
+和 `ReplayCapability`。默认模式是 `PublicRedacted / SummaryOnly`，不会持久化 prompt、
+模型正文、工具参数/结果、stdout/stderr 或 payload blob。`--summary` 可读取默认轨迹；
+recorded/strict replay 只接受显式 full-fidelity 轨迹，否则 fail closed。Public trace 还会把
+宿主 `RunId` 和运行目录名替换为不可关联的 `public-<uuid>`，并清除 `QueryId`。
 
 每次 `qre run` 会在 workspace 下写入：
 
@@ -726,7 +731,11 @@ endpoint 在 thinking 模式下会拒绝 required/object `tool_choice`。因此 
 .qre/runs/<run-id>/usage.json
 .qre/runs/<run-id>/artifacts/
 .qre/runs/<run-id>/blobs/sha256/...
+.qre/private/runs/<private-id>/...  # owner-only PrivateDiagnostic，默认保留 7 天
 ```
+
+Private diagnostic 在 Windows 使用仅当前用户的受保护 ACL，在 Unix 使用目录 `0700`、文件
+`0600`。`PrivateDiagnosticRetention` 可以缩短保留期，最长强制限制为 30 天；该模式不提供静态加密。
 
 查看最新 trace：
 
@@ -736,9 +745,10 @@ qre trace latest --workspace . --json
 qre trace latest --workspace . --jsonl
 ```
 
-执行 latest run 的 recorded replay：
+生成已审查的 sanitized fixture 并执行 recorded replay：
 
 ```bash
+qre run --workspace . --trace-data sanitized --response "offline smoke" "analyze this repo"
 qre replay latest --workspace . --json
 ```
 
@@ -827,6 +837,32 @@ live rerun 输出当作确定性保证。
 `manifest.json` 是 Phase 1 的 run artifact 索引，目的是让 CLI、CI、桌面端或
 其他平台不用解析完整 JSONL 就能定位 runId、run 目录、trace 文件、profile
 和终止状态。它不是安全审计摘要，也不替代原始 trace。
+
+#### v2 C6 versioned audit 与 data-only replay
+
+`--runtime v2` 使用独立的 C6 audit schema，不复用或覆盖 v1 trace。默认写入
+`.qre/v2/runs/<public-id>/audit.v1.jsonl`，payload 是显式 allow-list 的
+`PublicRedacted / SummaryOnly` 投影；prompt、model/reasoning 正文、工具名/参数/结果、路径和宿主 ID
+不会落盘。`--trace-data private` 写入 owner-only `.qre/v2/private/runs`，
+`--trace-data sanitized` 用于经过审查的 fixture，两者都标记为 `Recorded`。
+
+```bash
+qre run --runtime v2 --workspace . --trace-data sanitized \
+  --response "offline v2" --json "audit this runtime"
+qre replay latest --runtime v2 --workspace . --summary --json
+qre replay latest --runtime v2 --workspace . --strict --json
+```
+
+v2 replay 是纯数据验证 reducer：API 不接收 model client、provider 或 tool executor。它验证 schema、
+连续 sequence、causation/correlation、kind/payload/identity、model request/response、工具 observation 顺序、
+terminal text/usage/history，以及 manifest/file/blob 的路径、长度、SHA-256 和配额一致性。输出中的
+`providerCalls` 与 `toolExecutions` 固定为 `false`。`--strict` 表示完整轨迹验证并输出稳定
+`replayDigest`；它不是 live rerun，也不提供 crash resume 或 exactly-once。
+
+存储默认上限由 `RuntimeAuditStoreOptions` 控制，包括最长 30 天 retention、run 数、全部 runs、单 run、
+事件数、JSON line/depth、单 blob 和总 blob。单进程 writer 共享总磁盘配额；写入失败可选择
+`FailClosed`（默认）或显式 warning 的 `BestEffort`，失败 run 会进入 terminal-only GC。未知/未来 schema、
+非终态 run、public summary 和任何完整性冲突均拒绝 replay。
 
 ### 5.9 Diff 输出
 
@@ -1331,7 +1367,7 @@ QueryRuntime 如果把 capability policy、Docker sandbox、trace/replay 和 CLI
 - 已记录 model responses、structured tool-call snapshots、normalized argument
   hash、tool outputs 和 content-addressed blobs。
 - 已实现 recorded replay model adapter 和 tool coordinator。
-- replay 默认不调用 provider、不执行原始工具。
+- full-fidelity replay 不调用 provider、不执行原始工具；默认 public trace 只允许 summary。
 - 后续继续补 deterministic ID / clock、trace schema migration、public replay
   spec 和跨版本回放兼容。
 

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "messages": [
+    {
+      "role": "User",
+      "items": [
+        {
+          "kind": "text",
+          "text": "inspect the workspace"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "kind": "reasoning_delta",
+      "text": "inspect first",
+      "protectedData": null
+    },
+    {
+      "kind": "text_delta",
+      "text": "done"
+    },
+    {
+      "kind": "completed",
+      "stopReason": "EndTurn"
+    }
+  ]
+}
