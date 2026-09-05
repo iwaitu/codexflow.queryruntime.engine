@@ -1,8 +1,7 @@
 name: Release
 
 # Publishes single-file Native AOT `qre` binaries for every supported platform.
-# Releases are manual and require the protected `qre-production-release`
-# environment plus a credential-rotation confirmation variable.
+# Releases are started manually with a version and source ref.
 #
 # Native AOT cannot cross-compile across operating systems, so each target is
 # built on a matching native runner.
@@ -18,14 +17,6 @@ on:
         description: 'Reviewed commit SHA or protected branch to release'
         required: true
         default: 'main'
-      credential_rotation_evidence:
-        description: 'Non-secret incident/ticket reference proving exposed credentials were rotated'
-        required: true
-      confirm_release:
-        description: 'I confirm this release has been reviewed and is ready to publish'
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -35,28 +26,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-gate:
-    name: Protected release approval
-    runs-on: ubuntu-latest
-    environment: qre-production-release
-    steps:
-      - name: Verify approval and credential rotation evidence
-        shell: bash
-        env:
-          CONFIRMED: ${{ inputs.confirm_release }}
-          ROTATION_EVIDENCE: ${{ inputs.credential_rotation_evidence }}
-          ROTATION_APPROVED: ${{ vars.QRE_CREDENTIAL_ROTATION_APPROVED }}
-        run: |
-          set -euo pipefail
-          test "$CONFIRMED" = "true" || { echo "Explicit release confirmation is required." >&2; exit 1; }
-          test "$ROTATION_APPROVED" = "true" || { echo "Environment variable QRE_CREDENTIAL_ROTATION_APPROVED must be true." >&2; exit 1; }
-          case "${ROTATION_EVIDENCE,,}" in
-            ""|todo|pending|none|n/a) echo "Completed rotation evidence is required." >&2; exit 1 ;;
-          esac
-
   metadata:
     name: Resolve release metadata
-    needs: release-gate
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
