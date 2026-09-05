@@ -131,6 +131,7 @@ qre resume latest --workspace . --json
 
 ## 文档
 
+- [可运行的 v2 集成示例](examples/README.md)
 - [技术指南](docs/queryruntime-technical-guide.zh-CN.md)（[English](docs/queryruntime-technical-guide.md)）
 - [0.2 preview 迁移指南](docs/migration-0.2-preview.zh-CN.md)（[English](docs/migration-0.2-preview.md)）
 - [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)

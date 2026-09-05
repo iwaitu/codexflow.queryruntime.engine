@@ -48,6 +48,7 @@ qre run \
   --workspace . \
   --profile readonly \
   --external \
+  --approve-risk "Run the reviewed local example tool" \
   --required-tool py_count_files \
   --stream \
   "Count Python files in this repo, then summarize the sample paths."
@@ -59,3 +60,12 @@ The Python application owns the function implementation and schema generation.
 QRE owns provider calls, tool-call selection, process isolation, timeout handling,
 trace recording, and returning tool results to the model. Code outside QRE does
 not need to manually intercept or execute LLM tool calls.
+
+External tools in v2 require plan-bound approval even with `read_fs`. The
+`--approve-risk` reason authorizes external tool plans for this run; use a
+workspace containing only manifests you have reviewed. Stdio processes run as
+the local user, so these examples are for trusted local workspaces.
+
+The current QRE external adapter exposes a fixed argument envelope
+(`extension`, `max_files`, `max_chars`, `message`, `path`, `pattern`). Manifest
+`inputSchema` is recorded for compatibility but is not the model-facing schema.

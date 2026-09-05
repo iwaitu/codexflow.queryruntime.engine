@@ -131,6 +131,7 @@ Treat model output, tool arguments, external tool manifests, replay data, and wo
 
 ## Documentation
 
+- [Runnable v2 integration examples](examples/README.md)
 - [Technical guide](docs/queryruntime-technical-guide.md) ([中文](docs/queryruntime-technical-guide.zh-CN.md))
 - [0.2 preview migration guide](docs/migration-0.2-preview.md) ([中文](docs/migration-0.2-preview.zh-CN.md))
 - [H1 crash-resume implementation report](docs/h1-crash-resume-implementation-report.zh-CN.md)

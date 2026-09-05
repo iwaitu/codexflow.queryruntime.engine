@@ -61,6 +61,7 @@ qre run \
   --workspace . \
   --profile readonly \
   --external \
+  --approve-risk "Run the reviewed local example tool" \
   --required-tool demo_echo_tool \
   --stream \
   "Call demo_echo_tool with message='hello from QRE', then summarize the result."
@@ -75,3 +76,12 @@ External tools are intentionally process-isolated:
 - The process is killed on timeout or cancellation.
 - `mcp-stdio` is also supported for one-shot JSON-RPC `tools/call`, but the full
   MCP initialize lifecycle is not implemented yet.
+
+External tools in v2 require plan-bound approval even with `read_fs`. The
+`--approve-risk` reason authorizes external tool plans for this run; use a
+workspace containing only manifests you have reviewed. Stdio processes run as
+the local user, so these examples are for trusted local workspaces.
+
+The current QRE external adapter exposes a fixed argument envelope
+(`extension`, `max_files`, `max_chars`, `message`, `path`, `pattern`). Manifest
+`inputSchema` is recorded for compatibility but is not the model-facing schema.

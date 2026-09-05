@@ -77,6 +77,15 @@ jobs:
           dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj \
             --configuration Release --no-build --logger "console;verbosity=normal"
 
+      - name: Build and verify v2 examples (offline)
+        env:
+          QRE_EXAMPLE_CONFIGURATION: Release
+        run: |
+          dotnet build examples/RepoDoctor --configuration Release
+          dotnet build examples/EmbeddedV2 --configuration Release
+          dotnet build examples/H1CrashResume --configuration Release
+          python3 scripts/test-examples.py
+
       - name: Pack NuGet package
         run: |
           scripts/qre-pack-nuget.sh Release

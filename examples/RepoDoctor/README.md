@@ -11,7 +11,7 @@ code works on Windows, macOS, and Linux.
 The example demonstrates two boundaries:
 
 - The host .NET app owns process management and user experience.
-- QRE owns provider calls, required tool selection, external tool execution,
+- QRE owns provider calls, external tool execution,
   trace recording, and replay.
 
 ## Prerequisites
@@ -20,10 +20,10 @@ Make sure `qre` is on your `PATH` (or point `QRE_BIN` at it). From the repo root
 can produce a local Native AOT binary:
 
 ```bash
-dotnet publish ../../CodexFlow.QueryRuntime.Cli \
+dotnet publish CodexFlow.QueryRuntime.Cli \
   -c Release -r osx-arm64 \
   -p:PublishAot=true -p:SelfContained=true
-export PATH="$PWD/../../CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publish:$PATH"
+export PATH="$PWD/CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publish:$PATH"
 ```
 
 …or download a prebuilt binary from the
@@ -38,7 +38,7 @@ export QRE_API_KEY="sk-..."
 export QRE_MODEL="your-model"
 export QRE_API_MODE="chat-completions"
 
-dotnet run -- /path/to/repo
+dotnet run --project examples/RepoDoctor -- /path/to/repo
 ```
 
 ```powershell
@@ -48,7 +48,7 @@ $env:QRE_API_KEY="sk-..."
 $env:QRE_MODEL="your-model"
 $env:QRE_API_MODE="chat-completions"
 
-dotnet run -- C:\src\my-repo
+dotnet run --project examples/RepoDoctor -- C:\src\my-repo
 ```
 
 If the environment variables are not set, RepoDoctor reads provider settings
@@ -61,7 +61,7 @@ from the sibling CodexFlow checkout by default:
 You can point it at a different provider source:
 
 ```bash
-dotnet run -- \
+dotnet run --project examples/RepoDoctor -- \
   --appsettings /path/to/codexflow/CodexFlow/appsettings.json \
   --provider-section VllmAgent \
   /path/to/repo
@@ -102,10 +102,10 @@ RepoDoctor appends that result to the prompt and then starts a real-provider QRE
 run with:
 
 ```bash
-qre run --workspace <repo> --profile readonly --stream "<prompt + tool result>"
+qre run --workspace <repo> --profile readonly --trace-data sanitized --stream "<prompt + tool result>"
 ```
 
-and receives:
+The earlier `qre tool invoke` returns a JSON result containing:
 
 ```json
 {
@@ -124,24 +124,26 @@ and receives:
 To validate streaming, trace, and replay handling without calling a provider:
 
 ```bash
-dotnet run -- --offline /path/to/repo
+dotnet run --project examples/RepoDoctor -- --offline /path/to/repo
 ```
 
 You can also choose the deterministic response text:
 
 ```bash
-dotnet run -- --offline --response "offline smoke" /path/to/repo
+dotnet run --project examples/RepoDoctor -- --offline --response "offline smoke" /path/to/repo
 ```
 
 `--offline` still exercises the same `qre run --stream` subprocess path; it only
 adds `--response` so no provider key is required. Because `--response` is a
-static model reply, offline mode does not force a real tool call. Use live mode
-to validate provider-driven custom tool calling.
+static model reply, offline mode does not force a real tool call. Live mode
+invokes the custom tool explicitly through `qre tool invoke`, then
+passes its result to the model. It does not demonstrate model-selected custom
+tool calls; see `PythonFunctionTools` or `NodeFunctionTools` for that workflow.
 
 To run the same .NET host without registering the custom tool:
 
 ```bash
-dotnet run -- --skip-custom-tool /path/to/repo
+dotnet run --project examples/RepoDoctor -- --skip-custom-tool /path/to/repo
 ```
 
 ## Recording the GIF
@@ -156,3 +158,8 @@ The script builds `qre`, runs RepoDoctor against a temporary repository using th
 CodexFlow appsettings provider, verifies the output includes
 `repodoctor_workspace_summary`, and writes
 `docs/assets/repodoctor-streaming-demo.gif`.
+
+The run explicitly stores sanitized v2 audit data and validates it with
+`qre replay latest --strict --json`. Default public traces cannot be replayed.
+The host reads `auditFilePath` and `replayDigest` from the v2 replay result.
+Sanitized artifacts can contain repository and model content; keep them local.

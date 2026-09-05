@@ -73,6 +73,7 @@ qre run \
   --workspace . \
   --profile readonly \
   --external \
+  --approve-risk "Run the reviewed local example tool" \
   --stream \
   "Use node_count_files to inspect JavaScript files, then summarize the result."
 ```
@@ -95,3 +96,12 @@ The script builds `qre`, creates a temporary Node.js repository, generates and
 registers the `node_count_files` manifest, invokes that tool through QRE, streams
 a real provider response using the tool result, and writes
 `docs/assets/node-tool-streaming-demo.gif`.
+
+External tools in v2 require plan-bound approval even with `read_fs`. The
+`--approve-risk` reason authorizes external tool plans for this run; use a
+workspace containing only manifests you have reviewed. Stdio processes run as
+the local user, so these examples are for trusted local workspaces.
+
+The current QRE external adapter exposes a fixed argument envelope
+(`extension`, `max_files`, `max_chars`, `message`, `path`, `pattern`). Manifest
+`inputSchema` is recorded for compatibility but is not the model-facing schema.
