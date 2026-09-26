@@ -2190,6 +2190,10 @@ public sealed class QreCliSmokeTests
         {
             if (Directory.Exists(Path))
             {
+                // Git creates read-only loose objects on Windows. Clear only the
+                // read-only bit inside this test-owned temporary repository.
+                foreach (var file in Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories))
+                    File.SetAttributes(file, File.GetAttributes(file) & ~FileAttributes.ReadOnly);
                 Directory.Delete(Path, recursive: true);
             }
         }

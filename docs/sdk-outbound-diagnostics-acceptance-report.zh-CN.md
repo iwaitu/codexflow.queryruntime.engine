@@ -45,7 +45,7 @@
 | 兼容恢复 | `CorruptDiagnosticSidecar_DoesNotAffectStrictReplay`、`Reader_ReportsTruncatedTailAndSequenceGapsWithoutFailing`、`Prune_AppliesRetentionAndRunCountOnlyInsideTheRoot` | 通过 |
 | 发布 | Native AOT 门禁、AOT smoke、原生二进制运行 diagnose/rebuild、性能测试 | 通过；见第 3 节 |
 
-R7 重新执行的 Release 单元测试为 563 个：551 通过、12 失败。基线 `9c56da3` 在同机 Release 下为 435 个：423 通过、12 失败；逐项比较 TRX 中的失败测试名，集合完全相同。失败涉及缺失 /bin/sh、沙箱命令返回码、Windows 路径差异与 Git 临时对象清理权限。诊断与模型尝试相关筛选测试为 128 个，全部通过，其中本轮新增 26 个边界回归用例。此结果替代初版的 535/520/15 和 104 个新增测试统计。
+R7 诊断修复时的 Release 单元测试为 563 个：551 通过、12 失败。基线 `9c56da3` 在同机 Release 下为 435 个：423 通过、12 失败；逐项比较 TRX 中的失败测试名，集合完全相同。失败涉及缺失 /bin/sh、沙箱命令返回码、Windows 路径差异与 Git 临时对象清理权限。诊断与模型尝试相关筛选测试为 128 个，全部通过，其中本轮新增 26 个边界回归用例。此结果替代初版的 535/520/15 和 104 个新增测试统计。随后完成第 8 节的测试跨平台修复，Windows 最新全量结果为 **563 通过、0 失败、0 跳过**。
 
 ## 3. 发布门禁
 
@@ -113,3 +113,14 @@ R7 修复后的发布验证（win-x64）：
 - Release 构建 `examples/SdkOutboundDiagnostics`：0 警告、0 错误。
 - `QRE_EXAMPLE_CONFIGURATION=Release`、`QRE_BIN=<原生 qre.exe>` 下运行 `python scripts/test-examples.py Examples.test_sdk_outbound_diagnostics`：通过，实际执行原生 inspect/latest、export、rebuild，错误/正确 fixture 分别得到 exit 1/0。
 - 本机原始日志与 TRX 保存在 `C:/Users/iwaitu/AppData/Local/Temp/qre-diagnostics-fix-validation/`；此目录不随仓库提交。
+
+## 8. Windows 测试兼容性闭环（2026-09-27）
+
+原 12 个失败均保留执行，没有增加平台 Skip 或以提前 return 代替测试：
+
+- 环境隔离、注入、超时、输出截断以及 stdio/MCP 测试改用 `tests/ProcessFixture` 的 .NET 子进程，移除 /bin/sh、/usr/bin/env、head、tr 和 cmd 引号语义依赖。超时树测试启动真实子进程，并先确认其已启动，再验证超时后没有延迟写入。
+- 运行目录断言使用当前平台的临时目录与 Path.Combine。
+- CLI 临时 Git 仓库清理只清除测试目录内文件的 ReadOnly 位，再删除目录；不吞掉清理错误。
+- 增加 windows-latest 全量单元测试 CI 作业；未将 CI 配置视为已在远端执行通过。
+
+本机 Release 验证：受影响筛选测试 16/16 通过；全套 563/563 通过、0 失败、0 跳过。结果文件为上述验证目录中的 `windows-portable.trx`。本次只修改测试工程、fixture、CI 和文档，未修改生产行为；Linux/macOS 本轮未本地复现。

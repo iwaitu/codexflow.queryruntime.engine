@@ -95,6 +95,20 @@ jobs:
           scripts/qre-pack-nuget.sh Release
           bash scripts/qre-package-smoke.sh artifacts/nuget
 
+  windows-unit-tests:
+    name: Unit tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test all unit tests without platform exclusions
+        run: dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj --configuration Release --logger "console;verbosity=normal"
+
   aot:
     name: Native AOT (${{ matrix.rid }})
     runs-on: ${{ matrix.os }}

@@ -402,6 +402,7 @@ public sealed class StandaloneQueryRuntimeEngineTests
     [Fact]
     public async Task ExecuteAsync_ResultMetadataTracksExecutedSuccessfulAndWriteTools()
     {
+        var runDirectory = Path.Combine(Path.GetTempPath(), "qre-test");
         var readTool = AIFunctionFactory.Create(
             () => "read-result",
             new AIFunctionFactoryOptions { Name = "read_file" });
@@ -431,7 +432,7 @@ public sealed class StandaloneQueryRuntimeEngineTests
             },
             sink,
             "run-metadata",
-            "/tmp/qre-test/events.jsonl",
+            Path.Combine(runDirectory, "events.jsonl"),
             workspacePath: null,
             TestContext.Current.CancellationToken);
 
@@ -440,7 +441,7 @@ public sealed class StandaloneQueryRuntimeEngineTests
         Assert.Equal(["read_file", "write_file"], result.ExecutedToolNames);
         Assert.Equal(["read_file", "write_file"], result.SuccessfulToolNames);
         Assert.Equal("write_file", result.LastFunctionCall);
-        Assert.Equal("/tmp/qre-test", result.RunDirectory);
+        Assert.Equal(runDirectory, result.RunDirectory);
         Assert.Contains(
             sink.Events,
             evt => evt is Qre.TerminatedEvent terminated &&

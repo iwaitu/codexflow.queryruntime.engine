@@ -1,4 +1,5 @@
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
+using CodexFlow.QueryRuntime.UnitTests.Infrastructure;
 using Qre = CodexFlow.QueryRuntime.Abstractions;
 using Xunit;
 
@@ -41,7 +42,7 @@ public sealed class LocalProcessSandboxRunnerTests
             var result = await new LocalProcessSandboxRunner().RunAsync(
                 new Qre.SandboxJobSpec
                 {
-                    Command = ["/usr/bin/env"],
+                    Command = TestProcess.Command("environment"),
                     WorkingDirectory = workspace.Path,
                     Limits = new Qre.SandboxLimits
                     {
@@ -68,7 +69,7 @@ public sealed class LocalProcessSandboxRunnerTests
         var result = await new LocalProcessSandboxRunner().RunAsync(
             new Qre.SandboxJobSpec
             {
-                Command = ["/usr/bin/env"],
+                Command = TestProcess.Command("environment"),
                 WorkingDirectory = workspace.Path,
                 Environment = new Dictionary<string, string>
                 {
@@ -135,7 +136,7 @@ public sealed class LocalProcessSandboxRunnerTests
         var result = await new LocalProcessSandboxRunner().RunAsync(
             new Qre.SandboxJobSpec
             {
-                Command = LongRunningCommand(),
+                Command = TestProcess.Command("sleep"),
                 WorkingDirectory = workspace.Path,
                 Limits = new Qre.SandboxLimits
                 {
@@ -157,7 +158,7 @@ public sealed class LocalProcessSandboxRunnerTests
         var result = await new LocalProcessSandboxRunner().RunAsync(
             new Qre.SandboxJobSpec
             {
-                Command = PrintCommand("1234567890"),
+                Command = TestProcess.Command("print", "1234567890"),
                 WorkingDirectory = workspace.Path,
                 Limits = new Qre.SandboxLimits
                 {
@@ -170,16 +171,6 @@ public sealed class LocalProcessSandboxRunnerTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("12345", result.StandardOutput);
     }
-
-    private static IReadOnlyList<string> LongRunningCommand()
-        => OperatingSystem.IsWindows()
-            ? ["cmd.exe", "/c", "ping -n 6 127.0.0.1 > nul"]
-            : ["/bin/sh", "-c", "sleep 5"];
-
-    private static IReadOnlyList<string> PrintCommand(string value)
-        => OperatingSystem.IsWindows()
-            ? ["cmd.exe", "/c", $"<nul set /p={value}"]
-            : ["/bin/sh", "-c", $"printf {value}"];
 
     private sealed class TemporaryWorkspace : IDisposable
     {

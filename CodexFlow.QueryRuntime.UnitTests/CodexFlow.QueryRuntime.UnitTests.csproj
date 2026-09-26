@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
+    <ProjectReference Include="..\tests\ProcessFixture\ProcessFixture.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Cli\CodexFlow.QueryRuntime.Cli.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
     <ProjectReference Include="..\CodexFlow.QueryRuntime.Models\CodexFlow.QueryRuntime.Models.csproj" />
@@ -33,6 +34,8 @@
 
   <ItemGroup>
     <None Include="Protocol\Fixtures\protocol-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\tests\ProcessFixture\bin\$(Configuration)\net10.0\Qre.TestProcess.runtimeconfig.json"
+          Link="Qre.TestProcess.runtimeconfig.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

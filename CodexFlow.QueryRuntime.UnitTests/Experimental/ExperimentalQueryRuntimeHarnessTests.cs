@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CodexFlow.QueryRuntime.UnitTests.Infrastructure;
 using CodexFlow.QueryRuntime.Abstractions;
 using CodexFlow.QueryRuntime.Engine;
 using CodexFlow.QueryRuntime.Experimental;
@@ -307,13 +308,11 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Directory.CreateDirectory(toolsDirectory);
         File.WriteAllText(
             Path.Combine(toolsDirectory, "demo.json"),
-            """
+            TestProcess.Manifest("""
             {
               "name": "demo_external_tool",
               "description": "Demo external stdio tool.",
               "transport": "stdio",
-              "command": "/bin/sh",
-              "args": ["-c", "cat > external-request.json; printf '{\"result\":\"external-ok\"}'"],
               "capabilities": ["read_fs"],
               "timeoutSeconds": 30,
               "maxOutputBytes": 20000,
@@ -325,7 +324,7 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 "required": ["message"]
               }
             }
-            """);
+            """, "stdio"));
 
         var tools = ExternalStdioToolPack.Create(workspace.Path);
         var tool = Assert.Single(tools);
@@ -368,13 +367,11 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Directory.CreateDirectory(toolsDirectory);
         File.WriteAllText(
             Path.Combine(toolsDirectory, "mcp-demo.json"),
-            """
+            TestProcess.Manifest("""
             {
               "name": "demo_mcp_tool",
               "description": "Demo MCP stdio tool.",
               "transport": "mcp-stdio",
-              "command": "/bin/sh",
-              "args": ["-c", "cat > mcp-request.json; printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"mcp-ok\"}]}}\\n'"],
               "capabilities": ["read_fs"],
               "inputSchema": {
                 "type": "object",
@@ -383,7 +380,7 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
                 }
               }
             }
-            """);
+            """, "mcp"));
 
         var tool = Assert.Single(ExternalStdioToolPack.Create(workspace.Path));
         var result = await tool.InvokeAsync(
@@ -405,21 +402,20 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Directory.CreateDirectory(toolsDirectory);
         File.WriteAllText(
             Path.Combine(toolsDirectory, "timeout-demo.json"),
-            """
+            TestProcess.Manifest("""
             {
               "name": "timeout_external_tool",
               "transport": "stdio",
-              "command": "/bin/sh",
-              "args": ["-c", "sleep 2; touch leaked-timeout.txt"],
               "timeoutSeconds": 1,
               "maxOutputBytes": 1000
             }
-            """);
+            """, "process-tree"));
 
         var tool = Assert.Single(ExternalStdioToolPack.Create(workspace.Path));
         await Assert.ThrowsAsync<TimeoutException>(async () =>
             await tool.InvokeAsync(new AIFunctionArguments(), TestContext.Current.CancellationToken));
 
+        Assert.True(File.Exists(Path.Combine(workspace.Path, "timeout-child.pid")), "The child must have started before the timeout.");
         await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         Assert.False(File.Exists(Path.Combine(workspace.Path, "leaked-timeout.txt")));
     }
@@ -432,16 +428,14 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
         Directory.CreateDirectory(toolsDirectory);
         File.WriteAllText(
             Path.Combine(toolsDirectory, "large-output-demo.json"),
-            """
+            TestProcess.Manifest("""
             {
               "name": "large_output_external_tool",
               "transport": "stdio",
-              "command": "/bin/sh",
-              "args": ["-c", "head -c 50000 /dev/zero | tr '\\0' x"],
               "timeoutSeconds": 10,
               "maxOutputBytes": 1000
             }
-            """);
+            """, "large-output"));
 
         var tool = Assert.Single(ExternalStdioToolPack.Create(workspace.Path));
         var result = await tool.InvokeAsync(
