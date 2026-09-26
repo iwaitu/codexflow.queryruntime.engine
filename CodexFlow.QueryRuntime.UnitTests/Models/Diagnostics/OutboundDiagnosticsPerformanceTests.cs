@@ -8,6 +8,9 @@ using static CodexFlow.QueryRuntime.UnitTests.Models.Diagnostics.DiagnosticsTest
 
 namespace CodexFlow.QueryRuntime.UnitTests.Models.Diagnostics;
 
+[CollectionDefinition("OutboundDiagnosticsPerformance", DisableParallelization = true)]
+public sealed class OutboundDiagnosticsPerformanceCollection;
+
 /// <summary>
 /// P5 performance acceptance on a fixed, network-free workload (real SDK plus
 /// in-memory transport). Metadata p95 overhead must stay within
@@ -15,6 +18,7 @@ namespace CodexFlow.QueryRuntime.UnitTests.Models.Diagnostics;
 /// The median of three measured rounds is used after warm-up.
 /// </summary>
 [Trait("Category", "Performance")]
+[Collection("OutboundDiagnosticsPerformance")]
 public sealed class OutboundDiagnosticsPerformanceTests
 {
     private const int Warmup = 60;

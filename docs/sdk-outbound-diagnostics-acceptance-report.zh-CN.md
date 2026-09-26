@@ -130,3 +130,5 @@ R7 修复后的发布验证（win-x64）：
 远端 CI 暴露了本机 PATH 中已有 rg.exe 掩盖的问题：UseShellExecute=false 无法直接执行 Windows 的 rg.cmd 替身。替身现使用 .NET 原生 apphost rg.exe，保留原有三项命令输出与隐私断言；发布工作流同时强制执行 Ubuntu 和 Windows 全量测试。修正后本机 Release 563/563 通过、0 失败、0 跳过，证据为 `release-023.trx`。
 
 密钥扫描命中诊断测试的合成标记 CANARY-API-KEY-8d1e；配置仅豁免该完整精确值，保留默认规则和全历史扫描。发布前本机全历史 50 个提交扫描通过。托管 CI 结果仍需以发布运行记录为准。
+
+首轮发布运行 `36255471492` 的 Ubuntu 测试、安全检查和 NuGet 打包通过，Windows 为 562 通过、1 失败：性能测试 Metadata p95 开销 1.152 ms 超过 1 ms 门限。该基准原先与其他测试并行，且统计进程级分配；现通过独占 xUnit collection 消除其他测试干扰，不跳过测试、不放宽原有门限。
