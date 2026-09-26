@@ -1,0 +1,304 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1790420756557,
+  "projectRoot": "D:\\codeup\\codexflow.queryruntime.engine",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "assets",
+      "docs",
+      "examples",
+      "scripts"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "artifacts": {
+      "path": "artifacts",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1790420756540,
+      "keyFiles": []
+    },
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 0,
+      "lastAccessed": 1790420756540,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Abstractions": {
+      "path": "CodexFlow.QueryRuntime.Abstractions",
+      "purpose": null,
+      "fileCount": 9,
+      "lastAccessed": 1790420756541,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Abstractions.csproj",
+        "QueryRuntimeContracts.cs",
+        "QueryRuntimeHostSecurityContracts.cs",
+        "QueryRuntimeOptions.cs",
+        "QueryRuntimePathSafety.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Cli": {
+      "path": "CodexFlow.QueryRuntime.Cli",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1790420756541,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Cli.csproj",
+        "Program.cs",
+        "QreV2CliPresentation.cs",
+        "QreVllmChatClientFactory.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Engine": {
+      "path": "CodexFlow.QueryRuntime.Engine",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1790420756541,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Engine.csproj",
+        "QueryRuntimeEngine.cs",
+        "RuntimeContracts.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Experimental": {
+      "path": "CodexFlow.QueryRuntime.Experimental",
+      "purpose": null,
+      "fileCount": 23,
+      "lastAccessed": 1790420756541,
+      "keyFiles": [
+        "ChatClientExperimentalModelClient.cs",
+        "CodexFlow.QueryRuntime.Experimental.csproj",
+        "DeterministicReplay.cs",
+        "DeterministicReplayClock.cs",
+        "ExperimentalCapabilityPolicy.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.IntegrationTests": {
+      "path": "CodexFlow.QueryRuntime.IntegrationTests",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1790420756542,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.IntegrationTests.csproj",
+        "DockerSandboxRunnerIntegrationTests.cs",
+        "EnvelopeFormatSpikeTests.cs",
+        "README.md",
+        "RouteTwoProtocolRealLlmTests.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Models": {
+      "path": "CodexFlow.QueryRuntime.Models",
+      "purpose": null,
+      "fileCount": 9,
+      "lastAccessed": 1790420756542,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Models.csproj",
+        "IQreModelProvider.cs",
+        "MeaiRuntimeModelClient.cs",
+        "MeaiRuntimeProtocolAdapter.cs",
+        "QreModelApiMode.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Protocol": {
+      "path": "CodexFlow.QueryRuntime.Protocol",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1790420756542,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Protocol.csproj",
+        "ModelContracts.cs",
+        "ProtocolSerialization.cs",
+        "RuntimeIds.cs",
+        "RuntimeItems.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Sandbox.Docker": {
+      "path": "CodexFlow.QueryRuntime.Sandbox.Docker",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1790420756542,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Sandbox.Docker.csproj",
+        "DockerSandboxOptions.cs",
+        "DockerSandboxRunner.cs",
+        "DockerSandboxSeccompProfile.cs",
+        "DockerWorkspaceWriteBack.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Sandbox.LocalProcess": {
+      "path": "CodexFlow.QueryRuntime.Sandbox.LocalProcess",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1790420756542,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.Sandbox.LocalProcess.csproj",
+        "LocalProcessSandboxRunner.cs"
+      ]
+    },
+    "CodexFlow.QueryRuntime.UnitTests": {
+      "path": "CodexFlow.QueryRuntime.UnitTests",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1790420756543,
+      "keyFiles": [
+        "CodexFlow.QueryRuntime.UnitTests.csproj"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 20,
+      "lastAccessed": 1790420756543,
+      "keyFiles": [
+        "codexflow-integration-hardening-plan.zh-CN.md",
+        "h1-crash-resume-implementation-report.zh-CN.md",
+        "h1-crash-resume-threat-model.md",
+        "IQueryRuntimeEngine.md",
+        "IQueryRuntimeEngine.zh-CN.md"
+      ]
+    },
+    "examples": {
+      "path": "examples",
+      "purpose": "Example code",
+      "fileCount": 1,
+      "lastAccessed": 1790420756543,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 14,
+      "lastAccessed": 1790420756543,
+      "keyFiles": [
+        "generate-node-tool-demo.py",
+        "generate-python-tool-demo.py",
+        "generate-readme-demo.py",
+        "generate-repodoctor-demo.py",
+        "gitleaks-summary.tmpl"
+      ]
+    },
+    "CodexFlow.QueryRuntime.Abstractions\\bin": {
+      "path": "CodexFlow.QueryRuntime.Abstractions\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756544,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Cli\\bin": {
+      "path": "CodexFlow.QueryRuntime.Cli\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756544,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Engine\\bin": {
+      "path": "CodexFlow.QueryRuntime.Engine\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756544,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Experimental\\bin": {
+      "path": "CodexFlow.QueryRuntime.Experimental\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756545,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.IntegrationTests\\bin": {
+      "path": "CodexFlow.QueryRuntime.IntegrationTests\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756545,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Models\\bin": {
+      "path": "CodexFlow.QueryRuntime.Models\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756546,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Protocol\\bin": {
+      "path": "CodexFlow.QueryRuntime.Protocol\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756546,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Sandbox.Docker\\bin": {
+      "path": "CodexFlow.QueryRuntime.Sandbox.Docker\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756546,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.Sandbox.LocalProcess\\bin": {
+      "path": "CodexFlow.QueryRuntime.Sandbox.LocalProcess\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756547,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.UnitTests\\bin": {
+      "path": "CodexFlow.QueryRuntime.UnitTests\\bin",
+      "purpose": "Executable scripts",
+      "fileCount": 0,
+      "lastAccessed": 1790420756547,
+      "keyFiles": []
+    },
+    "CodexFlow.QueryRuntime.UnitTests\\Models": {
+      "path": "CodexFlow.QueryRuntime.UnitTests\\Models",
+      "purpose": "Data models",
+      "fileCount": 3,
+      "lastAccessed": 1790420756548,
+      "keyFiles": [
+        "MeaiRuntimeProtocolAdapterTests.cs",
+        "QreModelApiModeTests.cs",
+        "QreModelProviderSelectorTests.cs"
+      ]
+    },
+    "docs\\assets": {
+      "path": "docs\\assets",
+      "purpose": "Static assets",
+      "fileCount": 5,
+      "lastAccessed": 1790420756548,
+      "keyFiles": [
+        "node-tool-streaming-demo.gif",
+        "python-tool-streaming-demo.gif",
+        "qre-demo.cast"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
