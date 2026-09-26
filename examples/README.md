@@ -12,6 +12,7 @@ PATH or `QRE_BIN` pointing to the built executable.
 | [PythonFunctionTools](PythonFunctionTools) | Python function tools and manifest generation |
 | [NodeFunctionTools](NodeFunctionTools) | Node.js function tools and manifest generation |
 | [H1CrashResume](H1CrashResume) | Intentional process crash and same-version v2 checkpoint recovery |
+| [SdkOutboundDiagnostics](SdkOutboundDiagnostics) | Outbound SDK diagnostics: defective-host demo, three host integration styles, offline rebuild fixtures |
 
 ## Offline regression checks
 
@@ -23,6 +24,7 @@ model adapter, tool approval, execution and replay paths.
 dotnet build CodexFlow.QueryRuntime.Cli
 dotnet build examples/RepoDoctor
 dotnet build examples/EmbeddedV2
+dotnet build examples/SdkOutboundDiagnostics
 python3 scripts/test-examples.py
 ```
 

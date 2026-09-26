@@ -1,0 +1,25 @@
+{
+  "schema": "qre.sdk-rebuild-fixture/1",
+  "status": "runnable",
+  "issue": "Host options factory maps explicit MaxOutputTokens and RequireJsonObject (synthetic, reviewed, non-sensitive).",
+  "apiMode": "chat_completions",
+  "model": "qwen3-next-80b",
+  "sdkVersion": "2.0.25",
+  "adapterVersion": "qre.meai-adapter/2",
+  "optionsMapping": "qre-cli",
+  "request": {
+    "messages": [
+      { "role": "user", "items": [ { "kind": "text", "text": "Return a JSON object describing the fixture." } ] }
+    ],
+    "tools": [],
+    "temperature": 0.2,
+    "maxOutputTokens": 256,
+    "requireJsonObject": true
+  },
+  "assertions": [
+    { "kind": "field_equals", "stage": "http_prepared", "field": "maxOutputTokens", "expected": "256" },
+    { "kind": "json_output_mapped" },
+    { "kind": "no_unexpected_change" }
+  ],
+  "missing": []
+}

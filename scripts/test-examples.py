@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline example regression tests. Build CLI, RepoDoctor and EmbeddedV2 first."""
+"""Offline example regression tests. Build CLI, RepoDoctor, EmbeddedV2 and SdkOutboundDiagnostics first."""
 import contextlib
 import http.server
 import json
@@ -124,6 +124,26 @@ class Examples(unittest.TestCase):
     def test_embedded_v2(self):
         output = self.run_command(['dotnet', ROOT / f'examples/EmbeddedV2/bin/{CONFIGURATION}/net10.0/EmbeddedV2.dll'])
         self.assertIn('status: Completed', output)
+
+    def test_sdk_outbound_diagnostics(self):
+        example = ROOT / f'examples/SdkOutboundDiagnostics/bin/{CONFIGURATION}/net10.0/SdkOutboundDiagnostics.dll'
+        output = self.run_command(['dotnet', example, 'demo', '--workspace', self.workspace])
+        self.assertIn('host: defective options factory', output)
+        report = json.loads(self.run_command([QRE, 'diagnose', 'latest', '--workspace', self.workspace, '--json']))
+        self.assertEqual(report['verdict'], 'unexpected_change')
+        call = report['modelCalls'][0]
+        self.assertEqual(call['firstUnexpectedBoundary'], 'runtime_prepared->adapter_prepared')
+        self.assertEqual({f['fieldPath'] for f in call['findings'] if f['classification'] == 'unexpected_change'},
+                         {'maxOutputTokens', 'responseFormat'})
+        bundle = self.root / 'diagnostics.zip'
+        self.run_command([QRE, 'diagnose', 'export', 'latest', '--workspace', self.workspace, '--output', bundle])
+        self.assertNotIn(b'example-offline-key', bundle.read_bytes())
+        fixtures = ROOT / 'examples/SdkOutboundDiagnostics/fixtures'
+        self.run_command([QRE, 'diagnose', 'rebuild', fixtures / 'defective-host.fixture.json'], expected=1)
+        self.run_command([QRE, 'diagnose', 'rebuild', fixtures / 'fixed-host.fixture.json'])
+        hosts = self.run_command(['dotnet', example, 'hosts'])
+        self.assertIn('shared_transport_after_dispose=NoContent', hosts)
+        self.assertIn('transport=transport_capture_unavailable', hosts)
 
     def test_external_functions(self):
         for interpreter, folder, name, extension in [

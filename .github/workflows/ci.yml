@@ -87,6 +87,7 @@ jobs:
           dotnet build examples/RepoDoctor --configuration Release
           dotnet build examples/EmbeddedV2 --configuration Release
           dotnet build examples/H1CrashResume --configuration Release
+          dotnet build examples/SdkOutboundDiagnostics --configuration Release
           python3 scripts/test-examples.py
 
       - name: Pack NuGet package
