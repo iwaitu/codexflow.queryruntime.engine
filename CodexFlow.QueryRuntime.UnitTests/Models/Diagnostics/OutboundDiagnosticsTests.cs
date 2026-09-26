@@ -229,7 +229,7 @@ public sealed class OutboundDiagnosticsTests
         await using (var stream = await response.Content.ReadAsStreamAsync(Ct))
         {
             var buffer = new byte[100];
-            Assert.Equal(100, await stream.ReadAsync(buffer, Ct));
+            await stream.ReadExactlyAsync(buffer, Ct);
         }
 
         var ended = Assert.Single(sink.OfType(QreDiagnosticEventTypes.HttpAttemptEnded)).HttpOutcome!;
@@ -255,7 +255,7 @@ public sealed class OutboundDiagnosticsTests
         {
             using var response = await http.GetAsync("http://offline.test/broken", HttpCompletionOption.ResponseHeadersRead, Ct);
             await using var stream = await response.Content.ReadAsStreamAsync(Ct);
-            await stream.ReadAsync(new byte[8], Ct);
+            _ = await stream.ReadAtLeastAsync(new byte[8], 1, throwOnEndOfStream: false, Ct);
         });
 
         var ends = sink.OfType(QreDiagnosticEventTypes.HttpAttemptEnded).Select(static r => r.HttpOutcome!).ToArray();
