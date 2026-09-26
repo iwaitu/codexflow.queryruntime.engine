@@ -826,6 +826,8 @@ Strict replay 保证：
 - 跨 runtime 版本的确定性：不同 runtime 版本可以合理地改变 canonical projection。
 - Live 行为：见下文 live rerun。
 
+Strict replay 不会调用模型 SDK，因此回放通过不能证明当前 SDK 会生成相同的 HTTP 请求；如需验证 SDK 序列化，请使用离线的 `qre diagnose rebuild`，详见 [SDK 出站诊断](sdk-outbound-diagnostics.zh-CN.md)。
+
 ##### Live rerun 与 strict replay 分开
 
 `qre rerun latest` 是 **live rerun**，不是 strict replay：它用新的 response/clock
@@ -916,6 +918,10 @@ qre diff latest --workspace . --stat --json
 如果当前 workspace 不是 Git 仓库，或者 latest run 没有 `diff.patch`，CLI
 会回退到 `workspace-git-diff` 模式。`--stat` 当前仍读取当前 workspace 的
 Git stat，而不是 run-scoped patch stat。
+
+#### SDK 出站诊断
+
+`--sdk-diagnostics metadata|structure`（默认关闭）为每次模型调用记录 Runtime 请求、适配器最终选项和已序列化 HTTP 请求的白名单投影，并与 Runtime 权威模型尝试序号及每次 Handler 可见 HTTP 尝试关联，写入 `.qre/v2/diagnostics/`。`qre diagnose` 支持查看、比较、导出、生成 fixture 骨架和离线重建。详见 [sdk-outbound-diagnostics.zh-CN.md](sdk-outbound-diagnostics.zh-CN.md) 与 [ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md)。
 
 ### 5.10 Usage 输出
 

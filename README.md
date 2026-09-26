@@ -104,7 +104,7 @@ Thinking defaults to `auto`: it is disabled when tools or model JSON output are 
 New v2 runs write under `.qre/v2/` inside the workspace:
 
 - `public`: redacted, shareable audit data; not resumable.
-- `sanitized`: operational detail with sensitive values removed according to policy.
+- `sanitized`: full-fidelity content intended only for reviewed, synthetic fixtures. It is a storage class, not automatic redaction: non-public payloads are kept as written.
 - `private`: local recovery data, including resumable checkpoints when checkpointing is enabled.
 
 Resume an unfinished run with the same workspace and compatible runtime configuration:
@@ -114,6 +114,10 @@ qre resume latest --workspace . --json
 ```
 
 The runtime refuses a resume when ownership, lease, checkpoint integrity, workspace identity, policy, tool catalog, model, or recovery compatibility checks do not match. See the [H1 crash-resume report](docs/h1-crash-resume-implementation-report.zh-CN.md) and [threat model](docs/h1-crash-resume-threat-model.md) for the precise guarantees.
+
+## SDK outbound diagnostics
+
+`qre run --sdk-diagnostics metadata|structure` (off by default) records client-side evidence of what the model SDK sent: the QRE request, the final adapter options and an allow-listed projection of the serialized HTTP request, correlated per model call and HTTP attempt. `qre diagnose latest|compare|export|skeleton|rebuild` locates the first layer where a constraint was lost, compares runs, exports a package without secrets or bodies, and rebuilds requests offline. Strict replay never calls the SDK; use `diagnose rebuild` to check SDK serialization. See the [SDK outbound diagnostics guide](docs/sdk-outbound-diagnostics.md) and [ADR-009](docs/adr/ADR-009-sdk-outbound-diagnostics.md).
 
 ## Embed in .NET
 
@@ -136,6 +140,7 @@ Treat model output, tool arguments, external tool manifests, replay data, and wo
 - [0.2 preview migration guide](docs/migration-0.2-preview.md) ([中文](docs/migration-0.2-preview.zh-CN.md))
 - [H1 crash-resume implementation report](docs/h1-crash-resume-implementation-report.zh-CN.md)
 - [Tool search](docs/toolsearch.md) and [tool partition matrix](docs/queryruntime-tool-partition-matrix.md)
+- [SDK outbound diagnostics](docs/sdk-outbound-diagnostics.md) ([中文](docs/sdk-outbound-diagnostics.zh-CN.md)) and [acceptance report](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
 - [Package source and provenance](docs/package-source-provenance.md)
 
 Historical roadmaps and completed implementation plans are kept under `docs/archive/`; they are not descriptions of the current runtime.

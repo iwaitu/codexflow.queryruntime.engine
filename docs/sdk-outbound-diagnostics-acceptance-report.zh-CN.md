@@ -1,0 +1,78 @@
+# SDK 出站诊断验收报告
+
+- 日期：2026-09-26
+- 对应计划：[sdk-outbound-diagnostics-plan.zh-CN.md](sdk-outbound-diagnostics-plan.zh-CN.md)（R5）
+- 设计与 P0 证据：[ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md)
+- 验证依赖：VllmChatClient 2.0.25、Microsoft.Extensions.AI 10.10.0、.NET SDK 10.0.401
+- 验证环境：Windows 11 x64（win-x64）。macOS/Linux 的文件权限与 AOT 门禁由既有 CI 矩阵执行，本报告未在这些平台本地复现。
+
+## 1. 交付范围
+
+| 阶段 | 交付 | 位置 |
+|---|---|---|
+| P0 | 可选 `IRuntimeModelAttemptClient` 契约；Runtime 权威序号透传（含 PresentingModelClient 的 Run/Resume）；Provider × API 模式能力矩阵及证据测试；ADR-009 | Protocol、Engine、`Models/Diagnostics/QreTransportCapabilityMatrix.cs` |
+| P1 | 类型化记录、Sink、调用作用域、诊断 Handler、CLI 存储/配额/保留、`--sdk-diagnostics`、run 摘要 | `Models/Diagnostics/`、`Cli/Diagnostics/QreDiagnosticsStore.cs` |
+| P2 | 三层投影（ChatCompletions、Responses、AnthropicMessages）、有界旁路观察、白名单导出 | `QreSemanticProjector.cs`、`QreOutboundDiagnosticHandler.cs`、`QreDiagnosticsExporter.cs` |
+| P3 | 版本化规范化与 §8.1 规则表、跨运行对齐与最早差异、`diagnose latest/inspect/compare` | `QreDiagnosticsAnalyzer.cs`、`QreDiagnosticsComparer.cs` |
+| P4 | 内存终端传输、fixture 格式、补全骨架、离线重建断言、`diagnose skeleton/rebuild` | `QreOfflineModelTransport.cs`、`QreDiagnosticsRebuilder.cs` |
+| P5 | AOT、兼容、性能、安全回归；示例、双语文档、SECURITY/威胁模型更新 | `examples/SdkOutboundDiagnostics/`、`docs/` |
+
+## 2. 验收矩阵（计划 §13）
+
+| 类别 | 已执行测试 | 结果 |
+|---|---|---|
+| 关闭兼容 | `Off_ProducesNoRecordsNoScopesAndNoContentWrapping`、`DiagnosticsOff_KeepsRunOutputShapeAndCreatesNoDiagnosticFiles`、全部既有单元测试 | 通过；Off 不建文件、不包装正文，run JSON 形状不变 |
+| 关联 | `SharedHttpClient_ConcurrentCallsNeverCrossCorrelate`（12 并发）、`AsyncLocalBridge_DoesNotLeakAcrossYieldsToTheConsumer`、`SendWithoutModelCallScope_IsMarkedUncorrelated`、`ResponseStream_EarlyDisposeIsRecordedOnceWithReadBytes` | 通过 |
+| 模型尝试 | `RuntimeModelAttemptContractTests`（facade Run/Resume、同 Step 两次可重试尝试、旧客户端降级、展示事件一致、取消）、`RuntimeRetry_CreatesNewModelCallIdsWithReducerOrdinals`、`LegacyEntryPoint_MarksRuntimeAttemptOrdinalUnavailable` | 通过；跨恢复序号重现已验证（见 ADR-009 E10） |
+| 错误阶段 | `BeforeHeadersTransportError_IsClassifiedByType`、`HttpStatusFailure_IsClassifiedFromHandlerEvidenceNotMessage`、`ResponseStream_ReadErrorAndEofAreDistinguished`、`HttpClientTimeout_IsNotMisreportedAsCallerCancellation`、`CallerCancellation_IsClassifiedFromUpstreamToken`、`Classification_CancellationAndTimeoutRaceIsReportedAsRace` | 通过；超时由适配器凭类型链分类，Handler 报 unknown |
+| 所有权 | `Cell_MatchesLockedSdkBehavior`（Dispose 释放注入 HttpClient）、示例 `hosts`（共享 Handler 在 Dispose 后仍可用） | 通过；共享 HttpClient 实例标为 unsupported |
+| 尝试 | `StreamingPath_DoesNotRetryHttpFailure...`、`RetryHandlerAbove_ResendsOriginalContentAndEachAttemptIsObserved` | 通过；覆盖声明为 handler_visible |
+| 请求等价 | `OutboundTransportEquivalenceTests`：HTTP/1.1 真实 SDK（chunked、无 Content-Length、字节一致）、HTTP/2 h2c（无 Content-Length/Transfer-Encoding、字节一致）、已知长度保持、重发、写入中取消 | 通过 |
+| 流行为 | EOF/提前释放/取消/读错误区分；HTTP、流、模型终态分别记录 | 通过；SSE 多片段由真实 SDK 解析路径覆盖 |
+| 脱敏 | `Structure_ProjectsRequestWithoutSensitiveMaterial`（Header/URL userinfo/query/path/host/正文/schema/描述/错误体/请求 ID/Cookie 金丝雀）、CLI 导出金丝雀、`Export_KeepsCleanRecordsIntactAndDropsUnknownVocabulary` | 通过；既有 Runtime/CLI 原始错误消息列为已知风险 |
+| 缺失语义 | `ReorderedToolsAndMissingEvidenceAreNeverReportedAsConsistent`、`CaptureLimit_OmitsStructureButSendsRequestIntact`、`DeepOrInvalidJson_FailsProjectionOnly`、`UnsupportedContent_IsNotWrappedAndReportsUnsupported` | 通过 |
+| API 规则 | 27 个能力格证据测试、`KnownSdkLimitations_RemainUnexpectedChangesWithTags` | 通过 |
+| 比较 | 空 Tools + RequiredToolName、宿主漏映射、数值精度、数组重排、跨运行最早差异 | 通过 |
+| 模型身份 | `ModelIdentity_DescriptorDefaultIsEquivalentAndUnknownDefaultIsNotComparable`、导出后模型明文不出现 | 通过 |
+| 调用前拒绝 | `NoToolProfileWithRequiredTool_IsRejectedBeforeAnyModelOrHttpCall`（ArgumentException、零调用、model_call_not_started）、`StepToolSelectionOmittingRequiredTool_FailsBeforeAnyModelOrHttpCall` | 通过 |
+| 工具名大小写 | `CaseDemo_ReadonlyRequiredToolRunsThroughCliSdkAndOfflineTransport`（两组） | 通过；见第 4 节 |
+| 超时类型证据 | 同“错误阶段” | 通过 |
+| 重建 | `ExportCompareSkeletonAndRebuild_WorkOfflineAndStaySafe`、`DefectiveOptionsFactoryDemo_...`、`HandWrittenInputsWithOmittedOptionalFields_KeepSafeDefaults` | 通过；骨架被阻断（exit 2），HTTP 请求均为内存终端 |
+| 资源 | `Store_QueueFullDropsRecordsAndReportsIncomplete`、`Store_RunQuotaAndDiskFailureNeverBreakTheModelCall`、`OversizedRecord_IsReducedToAnOmittedEnvelope`、`SinkFailuresAndDrops_NeverAffectTheModelCall` | 通过 |
+| 输入安全 | `Reader_RejectsUnsafeBundleEntries`（路径越界、嵌套、非白名单条目）、`Reader_RejectsCompressionBombsOversizeAndFutureSchemas` | 通过 |
+| 兼容恢复 | `CorruptDiagnosticSidecar_DoesNotAffectStrictReplay`、`Reader_ReportsTruncatedTailAndSequenceGapsWithoutFailing`、`Prune_AppliesRetentionAndRunCountOnlyInsideTheRoot` | 通过 |
+| 发布 | Native AOT 门禁、AOT smoke、原生二进制运行 diagnose/rebuild、性能测试 | 通过；见第 3 节 |
+
+单元测试：535 个，520 通过，15 失败。15 个失败与改造前基线完全相同，均为本机 Windows 环境缺少 `sh`/`rg`/git 沙箱条件的既有测试（QreCliSmokeTests 的 git/sandbox 用例、ExternalStdioToolPack、LocalProcessSandboxRunner、StandaloneQueryRuntimeEngine 各一组），与本改造无关。新增诊断相关测试 104 个全部通过。示例离线检查 `test_sdk_outbound_diagnostics` 通过。
+
+## 3. 发布门禁
+
+- Native AOT：`scripts/qre-aot-gate.sh win-x64 Release` 通过，**无 trim/AOT 警告**，未新增豁免。首次运行因本机 PATH 缺少 `vswhere.exe` 在链接阶段失败，补充 VS Installer 目录后通过（环境问题，非代码问题）。
+- AOT 原生二进制：`qre run --sdk-diagnostics structure`、`diagnose latest/inspect/export/skeleton/rebuild` 均实际运行；两个示例 fixture 在原生二进制中分别得到 exit 1 与 exit 0。`scripts/qre-aot-smoke.sh` 通过。
+- 性能（Release，真实 SDK + 内存传输，预热 60 次，3 轮 × 300 次，取中位 p95）：
+
+| 模式 | p95 | p95 额外耗时 | 阈值 | 每次调用分配 |
+|---|---|---|---|---|
+| Off（基线） | 0.171 ms | - | - | ≈47 KB |
+| Metadata | 0.273 ms | 0.102 ms | max(1 ms, 5%) | ≈73 KB |
+| Structure | 0.379 ms | 0.207 ms | max(2 ms, 10%) | ≈92 KB |
+
+  基线本身不足 1 ms，因此适用绝对阈值；相对基线的比例开销较大（约 60%/120%），在真实网络调用（数百毫秒量级）下可忽略，但报告如实列出。
+
+## 4. 与计划预期不同的事实
+
+1. **流式文本不上报结束原因（E6）**：锁定 SDK 的三种 API 流式路径只在工具调用时设置 `FinishReason`。即使离线 fixture 在线上发送了 `finish_reason: stop`/`response.completed`/`end_turn`，适配器仍会发出 `missing_provider_finish_reason` 并以 Unknown 结束。计划要求“不能依赖流结束但没有 finish reason 的降级路径”；fixture 已包含合法结束标志，但 SDK 丢弃它，这一点无法在不修改 SDK 的前提下满足。大小写演示中第 1、3 次调用的正常完成因此经由该降级路径；第 2 次（工具调用）有真实结束原因。已列为后续 SDK 任务。
+2. **共享 HttpClient 不受支持（E3）**：SDK Dispose 会释放注入客户端并写入默认 Header。按计划不绕过 Dispose，改为支持“共享 Handler + 每客户端独立 HttpClient（disposeHandler: false）”。
+3. **SDK 丢失显式约束（E9）**：Gemini chat 丢失 `max_tokens`、`response_format`、`tool_choice`；DeepSeek 丢失 `response_format`。诊断将其报告为 adapter → HTTP 的 unexpected_change 并标注 `known_sdk_limitation`，不视为正常转换。
+4. **大小写演示的 HTTP 事实（E7）**：离线真实 SDK 截获表明，`tool_choice.function.name` 保留 `QRE_READ_FILE` 原样，而声明名为 `qre_read_file`；诊断在 Runtime → adapter 标记 `case_only_mismatch`，并在调用备注 `http_preserves_case_only_mismatch`。供应商是否接受或忽略该差异未验证，不在首版结论内。
+5. **可重试异常**：适配器不产生可重试的 RuntimeModelClientException，因此 CLI 真实路径下不会出现同 Step 多次模型尝试；该行为用自定义 IChatClient 抛出类型化可重试异常的测试覆盖。
+
+## 5. 支持的组合与未覆盖边界
+
+- 支持（verified）：9 个默认 Provider 中，除 Gemini 仅 ChatCompletions 外，其余 Provider × {ChatCompletions, Responses, AnthropicMessages} 共 25 格；Gemini 的 Responses/Anthropic 两格为 unsupported。其他 SDK 版本全部降为 unverified。
+- 未覆盖：真实供应商服务对照；Handler 之下的重定向、认证重试与网络重传；响应正文；TLS/代理之后的字节；`ChatClientExperimentalModelClient`；崩溃前未落盘的内存缓冲；macOS/Linux 权限在本机未复现（由 CI 覆盖）。
+- 范围外已知问题（已登记为后续任务，未在本次修改）：Runtime 普通异常分支保留原始 `ex.Message`（E5）；共享 `ChatOptions` 的所有权/克隆语义；Runtime 接受大小写变体后将 `RequiredToolName` 解析为声明的 CanonicalName；SDK 注入客户端的所有权开关（E3）；SDK 流式文本结束原因（E6）；Gemini/DeepSeek 约束丢失（E9）。
+
+## 6. 回退
+
+诊断默认关闭；移除 `--sdk-diagnostics` 或传 `off` 即恢复原行为。诊断 sidecar 损坏、缺失或过期不影响既有审计回放与 checkpoint 恢复（已测试）。

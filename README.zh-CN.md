@@ -104,7 +104,7 @@ thinking 默认使用 `auto`：启用工具或模型 JSON 输出时会关闭 thi
 新的 v2 运行数据写入 workspace 下的 `.qre/v2/`：
 
 - `public`：可分享的脱敏审计数据，不可用于恢复。
-- `sanitized`：按策略移除敏感值后的运行细节。
+- `sanitized`：仅用于已审查、人工构造 fixture 的完整保真内容。它是存储类别而非自动脱敏：非 public 内容按原样保存。
 - `private`：本地恢复数据；启用检查点后包含可恢复检查点。
 
 使用相同 workspace 和兼容的 Runtime 配置恢复未完成运行：
@@ -114,6 +114,10 @@ qre resume latest --workspace . --json
 ```
 
 当 ownership、lease、检查点完整性、workspace identity、策略、工具目录、模型或 recovery compatibility 校验不一致时，Runtime 会拒绝恢复。精确保证请参阅 [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)和[威胁模型](docs/h1-crash-resume-threat-model.md)。
+
+## SDK 出站诊断
+
+`qre run --sdk-diagnostics metadata|structure`（默认关闭）记录模型 SDK 实际发出内容的客户端证据：QRE 请求、适配器最终选项，以及已序列化 HTTP 请求的白名单投影，并按模型调用和 HTTP 尝试关联。`qre diagnose latest|compare|export|skeleton|rebuild` 可定位约束首次丢失的层、比较两次运行、导出不含密钥与正文的诊断包，并离线重建请求。严格回放不会调用 SDK；验证 SDK 序列化请使用 `diagnose rebuild`。详见 [SDK 出站诊断指南](docs/sdk-outbound-diagnostics.zh-CN.md)与 [ADR-009](docs/adr/ADR-009-sdk-outbound-diagnostics.md)。
 
 ## 嵌入 .NET 应用
 
@@ -136,6 +140,7 @@ qre resume latest --workspace . --json
 - [0.2 preview 迁移指南](docs/migration-0.2-preview.zh-CN.md)（[English](docs/migration-0.2-preview.md)）
 - [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)
 - [工具搜索](docs/toolsearch.md)与[工具分区矩阵](docs/queryruntime-tool-partition-matrix.md)
+- [SDK 出站诊断](docs/sdk-outbound-diagnostics.zh-CN.md)（[English](docs/sdk-outbound-diagnostics.md)）与[验收报告](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
 - [包来源与溯源](docs/package-source-provenance.md)
 
 历史路线图和已完成实施计划保存在 `docs/archive/`，不应视为当前 Runtime 行为说明。

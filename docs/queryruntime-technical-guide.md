@@ -894,6 +894,9 @@ Not guaranteed:
 - Cross-runtime-version determinism: a different runtime version may legitimately
   change the canonical projection.
 - Live behavior: see live rerun below.
+- SDK serialization: strict replay never calls the model SDK, so a passing replay does not
+  prove the current SDK builds the same HTTP request. Use `qre diagnose rebuild` (offline,
+  in-memory transport) for that; see [SDK outbound diagnostics](sdk-outbound-diagnostics.md).
 
 ##### Live rerun is separate from strict replay
 
@@ -964,6 +967,16 @@ bytes. Single-process writers share the total storage quota. Write failures use
 always fail closed for durable recovery; failed runs
 are eligible for terminal-only GC. Unknown/future schemas, non-terminal runs, public
 summaries, and any integrity conflict are rejected for replay.
+
+#### SDK outbound diagnostics
+
+`--sdk-diagnostics metadata|structure` (off by default) records the Runtime request, the
+final adapter options and an allow-listed projection of the serialized HTTP request for each
+model call, correlated with the Runtime's authoritative model attempt ordinal and each
+handler-visible HTTP attempt, under `.qre/v2/diagnostics/`. `qre diagnose` inspects,
+compares, exports, converts to fixture skeletons and rebuilds offline. See
+[sdk-outbound-diagnostics.md](sdk-outbound-diagnostics.md) and
+[ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md).
 
 ### 5.9 Diff output
 

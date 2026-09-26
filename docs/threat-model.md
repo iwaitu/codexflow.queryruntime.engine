@@ -75,6 +75,14 @@ verification, but it is not a hostile multi-tenant isolation boundary.
   Private traces use an isolated directory, owner-only Windows ACLs or Unix
   `0700/0600` modes, and a bounded retention policy.
 
+- SDK outbound diagnostics (off by default) record typed, allow-listed projections only:
+  no headers, URLs, bodies, exception messages or plaintext tool/model names. Names become
+  ordinal, case-sensitive package-local aliases whose mapping stays in memory. The sidecar
+  is owner-only with bounded queue, per-record/run/total quotas and retention; export
+  re-projects and re-aliases records and excludes the local index, checkpoints and traces.
+  Diagnostic readers reject path escapes, links, oversized or unexpected zip entries,
+  compression bombs and unknown schemas. See ADR-009.
+
 ## Explicit Non-Goals
 
 - The local process runner does not provide container, VM, gVisor, Kata, or
@@ -97,6 +105,11 @@ verification, but it is not a hostile multi-tenant isolation boundary.
   make trace directories suitable for untrusted multi-tenant storage.
 - Tools that read files can expose private repository content to a provider if
   the model client is configured for live LLM calls.
+- The locked model SDK puts provider error bodies into exception messages; the Runtime's
+  generic `model_stream_failed` error keeps `Exception.Message` and CLI output may print it.
+  Diagnostics never store it, but this path is not redacted (tracked separately).
+- Diagnostic records are client-side, handler-visible observations. They are not proof of
+  network bytes or server receipt, and a missing record does not prove no request was sent.
 
 ## Next Hardening Steps
 
