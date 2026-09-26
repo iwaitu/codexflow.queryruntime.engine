@@ -55,6 +55,9 @@ internal sealed record QreV2RunOutput(
     public int AttemptOrdinal { get; init; }
 
     public string? CheckpointPath { get; init; }
+
+    /// <summary>Optional outbound SDK diagnostics summary; absent when diagnostics are off.</summary>
+    public CodexFlow.QueryRuntime.Cli.Diagnostics.QreRunDiagnosticsSummary? Diagnostics { get; init; }
 }
 
 internal sealed record QreV2ReplayOutput(

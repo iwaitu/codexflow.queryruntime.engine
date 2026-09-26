@@ -6,9 +6,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using CodexFlow.QueryRuntime.Abstractions;
+using CodexFlow.QueryRuntime.Cli.Diagnostics;
 using CodexFlow.QueryRuntime.Engine.V2;
 using CodexFlow.QueryRuntime.Experimental;
 using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Models.Diagnostics;
 using CodexFlow.QueryRuntime.Protocol;
 using CodexFlow.QueryRuntime.Sandbox.Docker;
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
@@ -18,6 +20,13 @@ return await QreCli.RunAsync(args, CancellationToken.None).ConfigureAwait(false)
 
 internal static class QreCli
 {
+    /// <summary>
+    /// Test-host transport replacement for offline CLI verification. It replaces
+    /// only the innermost HTTP transport; tool validation, option mapping and the
+    /// SDK are unchanged. Not reachable from command-line arguments.
+    /// </summary>
+    internal static Func<QreModelApiMode, HttpMessageHandler>? TestTransportFactory { get; set; }
+
     public static async Task<int> RunAsync(string[] args, CancellationToken ct)
     {
         if (args.Length == 0 || args[0] is "-h" or "--help")
@@ -45,6 +54,7 @@ internal static class QreCli
             "sandbox" => await Sandbox(args[1..], ct).ConfigureAwait(false),
             "doctor" => await Doctor(args[1..], ct).ConfigureAwait(false),
             "init" => Init(args[1..]),
+            "diagnose" => await QreDiagnosticsCommands.RunAsync(args[1..], ct).ConfigureAwait(false),
             _ => Fail($"Unknown command: {args[0]}")
         };
     }
@@ -190,6 +200,13 @@ internal static class QreCli
                     break;
                 case "--tool-search":
                     options.ToolSearch.Enabled = true;
+                    break;
+                case "--sdk-diagnostics":
+                    if (++i >= args.Length || !TryParseSdkDiagnosticsMode(args[i], out var sdkDiagnostics))
+                    {
+                        return Fail("--sdk-diagnostics requires off, metadata, or structure.");
+                    }
+                    options.SdkDiagnostics = sdkDiagnostics;
                     break;
                 case "--tool-search-top-k":
                     if (++i >= args.Length || !int.TryParse(args[i], out var toolSearchTopK) || toolSearchTopK <= 0)
@@ -347,22 +364,38 @@ internal static class QreCli
             return Fail(ex.Message);
         }
 
+        QreCliDiagnosticsSession? diagnosticsSession = null;
+        string? diagnosticsFailure = null;
+        if (options.SdkDiagnostics != QreOutboundDiagnosticMode.Off)
+        {
+            diagnosticsSession = QreCliDiagnosticsSession.TryStart(
+                resolvedWorkspace,
+                options.SdkDiagnostics,
+                out diagnosticsFailure);
+        }
+
         IRuntimeModelClient? modelClient;
         try
         {
-            modelClient = CreateV2ModelClient(options);
+            modelClient = CreateV2ModelClient(options, diagnosticsSession);
         }
         catch (QreModelSelectionException ex)
         {
+            await CompleteDiagnosticsAsync(diagnosticsSession, diagnosticsFailure, options.SdkDiagnostics, "model_client_not_built")
+                .ConfigureAwait(false);
             return Fail(ex.Message);
         }
 
         if (modelClient == null)
         {
+            await CompleteDiagnosticsAsync(diagnosticsSession, diagnosticsFailure, options.SdkDiagnostics, "model_client_not_built")
+                .ConfigureAwait(false);
             return Fail(
                 "No v2 model client configured. Provide --response for static mode, or set --api-url, --api-key, and --model.");
         }
 
+        string? diagnosticsEntryOutcome = null;
+        var diagnosticsCompleted = false;
         try
         {
             var sessionId = resumeCheckpoint?.Request.SessionId ?? new RuntimeSessionId($"qre-cli-{runSuffix}");
@@ -420,6 +453,7 @@ internal static class QreCli
                     ? null
                     : new CliV2ToolApproval(options.ApprovalReason)
             };
+            diagnosticsSession?.LinkLocalRun(auditStore.RunDirectory, loopRequest.Attempt?.AttemptId.Value);
             var result = resumeCheckpoint == null
                 ? await runtime.RunAsync(
                     new RuntimeRunRequest(loopRequest)
@@ -442,6 +476,12 @@ internal static class QreCli
                 result,
                 options.Trace,
                 ct).ConfigureAwait(false);
+            diagnosticsCompleted = true;
+            var diagnosticsSummary = await CompleteDiagnosticsAsync(
+                diagnosticsSession,
+                diagnosticsFailure,
+                options.SdkDiagnostics,
+                entryOutcome: null).ConfigureAwait(false);
 
             if (options.Output.Json)
             {
@@ -481,7 +521,8 @@ internal static class QreCli
                     ParentAttemptId = result.Attempt?.ParentAttemptId?.Value,
                     RootAttemptId = result.Attempt?.RootAttemptId.Value,
                     AttemptOrdinal = result.Attempt?.Ordinal ?? 0,
-                    CheckpointPath = checkpointStore?.CheckpointPath
+                    CheckpointPath = checkpointStore?.CheckpointPath,
+                    Diagnostics = diagnosticsSummary
                 });
             }
             else
@@ -513,9 +554,26 @@ internal static class QreCli
                 {
                     Console.WriteLine($"checkpoint: {checkpointStore.CheckpointPath}");
                 }
+                if (diagnosticsSummary != null)
+                {
+                    Console.WriteLine($"sdk_diagnostics: {diagnosticsSummary.Mode} status={diagnosticsSummary.Status} model_calls={diagnosticsSummary.ModelCalls} http_attempts={diagnosticsSummary.HttpAttempts}");
+                    Console.WriteLine($"sdk_diagnostics_scope: {diagnosticsSummary.ObservationScope}; transport={diagnosticsSummary.TransportCapture}; handler-visible attempts only");
+                    if (diagnosticsSummary.RunDirectory != null)
+                    {
+                        Console.WriteLine($"sdk_diagnostics_run: {diagnosticsSummary.RunDirectory}");
+                    }
+                    if (diagnosticsSummary.EvidenceIncomplete)
+                    {
+                        Console.WriteLine("sdk_diagnostics_evidence: incomplete (missing records do not mean no request was sent)");
+                    }
+                }
             }
 
             return result.Status == RuntimeTurnStatus.Completed ? 0 : 1;
+        }
+        catch (ArgumentException) when (MarkEntryRejected(diagnosticsSession, ref diagnosticsEntryOutcome))
+        {
+            throw;
         }
         catch (RuntimeResumeException ex)
         {
@@ -528,13 +586,104 @@ internal static class QreCli
         finally
         {
             (modelClient as IDisposable)?.Dispose();
+            if (!diagnosticsCompleted)
+            {
+                await CompleteDiagnosticsAsync(
+                    diagnosticsSession,
+                    diagnosticsFailure,
+                    options.SdkDiagnostics,
+                    diagnosticsEntryOutcome).ConfigureAwait(false);
+            }
         }
     }
 
-    private static IRuntimeModelClient? CreateV2ModelClient(QreRunOptions options)
+    /// <summary>
+    /// Exception filter that records a pre-sampling Runtime rejection for the
+    /// diagnostics manifest without catching the exception.
+    /// </summary>
+    private static bool MarkEntryRejected(QreCliDiagnosticsSession? session, ref string? entryOutcome)
+    {
+        if (session != null && session.Diagnostics.GetCounters().ModelCallsStarted == 0)
+        {
+            entryOutcome = "runtime_initial_validation_rejected";
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Completes best-effort diagnostics. Returns null when diagnostics were not
+    /// requested, so the run JSON keeps its existing shape.
+    /// </summary>
+    private static async Task<QreRunDiagnosticsSummary?> CompleteDiagnosticsAsync(
+        QreCliDiagnosticsSession? session,
+        string? failure,
+        QreOutboundDiagnosticMode mode,
+        string? entryOutcome)
+    {
+        if (mode == QreOutboundDiagnosticMode.Off)
+        {
+            return null;
+        }
+        if (session == null)
+        {
+            return new QreRunDiagnosticsSummary
+            {
+                Mode = mode == QreOutboundDiagnosticMode.Structure ? "structure" : "metadata",
+                Status = "unavailable",
+                TransportCapture = "none",
+                EvidenceIncomplete = true,
+                ReasonCode = failure ?? "diagnostic_store_unavailable"
+            };
+        }
+        try
+        {
+            return await session.CompleteAsync(entryOutcome).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new QreRunDiagnosticsSummary
+            {
+                Mode = mode == QreOutboundDiagnosticMode.Structure ? "structure" : "metadata",
+                Status = "incomplete",
+                RunDirectory = session.Store.RunDirectory,
+                TransportCapture = session.Coverage.TransportCapture,
+                EvidenceIncomplete = true,
+                ReasonCode = "diagnostic_completion_failed"
+            };
+        }
+        finally
+        {
+            await session.Store.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static bool TryParseSdkDiagnosticsMode(string value, out QreOutboundDiagnosticMode mode)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "off":
+                mode = QreOutboundDiagnosticMode.Off;
+                return true;
+            case "metadata":
+                mode = QreOutboundDiagnosticMode.Metadata;
+                return true;
+            case "structure":
+                mode = QreOutboundDiagnosticMode.Structure;
+                return true;
+            default:
+                mode = QreOutboundDiagnosticMode.Off;
+                return false;
+        }
+    }
+
+    private static IRuntimeModelClient? CreateV2ModelClient(
+        QreRunOptions options,
+        QreCliDiagnosticsSession? diagnostics)
     {
         if (!string.IsNullOrWhiteSpace(options.Provider.StaticResponse))
         {
+            // A static model has no SDK or HTTP transport to observe.
+            diagnostics?.SetCoverage(QreCliDiagnosticsSession.StaticModelCoverage(options.SdkDiagnostics));
             return new StaticRuntimeModelClient(options.Provider.StaticResponse);
         }
 
@@ -549,19 +698,39 @@ internal static class QreCli
             return null;
         }
 
-        return new MeaiRuntimeModelClient(
-            QreVllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode),
-            request => new ChatOptions
-            {
-                Temperature = request.Parameters.Temperature is { } temperature
-                    ? (float)temperature
-                    : null,
-                MaxOutputTokens = request.Parameters.MaxOutputTokens,
-                ResponseFormat = request.Parameters.RequireJsonObject
-                    ? ChatResponseFormat.Json
-                    : null
-            });
+        if (diagnostics == null && TestTransportFactory == null)
+        {
+            return new MeaiRuntimeModelClient(
+                QreVllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode),
+                CreateCliChatOptions);
+        }
+
+        var (chatClient, target) = QreVllmChatClientFactory.CreateOwned(
+            apiUrl,
+            apiKey,
+            model,
+            apiMode,
+            diagnostics?.Diagnostics,
+            TestTransportFactory);
+        diagnostics?.SetCoverage(QreCliDiagnosticsSession.ProviderCoverage(target, options.SdkDiagnostics));
+        return new MeaiRuntimeModelClient(chatClient, CreateCliChatOptions, diagnostics?.Diagnostics, target);
     }
+
+    /// <summary>
+    /// The CLI's options factory. It returns a new instance per call because the
+    /// adapter assigns Tools and ToolMode in place.
+    /// </summary>
+    internal static ChatOptions CreateCliChatOptions(RuntimeModelRequest request)
+        => new()
+        {
+            Temperature = request.Parameters.Temperature is { } temperature
+                ? (float)temperature
+                : null,
+            MaxOutputTokens = request.Parameters.MaxOutputTokens,
+            ResponseFormat = request.Parameters.RequireJsonObject
+                ? ChatResponseFormat.Json
+                : null
+        };
 
     private static string BuildCliRecoveryCompatibilityId(
         QreRunOptions options,
@@ -3615,6 +3784,8 @@ internal static class QreCli
         PrintDoctorHelp();
         Console.WriteLine();
         PrintInitHelp();
+        Console.WriteLine();
+        QreDiagnosticsCommands.PrintHelp();
     }
 
     private static void PrintRunHelp()
@@ -3646,6 +3817,8 @@ internal static class QreCli
         Console.WriteLine("  --json                  Print CLI result as JSON.");
         Console.WriteLine("  --stream                Stream human-readable assistant text as it is produced.");
         Console.WriteLine("  --jsonl-stream          Reserved for future machine-readable event streaming.");
+        Console.WriteLine("  --sdk-diagnostics <m>   off (default), metadata, or structure. Records client-side SDK");
+        Console.WriteLine("                          outbound evidence under .qre/v2/diagnostics; see qre diagnose --help.");
     }
 
     private static void PrintTraceHelp()
@@ -3954,6 +4127,8 @@ internal static class QreCli
         public string? RequiredToolName { get; set; }
 
         public string? ApprovalReason { get; set; }
+
+        public QreOutboundDiagnosticMode SdkDiagnostics { get; set; } = QreOutboundDiagnosticMode.Off;
 
         public string? ResumeCheckpointPath { get; set; }
     }
