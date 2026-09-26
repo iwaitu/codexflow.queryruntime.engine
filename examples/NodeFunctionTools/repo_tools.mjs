@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Example Node.js functions exposed to QRE as external tools.
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main, qreTool, resolveWorkspacePath } from "./qre_node_tool.mjs";
@@ -33,6 +33,9 @@ qreTool(
   async (args) => {
     const { workspacePath, extension = ".js" } = args;
     const maxFiles = Number(args.maxFiles ?? args.max_files ?? 1000);
+    if (!Number.isInteger(maxFiles) || maxFiles < 1 || maxFiles > 5000) {
+      throw new Error("max_files must be an integer between 1 and 5000");
+    }
     const root = resolve(workspacePath);
     const normalizedExtension = extension ? (extension.startsWith(".") ? extension : `.${extension}`) : "";
     const files = [];
@@ -80,7 +83,10 @@ qreTool(
   async (args) => {
     const { workspacePath, path } = args;
     const maxChars = Number(args.maxChars ?? args.max_chars ?? 4000);
-    const target = resolveWorkspacePath(workspacePath, path);
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 20000) {
+      throw new Error("max_chars must be an integer between 1 and 20000");
+    }
+    const target = await resolveWorkspacePath(workspacePath, path);
     const text = await readFile(target, "utf8");
     return {
       path,
@@ -118,13 +124,7 @@ async function* walkFiles(root) {
         continue;
       }
 
-      try {
-        if ((await stat(path)).isFile()) {
-          yield path;
-        }
-      } catch {
-        continue;
-      }
+      // Skip symbolic links and special files.
     }
   }
 }

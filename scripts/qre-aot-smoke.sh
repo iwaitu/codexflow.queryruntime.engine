@@ -52,7 +52,7 @@ RUN_WS="${SCRATCH}/run"
 mkdir -p "${RUN_WS}"
 "${QRE_BIN}" run --workspace "${RUN_WS}" --trace-data sanitized --response "offline smoke" --json "analyze this repo" > "${SCRATCH}/run.json"
 cat "${SCRATCH}/run.json"; echo
-[[ "$(json_str "${SCRATCH}/run.json" type)" == "qre.run.completed" ]] || fail "run did not report qre.run.completed"
+[[ "$(json_str "${SCRATCH}/run.json" type)" == "qre.v2.run.completed" ]] || fail "run did not report qre.v2.run.completed"
 
 echo
 echo "== qre run --runtime v2 (offline) =="
@@ -88,7 +88,7 @@ echo
 echo "== qre replay latest (recorded) =="
 "${QRE_BIN}" replay latest --workspace "${RUN_WS}" --json > "${SCRATCH}/replay.json"
 cat "${SCRATCH}/replay.json"; echo
-[[ "$(json_str "${SCRATCH}/replay.json" type)" == "qre.replay.completed" ]] || fail "recorded replay did not complete"
+[[ "$(json_str "${SCRATCH}/replay.json" type)" == "qre.v2.replay.completed" ]] || fail "recorded replay did not complete"
 
 echo
 echo "== qre replay latest --strict (determinism) =="
@@ -118,7 +118,7 @@ echo "tool_executions:   ${TOOL_EXECS}"
 echo "replay_digest #1:  ${D1}"
 echo "replay_digest #2:  ${D2}"
 
-[[ "${MODE}" == "strict-replay" ]] || fail "strict replay mode was '${MODE}'"
+[[ "${MODE}" == "strict-recorded-replay" ]] || fail "strict replay mode was '${MODE}'"
 [[ "${PROVIDER_CALLS}" == "false" ]] || fail "strict replay reported provider calls"
 [[ "${TOOL_EXECS}" == "false" ]] || fail "strict replay reported tool executions"
 [[ -n "${D1}" ]] || fail "strict replay produced no replayDigest"

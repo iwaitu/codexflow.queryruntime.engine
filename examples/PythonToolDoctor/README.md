@@ -6,11 +6,13 @@ provider response, and requires one read-only tool call before the model answers
 The example runs:
 
 ```bash
-qre run --profile readonly --required-tool qre_list_files --stream ...
+qre run --profile readonly --required-tool qre_list_files --trace-data sanitized --stream ...
 ```
 
-After the run, it reads `qre trace latest --jsonl` and verifies that the trace
-contains a `qre_list_files` tool call.
+After the run, it uses `qre replay latest --strict --json` to validate the v2
+audit, successful completion, and nonzero tool count without executing anything.
+The successful `--required-tool qre_list_files` run establishes tool identity.
+Sanitized traces retain run content locally; do not commit or share them blindly.
 
 ## Provider Configuration
 

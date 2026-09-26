@@ -85,6 +85,8 @@ def main() -> int:
         "qre_list_files",
         "--max-rounds",
         args.max_rounds,
+        "--trace-data",
+        "sanitized",
         "--stream",
         args.prompt,
     ]
@@ -92,18 +94,20 @@ def main() -> int:
     if exit_code != 0:
         return exit_code
 
-    trace_events = read_latest_trace(args.qre, workspace, env)
-    tool_names = [
-        event.get("payload", {}).get("ToolName")
-        for event in trace_events
-        if event.get("eventType") == "tool.call.requested"
-    ]
-    if "qre_list_files" not in tool_names:
-        print("Expected qre_list_files tool call was not found in the latest trace.", file=sys.stderr)
+    replay = read_latest_replay(args.qre, workspace, env)
+    # A successful required-tool run guarantees qre_list_files was called.
+    # Let QRE validate the versioned audit and any blob payloads rather than
+    # interpreting raw storage records in this host.
+    if (replay.get("type") != "qre.v2.replay.completed"
+            or replay.get("status") != "Completed"
+            or replay.get("totalToolCalls", 0) < 1
+            or replay.get("providerCalls") is not False
+            or replay.get("toolExecutions") is not False):
+        print("Expected a completed v2 replay with a required tool call.", file=sys.stderr)
         return 1
 
     print()
-    print("Verified tool call from trace: qre_list_files")
+    print("Verified required tool run by strict replay: qre_list_files")
     return 0
 
 
@@ -173,36 +177,33 @@ def run_streaming(command: list[str], env: dict[str, str]) -> int:
     with subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None,
         text=True,
         bufsize=1,
         env=env,
     ) as process:
         assert process.stdout is not None
-        assert process.stderr is not None
         while True:
             chunk = process.stdout.read(1)
             if not chunk:
                 break
             print(chunk, end="", flush=True)
 
-        stderr = process.stderr.read()
         process.wait()
-        if process.returncode != 0:
-            print(stderr, file=sys.stderr, end="")
         return process.returncode
 
 
-def read_latest_trace(qre: str, workspace: Path, env: dict[str, str]) -> list[dict]:
+def read_latest_replay(qre: str, workspace: Path, env: dict[str, str]) -> dict:
     result = subprocess.run(
-        [qre, "trace", "latest", "--workspace", str(workspace), "--jsonl"],
+        [qre, "replay", "latest", "--workspace", str(workspace), "--strict", "--json"],
         check=True,
+        timeout=300,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
     )
-    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    return json.loads(result.stdout)
 
 
 if __name__ == "__main__":

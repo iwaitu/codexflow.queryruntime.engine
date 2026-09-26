@@ -14,11 +14,13 @@ from qre_function_tool import main, qre_tool
     capabilities=["read_fs"],
 )
 def count_files(workspace_path: str, extension: str = ".py", max_files: int = 1000) -> dict[str, object]:
+    if not isinstance(max_files, int) or isinstance(max_files, bool) or not 1 <= max_files <= 5000:
+        raise ValueError("max_files must be an integer between 1 and 5000")
     root = Path(workspace_path)
     files = [
         path.relative_to(root).as_posix()
         for path in root.rglob(f"*{extension}")
-        if path.is_file()
+        if path.is_file() and not path.is_symlink()
     ][:max_files]
     return {
         "extension": extension,
@@ -37,7 +39,10 @@ def read_text_file(workspace_path: str, path: str, max_chars: int = 4000) -> dic
     target = (root / path).resolve()
     if root not in target.parents and target != root:
         raise ValueError(f"Path escapes workspace: {path}")
-    text = target.read_text(encoding="utf-8")[:max_chars]
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or not 1 <= max_chars <= 20000:
+        raise ValueError("max_chars must be an integer between 1 and 20000")
+    with target.open(encoding="utf-8") as stream:
+        text = stream.read(max_chars)
     return {
         "path": path,
         "chars": len(text),

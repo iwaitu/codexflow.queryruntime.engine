@@ -69,19 +69,27 @@ echo
 # TrimmerSingleWarn=false reports every trim/AOT warning individually instead of
 # collapsing them into one per-assembly warning, so the allowlist can reason
 # about each warning rather than an opaque rollup.
+set +e
 dotnet publish "${PROJECT}" \
   -c "${CONFIGURATION}" \
   -r "${RID}" \
   -p:PublishAot=true \
   -p:SelfContained=true \
   -p:TrimmerSingleWarn=false \
-  "${PUBLISH_PROPERTIES[@]}" \
+  ${PUBLISH_PROPERTIES[@]+"${PUBLISH_PROPERTIES[@]}"} \
   2>&1 | tee "${LOG_FILE}"
 
-PUBLISH_STATUS="${PIPESTATUS[0]}"
+PIPE_STATUSES=("${PIPESTATUS[@]}")
+set -e
+PUBLISH_STATUS="${PIPE_STATUSES[0]}"
 if [[ "${PUBLISH_STATUS}" -ne 0 ]]; then
   echo "Native AOT publish failed (exit ${PUBLISH_STATUS})." >&2
   exit "${PUBLISH_STATUS}"
+fi
+
+if [[ "${PIPE_STATUSES[1]}" -ne 0 ]]; then
+  echo "Could not capture the Native AOT publish log." >&2
+  exit "${PIPE_STATUSES[1]}"
 fi
 
 # Normalize trim/AOT warnings: keep only the "ILxxxx: message" tail and drop the

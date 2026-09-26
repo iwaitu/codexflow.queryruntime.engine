@@ -10,7 +10,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, get_args, get_origin
+from typing import Any, Callable, get_args, get_origin, get_type_hints
 
 
 @dataclass(frozen=True)
@@ -115,14 +115,17 @@ def main(script_path: str | Path) -> int:
 
 def _invoke(tool: ToolDefinition, arguments: dict[str, Any], workspace_path: Any) -> Any:
     signature = inspect.signature(tool.function)
+    aliases = {"max_files": "maxFiles", "max_chars": "maxChars"}
     kwargs: dict[str, Any] = {}
     for name, parameter in signature.parameters.items():
         if parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
-        if name in arguments:
-            kwargs[name] = arguments[name]
-        elif name == "workspace_path":
+        if name == "workspace_path":
             kwargs[name] = str(workspace_path or ".")
+        elif name in arguments:
+            kwargs[name] = arguments[name]
+        elif name in aliases and aliases[name] in arguments:
+            kwargs[name] = arguments[aliases[name]]
         elif parameter.default is inspect.Parameter.empty:
             raise ValueError(f"Missing required argument: {name}")
     return tool.function(**kwargs)
@@ -130,6 +133,7 @@ def _invoke(tool: ToolDefinition, arguments: dict[str, Any], workspace_path: Any
 
 def _schema_for(function: Callable[..., Any]) -> dict[str, Any]:
     signature = inspect.signature(function)
+    hints = get_type_hints(function)
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, parameter in signature.parameters.items():
@@ -137,7 +141,7 @@ def _schema_for(function: Callable[..., Any]) -> dict[str, Any]:
             continue
         if parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
-        properties[name] = _schema_for_annotation(parameter.annotation)
+        properties[name] = _schema_for_annotation(hints.get(name, parameter.annotation))
         if parameter.default is inspect.Parameter.empty:
             required.append(name)
 

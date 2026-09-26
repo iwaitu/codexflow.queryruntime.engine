@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Small helper for exposing Node.js functions as QRE stdio tools.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -114,9 +114,9 @@ async function readAllStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export function resolveWorkspacePath(workspacePath, relativePath = ".") {
-  const root = resolve(workspacePath);
-  const target = resolve(root, relativePath);
+export async function resolveWorkspacePath(workspacePath, relativePath = ".") {
+  const root = await realpath(resolve(workspacePath));
+  const target = await realpath(resolve(root, relativePath));
   if (target !== root && !target.startsWith(`${root}${process.platform === "win32" ? "\\" : "/"}`)) {
     throw new Error(`Path escapes workspace: ${relativePath}`);
   }

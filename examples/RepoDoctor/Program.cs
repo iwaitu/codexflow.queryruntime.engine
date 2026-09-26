@@ -123,6 +123,7 @@ var runArgs = new List<string>
     "run",
     "--workspace", workspace,
     "--profile", "readonly",
+    "--trace-data", "sanitized",
     "--stream",
 };
 if (options.Offline)
@@ -145,6 +146,7 @@ Console.WriteLine();
 Console.WriteLine("Recorded replay:");
 var replayResult = await RunQreBufferedAsync(qrePath, [
     "replay", "latest",
+    "--strict",
     "--workspace", workspace,
     "--json",
 ], provider.Environment);
@@ -165,9 +167,17 @@ if (replayJson is null)
 
 using var doc = JsonDocument.Parse(replayJson);
 var root = doc.RootElement;
-Console.WriteLine($"runner: {GetString(root, "runner")}");
+if (GetString(root, "type") != "qre.v2.replay.completed" ||
+    GetString(root, "status") != "Completed" ||
+    root.GetProperty("providerCalls").GetBoolean() ||
+    root.GetProperty("toolExecutions").GetBoolean())
+{
+    Console.Error.WriteLine("Expected a completed v2 data-only replay.");
+    return 1;
+}
+Console.WriteLine($"replay digest: {GetString(root, "replayDigest")}");
 Console.WriteLine($"finalText: {GetString(root, "finalText")}");
-Console.WriteLine($"trace: {GetString(root, "traceFilePath")}");
+Console.WriteLine($"trace: {GetString(root, "auditFilePath")}");
 
 return 0;
 
