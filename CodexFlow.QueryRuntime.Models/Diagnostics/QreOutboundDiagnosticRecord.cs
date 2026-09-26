@@ -341,6 +341,9 @@ public static class QreDiagnosticFieldStates
     public const string Absent = "absent";
     public const string Redacted = "redacted";
     public const string Unobserved = "unobserved";
+
+    /// <summary>The field exists, but its JSON type/value is invalid for this semantic field.</summary>
+    public const string Invalid = "invalid";
 }
 
 public static class QreDiagnosticFailurePhases

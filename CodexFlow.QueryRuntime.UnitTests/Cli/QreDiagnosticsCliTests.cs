@@ -177,6 +177,10 @@ public sealed class QreDiagnosticsCliTests
         Assert.Equal("insufficient_evidence", report.RootElement.GetProperty("verdict").GetString());
         Assert.Contains(report.RootElement.GetProperty("limitations").EnumerateArray().Select(static l => l.GetString()!),
             static l => l.StartsWith("request_structure_not_captured", StringComparison.Ordinal));
+        var compare = await RunCliAsync(null, "diagnose", "compare", "latest", "latest", "--workspace", workspace.Path, "--json");
+        Assert.Equal(2, compare.ExitCode);
+        using var comparison = JsonDocument.Parse(compare.StandardOutput);
+        Assert.Equal("not_comparable", comparison.RootElement.GetProperty("result").GetString());
     }
 
     [Fact]

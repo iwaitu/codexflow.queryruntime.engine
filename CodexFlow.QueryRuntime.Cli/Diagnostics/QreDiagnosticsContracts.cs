@@ -227,6 +227,12 @@ internal sealed record QreDiagnosticsIntegrity
 
     public required int SequenceGaps { get; init; }
 
+    public bool InvalidSequences { get; init; }
+
+    public bool RecordCountMismatch { get; init; }
+
+    public bool IncompleteLifecycles { get; init; }
+
     public required bool VersionsSupported { get; init; }
 
     public bool EvidenceIncomplete { get; init; }

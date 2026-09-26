@@ -75,6 +75,16 @@ upgrade that changes them fails CI instead of silently overstating coverage.
 
 ## Consequences
 
+- R7 review fixes use projection and normalizer version 2. Comparisons require
+  observed structures, mapped package-local identities, complete call alignment,
+  and evidence from every HTTP attempt. Readers verify record counts, sequence
+  integrity and span closure independently of a manifest's completion claim.
+  Explicit JSON null remains present; invalid scalar types are marked invalid.
+  Version 1 evidence remains readable but is not certified by the new rules.
+- Queue capacity uses non-blocking TryWrite with Wait full mode: rejected records
+  release their byte reservations immediately. DropWrite must not be used without
+  accounting for its successful return on a dropped item.
+
 - The capability matrix (`QreTransportCapabilityMatrix`) marks accepted cells
   `verified` only for SDK 2.0.25; any other SDK version reports `unverified`
   and adapter→HTTP rules become `not_comparable`.

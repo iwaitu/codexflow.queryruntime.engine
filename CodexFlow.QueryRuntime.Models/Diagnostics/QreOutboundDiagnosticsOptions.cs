@@ -102,9 +102,9 @@ public static class QreOutboundDiagnosticSchema
 {
     public const string SchemaVersion = "qre.outbound-diagnostics/1";
 
-    public const string ProjectionPolicyVersion = "qre.outbound-projection/1";
+    public const string ProjectionPolicyVersion = "qre.outbound-projection/2";
 
-    public const string NormalizerVersion = "qre.outbound-normalizer/1";
+    public const string NormalizerVersion = "qre.outbound-normalizer/2";
 
     public const string AdapterVersion = "qre.meai-adapter/2";
 }

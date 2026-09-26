@@ -317,22 +317,13 @@ internal static class QreSemanticProjector
             }
             : AbsentChoice();
 
-        QreSemanticNumber temperature;
-        if (root.TryGetProperty("temperature", out var topTemperature) && topTemperature.ValueKind == JsonValueKind.Number)
+        var temperature = NumberProperty(root, "temperature");
+        if (temperature == null && root.TryGetProperty("options", out var options) && options.ValueKind == JsonValueKind.Object)
         {
-            temperature = Number(topTemperature.GetDouble(), "temperature");
+            var nested = NumberProperty(options, "temperature");
+            temperature = nested == null ? null : nested with { SourcePath = "options.temperature" };
         }
-        else if (root.TryGetProperty("options", out var options) &&
-                 options.ValueKind == JsonValueKind.Object &&
-                 options.TryGetProperty("temperature", out var nested) &&
-                 nested.ValueKind == JsonValueKind.Number)
-        {
-            temperature = Number(nested.GetDouble(), "options.temperature");
-        }
-        else
-        {
-            temperature = Absent("temperature");
-        }
+        temperature ??= Absent("temperature");
 
         var maxTokens = NumberProperty(root, "max_completion_tokens") ?? NumberProperty(root, "max_tokens");
         return new QreSemanticRequest
@@ -414,7 +405,7 @@ internal static class QreSemanticProjector
             text.ValueKind == JsonValueKind.Object &&
             text.TryGetProperty("format", out var textFormat))
         {
-            format = FormatCategory(textFormat, "text.format");
+            format = ResponseFormat(text, "format", []) with { SourcePath = "text.format" };
         }
 
         return new QreSemanticRequest
@@ -600,18 +591,23 @@ internal static class QreSemanticProjector
 
     private static QreSemanticValue ResponseFormat(JsonElement root, string property, string[] alternatives)
     {
-        if (root.TryGetProperty(property, out var format) && format.ValueKind != JsonValueKind.Null)
+        if (root.TryGetProperty(property, out var format))
         {
-            return FormatCategory(format, property);
+            return format.ValueKind switch
+            {
+                JsonValueKind.Null => new QreSemanticValue { State = QreDiagnosticFieldStates.Present, SourcePath = property },
+                JsonValueKind.String or JsonValueKind.Object => FormatCategory(format, property),
+                _ => new QreSemanticValue { State = QreDiagnosticFieldStates.Invalid, SourcePath = property }
+            };
         }
         foreach (var path in alternatives)
         {
-            if (TryGetPath(root, path, out var alternative) && alternative.ValueKind != JsonValueKind.Null)
+            if (TryGetPath(root, path, out var alternative))
             {
                 return new QreSemanticValue
                 {
                     State = QreDiagnosticFieldStates.Present,
-                    Value = "alternative_json_only",
+                    Value = alternative.ValueKind == JsonValueKind.Null ? null : "alternative_json_only",
                     SourcePath = path
                 };
             }
@@ -783,17 +779,28 @@ internal static class QreSemanticProjector
             : Absent(path);
 
     private static QreSemanticNumber? NumberProperty(JsonElement root, string property)
-        => root.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number
-            ? Number(value.GetDouble(), property)
-            : null;
+    {
+        if (!root.TryGetProperty(property, out var value))
+            return null;
+        if (value.ValueKind == JsonValueKind.Null)
+            return new QreSemanticNumber { State = QreDiagnosticFieldStates.Present, SourcePath = property };
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && double.IsFinite(number))
+            return Number(number, property);
+        return new QreSemanticNumber { State = QreDiagnosticFieldStates.Invalid, SourcePath = property };
+    }
 
     private static QreSemanticNumber Absent(string path)
         => new() { State = QreDiagnosticFieldStates.Absent, SourcePath = path };
 
     private static QreSemanticValue BoolProperty(JsonElement root, string property)
-        => root.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? Value(value.GetBoolean() ? "true" : "false", property)
-            : new QreSemanticValue { State = QreDiagnosticFieldStates.Absent, SourcePath = property };
+        => !root.TryGetProperty(property, out var value)
+            ? new QreSemanticValue { State = QreDiagnosticFieldStates.Absent, SourcePath = property }
+            : value.ValueKind switch
+            {
+                JsonValueKind.True or JsonValueKind.False => Value(value.GetBoolean() ? "true" : "false", property),
+                JsonValueKind.Null => new QreSemanticValue { State = QreDiagnosticFieldStates.Present, SourcePath = property },
+                _ => new QreSemanticValue { State = QreDiagnosticFieldStates.Invalid, SourcePath = property }
+            };
 
     private static QreSemanticValue Value(string value, string path)
         => new() { State = QreDiagnosticFieldStates.Present, Value = value, SourcePath = path };

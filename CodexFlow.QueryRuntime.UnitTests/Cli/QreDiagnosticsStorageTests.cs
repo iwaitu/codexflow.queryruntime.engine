@@ -75,6 +75,32 @@ public sealed class QreDiagnosticsStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Store_RecordCapacityDropsAreAccountedAndDrainRestoresByteBudget()
+    {
+        var (diagnostics, store) = Open(new QreOutboundDiagnosticsOptions
+        {
+            Mode = QreOutboundDiagnosticMode.Structure, MaxPendingRecords = 1
+        });
+        await using var cleanup = store;
+        var record = Record(1);
+        var bytes = new byte[1000];
+        var accepted = 0;
+        for (var i = 0; i < 5000; i++)
+            if (store.TryWrite(record, bytes)) accepted++;
+        Assert.InRange(accepted, 1, 4999);
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while ((!File.Exists(store.EventsPath) || new FileInfo(store.EventsPath).Length < accepted * 1001L) &&
+               DateTime.UtcNow < deadline)
+            await Task.Delay(10, Ct);
+        Assert.Equal(accepted * 1001L, new FileInfo(store.EventsPath).Length);
+        // The queue is now empty; rejected records must not retain byte reservations.
+        Assert.True(store.TryWrite(record, new byte[32768]));
+        var manifest = await store.CompleteAsync(diagnostics, Coverage);
+        Assert.Equal(accepted + 1, manifest.Counters!.RecordsWritten);
+        Assert.Equal(5000 - accepted, manifest.Counters.QueueDropped);
+    }
+
+    [Fact]
     public async Task Store_RunQuotaAndDiskFailureNeverBreakTheModelCall()
     {
         var quota = new QreOutboundDiagnosticsOptions { Mode = QreOutboundDiagnosticMode.Structure, MaxRunBytes = 64 * 1024 };

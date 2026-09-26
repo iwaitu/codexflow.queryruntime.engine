@@ -46,7 +46,9 @@ internal sealed class QreDiagnosticsStore : IQreOutboundDiagnosticSink, IAsyncDi
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropWrite
+            // TryWrite remains non-blocking, but must return false when full so
+            // the byte reservation and drop counters can be updated exactly once.
+            FullMode = BoundedChannelFullMode.Wait
         });
         _writer = Task.Run(WriteLoopAsync);
     }

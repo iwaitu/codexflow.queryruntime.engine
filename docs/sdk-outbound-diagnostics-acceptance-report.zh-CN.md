@@ -1,10 +1,12 @@
 # SDK 出站诊断验收报告
 
 - 日期：2026-09-26
-- 对应计划：[sdk-outbound-diagnostics-plan.zh-CN.md](sdk-outbound-diagnostics-plan.zh-CN.md)（R5）
+- R7 修复复核：2026-09-27
+- 对应计划：[sdk-outbound-diagnostics-plan.zh-CN.md](sdk-outbound-diagnostics-plan.zh-CN.md)（R5 设计、R7 核查修复）
 - 设计与 P0 证据：[ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md)
 - 验证依赖：VllmChatClient 2.0.25、Microsoft.Extensions.AI 10.10.0、.NET SDK 10.0.401
-- 验证环境：Windows 11 x64（win-x64）。macOS/Linux 的文件权限与 AOT 门禁由既有 CI 矩阵执行，本报告未在这些平台本地复现。
+- 验证环境：Windows 11 x64（win-x64）。macOS/Linux 已配置 CI 作业，但本报告没有本次提交在这些平台的成功运行证据；macOS AOT 目前为非阻塞作业。
+- 验收状态：诊断误判与采集缺陷已按第 7 节修复；原计划要求的“文本完成不依赖缺失 finish reason 降级”仍未满足，不宣称全部原始门槛通过。
 
 ## 1. 交付范围
 
@@ -43,7 +45,7 @@
 | 兼容恢复 | `CorruptDiagnosticSidecar_DoesNotAffectStrictReplay`、`Reader_ReportsTruncatedTailAndSequenceGapsWithoutFailing`、`Prune_AppliesRetentionAndRunCountOnlyInsideTheRoot` | 通过 |
 | 发布 | Native AOT 门禁、AOT smoke、原生二进制运行 diagnose/rebuild、性能测试 | 通过；见第 3 节 |
 
-单元测试：535 个，520 通过，15 失败。15 个失败与改造前基线完全相同，均为本机 Windows 环境缺少 `sh`/`rg`/git 沙箱条件的既有测试（QreCliSmokeTests 的 git/sandbox 用例、ExternalStdioToolPack、LocalProcessSandboxRunner、StandaloneQueryRuntimeEngine 各一组），与本改造无关。新增诊断相关测试 104 个全部通过。示例离线检查 `test_sdk_outbound_diagnostics` 通过。
+R7 重新执行的 Release 单元测试为 563 个：551 通过、12 失败。基线 `9c56da3` 在同机 Release 下为 435 个：423 通过、12 失败；逐项比较 TRX 中的失败测试名，集合完全相同。失败涉及缺失 /bin/sh、沙箱命令返回码、Windows 路径差异与 Git 临时对象清理权限。诊断与模型尝试相关筛选测试为 128 个，全部通过，其中本轮新增 26 个边界回归用例。此结果替代初版的 535/520/15 和 104 个新增测试统计。
 
 ## 3. 发布门禁
 
@@ -70,9 +72,44 @@
 ## 5. 支持的组合与未覆盖边界
 
 - 支持（verified）：9 个默认 Provider 中，除 Gemini 仅 ChatCompletions 外，其余 Provider × {ChatCompletions, Responses, AnthropicMessages} 共 25 格；Gemini 的 Responses/Anthropic 两格为 unsupported。其他 SDK 版本全部降为 unverified。
-- 未覆盖：真实供应商服务对照；Handler 之下的重定向、认证重试与网络重传；响应正文；TLS/代理之后的字节；`ChatClientExperimentalModelClient`；崩溃前未落盘的内存缓冲；macOS/Linux 权限在本机未复现（由 CI 覆盖）。
+- 未覆盖：真实供应商服务对照；Handler 之下的重定向、认证重试与网络重传；响应正文；TLS/代理之后的字节；`ChatClientExperimentalModelClient`；崩溃前未落盘的内存缓冲；macOS/Linux 权限与本次提交的跨平台诊断验收（CI 配置不等于成功证据）。
 - 范围外已知问题（已登记为后续任务，未在本次修改）：Runtime 普通异常分支保留原始 `ex.Message`（E5）；共享 `ChatOptions` 的所有权/克隆语义；Runtime 接受大小写变体后将 `RequiredToolName` 解析为声明的 CanonicalName；SDK 注入客户端的所有权开关（E3）；SDK 流式文本结束原因（E6）；Gemini/DeepSeek 约束丢失（E9）。
 
 ## 6. 回退
 
 诊断默认关闭；移除 `--sdk-diagnostics` 或传 `off` 即恢复原行为。诊断 sidecar 损坏、缺失或过期不影响既有审计回放与 checkpoint 恢复（已测试）。
+
+## 7. R7 独立核查修复
+
+核查对象为 `e3453df`，修复范围为诊断分析、读取、投影和队列，不改变模型调用或重试策略。
+
+| 核查项 | 修复与回归证据 |
+|---|---|
+| 无别名映射仍判一致 | 未映射模型/工具身份生成 not_comparable finding 并进入总判定；显式映射后可比较 |
+| 双方都缺结构仍通过 | 共同缺失、partial/omitted 结构及空运行都不能返回 identical；metadata CLI compare 实测 exit 2 |
+| 右侧额外调用被忽略 | 同 segment 双向检查调用集合；显式 step-map 必须覆盖双方全部调用且不能多对一 |
+| 尾部整行丢失仍 complete | 核对 RecordsWritten、正数且唯一递增的 Sequence、模型与 HTTP span 闭合；JSON 输出提供 recordCountMismatch、invalidSequences、incompleteLifecycles |
+| 后续 HTTP 尝试漏比 | 每次 HttpAttemptId 均参与跨层分析；跨运行按 AttemptOrdinal 比较全部请求结构，尝试缺失、数量变化或序号不可用均显式报告 |
+| null 与 absent 混淆 | 数值、响应格式和布尔标量保留 present(null)；错误数值类型标 invalid；redacted/unobserved/invalid 不当成参数丢失或验证通过 |
+| 队列丢弃后计数泄漏 | Wait 模式配合非阻塞 TryWrite；队满返回 false 并归还字节预算；验证 5000 次提交的接受/写入/丢弃计数与排空后恢复 |
+
+主要回归位于 `QreDiagnosticsEvidenceRegressionTests`、`QreDiagnosticsStorageTests.Store_RecordCapacityDropsAreAccountedAndDrainRestoresByteBudget` 和 CLI metadata 测试。
+
+投影与比较版本分别更新为 `qre.outbound-projection/2` 和 `qre.outbound-normalizer/2`；事件与 manifest schema 不变。旧版本诊断包可读取，但不会被当作已具备新语义的可验证输入，也不会自动补齐历史丢失证据。
+
+可复现命令：
+
+```powershell
+dotnet test CodexFlow.QueryRuntime.UnitTests -c Release --no-restore --verbosity quiet --logger "trx;LogFileName=patched.trx"
+dotnet test CodexFlow.QueryRuntime.UnitTests --no-restore --filter "FullyQualifiedName~Diagnostics|FullyQualifiedName~RuntimeModelAttemptContractTests|FullyQualifiedName~OutboundTransportEquivalenceTests|FullyQualifiedName~SdkTransportCapabilityTests" --verbosity quiet
+```
+
+基线比较使用 `9c56da3` 的 Release 全套测试，TRX 分别为 baseline-release.trx、patched.trx。本轮不重新解释初版性能数据为新版本实测；文本结束原因 E6 仍是未满足的原始验收门槛，需后续 SDK 修复或单独明确调整验收范围。
+
+R7 修复后的发布验证（win-x64）：
+
+- `scripts/qre-aot-gate.sh win-x64 Release`：通过，无 trim/AOT 警告。
+- `scripts/qre-aot-smoke.sh <原生 qre.exe>`：通过。
+- Release 构建 `examples/SdkOutboundDiagnostics`：0 警告、0 错误。
+- `QRE_EXAMPLE_CONFIGURATION=Release`、`QRE_BIN=<原生 qre.exe>` 下运行 `python scripts/test-examples.py Examples.test_sdk_outbound_diagnostics`：通过，实际执行原生 inspect/latest、export、rebuild，错误/正确 fixture 分别得到 exit 1/0。
+- 本机原始日志与 TRX 保存在 `C:/Users/iwaitu/AppData/Local/Temp/qre-diagnostics-fix-validation/`；此目录不随仓库提交。

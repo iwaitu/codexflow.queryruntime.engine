@@ -79,8 +79,7 @@ internal static class QreDiagnosticsAnalyzer
         {
             observed.Add(AdapterStage);
         }
-        var httpStructure = structures.FirstOrDefault(IsComplete);
-        if (httpStructure != null)
+        if (structures.Any(IsComplete))
         {
             observed.Add(HttpStage);
         }
@@ -100,17 +99,29 @@ internal static class QreDiagnosticsAnalyzer
                 findings.Add(Insufficient(modelCallId, RuntimeStage, AdapterStage, "*", "stage_not_completely_observed", started ?? adapter));
             }
 
-            if (IsComplete(adapter) && httpStructure != null)
+            var attempts = QreDiagnosticsEvidence.HttpAttempts(records);
+            if (attempts.Count == 0)
             {
-                CompareAdapterToHttp(modelCallId, adapter!, httpStructure, findings, notes);
+                findings.Add(Insufficient(modelCallId, AdapterStage, HttpStage, "*", "http_structure_not_observed", adapter));
             }
-            else
+            foreach (var attempt in attempts)
             {
-                var reason = structures.Length == 0
-                    ? "http_structure_not_observed"
-                    : $"http_structure_{structures[0].CaptureStatus}_{structures[0].ReasonCode ?? "unknown"}";
-                findings.Add(Insufficient(modelCallId, AdapterStage, HttpStage, "*", reason, adapter ?? structures.FirstOrDefault()));
+                var captured = attempt.Where(r => r.EventType == QreDiagnosticEventTypes.RequestStructureObserved).ToArray();
+                if (IsComplete(adapter) && captured.Length == 1 && IsComplete(captured[0]))
+                {
+                    CompareAdapterToHttp(modelCallId, adapter!, captured[0], findings, notes);
+                }
+                else
+                {
+                    findings.Add(Insufficient(modelCallId, AdapterStage, HttpStage, "*",
+                        "http_attempt_structure_not_completely_observed", captured.FirstOrDefault() ?? attempt[0]));
+                }
             }
+        }
+
+        if (!QreDiagnosticsEvidence.LifecyclesComplete(records))
+        {
+            findings.Add(Insufficient(modelCallId, RuntimeStage, HttpStage, "*", "incomplete_lifecycle", started));
         }
 
         var firstUnexpected = findings.FirstOrDefault(static f => f.Classification == QreFindingClass.UnexpectedChange);
@@ -129,8 +140,8 @@ internal static class QreDiagnosticsAnalyzer
             Classification = ended?.ModelOutcome?.Classification,
             FailurePhase = ended?.ModelOutcome?.FailurePhase,
             HttpAttempts = records.Count(static r => r.EventType == QreDiagnosticEventTypes.HttpAttemptStarted),
-            HttpStatuses = headers.Select(static h => h.HttpResponse!.StatusCode.ToString(CultureInfo.InvariantCulture)).ToArray(),
-            StreamTerminations = httpEnds.Select(static h => h.HttpOutcome!.StreamTermination).ToArray(),
+            HttpStatuses = headers.Where(h => h.HttpResponse != null).Select(static h => h.HttpResponse!.StatusCode.ToString(CultureInfo.InvariantCulture)).ToArray(),
+            StreamTerminations = httpEnds.Where(h => h.HttpOutcome != null).Select(static h => h.HttpOutcome!.StreamTermination).ToArray(),
             ObservedStages = observed,
             FirstUnexpectedBoundary = firstUnexpected == null ? null : $"{firstUnexpected.SourceStage}->{firstUnexpected.TargetStage}",
             Verdict = verdict,
@@ -211,7 +222,11 @@ internal static class QreDiagnosticsAnalyzer
         CompareNumber(runtime.MaxOutputTokens, adapter.MaxOutputTokens, "maxOutputTokens", floatTolerance: false, Finding, findings);
 
         // RequireJsonObject=false is equivalent to "unspecified"; only true -> no format is a loss.
-        if (runtime.ResponseFormat.Value == "json_object")
+        if (!IsObservedState(runtime.ResponseFormat.State) || !IsObservedState(adapter.ResponseFormat.State))
+        {
+            findings.Add(Finding("responseFormat", runtime.ResponseFormat.State, adapter.ResponseFormat.State, QreFindingClass.NotComparable, "field_not_observed"));
+        }
+        else if (runtime.ResponseFormat.Value == "json_object")
         {
             if (adapter.ResponseFormat.Value is not ("json_object" or "json_schema"))
             {
@@ -357,7 +372,11 @@ internal static class QreDiagnosticsAnalyzer
             CompareNumber(adapter.MaxOutputTokens, http.MaxOutputTokens, "maxOutputTokens", floatTolerance: false, Finding, findings, Limitation(QreTransportCapabilityMatrix.MaxTokensDropped));
         }
 
-        if (adapter.ResponseFormat.Value is "json_object" or "json_schema")
+        if (!IsObservedState(adapter.ResponseFormat.State) || !IsObservedState(http.ResponseFormat.State))
+        {
+            findings.Add(Finding("responseFormat", adapter.ResponseFormat.State, http.ResponseFormat.State, QreFindingClass.NotComparable, "field_not_observed"));
+        }
+        else if (adapter.ResponseFormat.Value is "json_object" or "json_schema")
         {
             if (http.ResponseFormat.Value is "json_object" or "json_schema")
             {
@@ -380,7 +399,11 @@ internal static class QreDiagnosticsAnalyzer
             }
         }
 
-        if (adapter.Stream.Value == "true" && http.Stream.Value != "true")
+        if (!IsObservedState(http.Stream.State))
+        {
+            findings.Add(Finding("stream", adapter.Stream.Value, http.Stream.State, QreFindingClass.NotComparable, "field_not_observed"));
+        }
+        else if (adapter.Stream.Value == "true" && http.Stream.Value != "true")
         {
             findings.Add(Finding("stream", "true", http.Stream.Value ?? "absent", QreFindingClass.UnexpectedChange, "streaming_transmitted"));
         }
@@ -414,6 +437,11 @@ internal static class QreDiagnosticsAnalyzer
         List<QreDiagnosticFinding> findings,
         string[]? lossTags = null)
     {
+        if (!IsObservedState(source.State) || !IsObservedState(target.State))
+        {
+            findings.Add(finding(field, Number(source), Number(target), QreFindingClass.NotComparable, "field_not_observed", []));
+            return;
+        }
         if (source.State != QreDiagnosticFieldStates.Present)
         {
             if (target.State == QreDiagnosticFieldStates.Present)
@@ -427,8 +455,16 @@ internal static class QreDiagnosticsAnalyzer
             findings.Add(finding(field, Number(source), target.State, QreFindingClass.UnexpectedChange, "explicit_constraint_mapped", lossTags ?? []));
             return;
         }
-        var left = source.Value!.Value;
-        var right = target.Value!.Value;
+        if (source.Value == null || target.Value == null)
+        {
+            if (source.Value != target.Value)
+            {
+                findings.Add(finding(field, Number(source), Number(target), QreFindingClass.UnexpectedChange, "explicit_constraint_value_preserved", []));
+            }
+            return;
+        }
+        var left = source.Value.Value;
+        var right = target.Value.Value;
         if (left.Equals(right))
         {
             return;
@@ -492,5 +528,10 @@ internal static class QreDiagnosticsAnalyzer
     private static string Join(IReadOnlyList<string> values) => values.Count == 0 ? "none" : string.Join(',', values);
 
     internal static string Number(QreSemanticNumber number)
-        => number.Value?.ToString("R", CultureInfo.InvariantCulture) ?? number.State;
+        => number.State == QreDiagnosticFieldStates.Present
+            ? number.Value?.ToString("R", CultureInfo.InvariantCulture) ?? "null"
+            : number.State;
+
+    internal static bool IsObservedState(string state)
+        => state is QreDiagnosticFieldStates.Present or QreDiagnosticFieldStates.Absent;
 }

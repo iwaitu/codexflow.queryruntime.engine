@@ -174,7 +174,8 @@ internal static class QreDiagnosticsReader
         var invalid = 0;
         var truncated = false;
         var versionsSupported = manifest == null ||
-                                string.Equals(manifest.NormalizerVersion, QreOutboundDiagnosticSchema.NormalizerVersion, StringComparison.Ordinal);
+                                (string.Equals(manifest.NormalizerVersion, QreOutboundDiagnosticSchema.NormalizerVersion, StringComparison.Ordinal) &&
+                                 string.Equals(manifest.ProjectionPolicyVersion, QreOutboundDiagnosticSchema.ProjectionPolicyVersion, StringComparison.Ordinal));
         var span = events.AsSpan();
         while (!span.IsEmpty)
         {
@@ -223,6 +224,8 @@ internal static class QreDiagnosticsReader
             records.Add(record);
         }
 
+        var invalidSequences = records.Any(r => r.Sequence <= 0) ||
+                               records.Zip(records.Skip(1)).Any(pair => pair.First.Sequence >= pair.Second.Sequence);
         records.Sort(static (left, right) => left.Sequence.CompareTo(right.Sequence));
         var gaps = 0;
         for (var i = 1; i < records.Count; i++)
@@ -230,15 +233,17 @@ internal static class QreDiagnosticsReader
             var delta = records[i].Sequence - records[i - 1].Sequence;
             if (delta > 1)
             {
-                gaps += (int)Math.Min(int.MaxValue, delta - 1);
+                gaps = (int)Math.Min(int.MaxValue, (long)gaps + delta - 1);
             }
         }
         if (records.Count > 0 && records[0].Sequence > 1)
         {
-            gaps += (int)Math.Min(int.MaxValue, records[0].Sequence - 1);
+            gaps = (int)Math.Min(int.MaxValue, (long)gaps + records[0].Sequence - 1);
         }
 
         var status = manifest?.CompletionStatus ?? "missing_manifest";
+        var countMismatch = manifest?.Counters is { } counters && counters.RecordsWritten != records.Count;
+        var incompleteLifecycles = !QreDiagnosticsEvidence.LifecyclesComplete(records);
         return new QreDiagnosticsDocument(
             source,
             manifest,
@@ -250,8 +255,12 @@ internal static class QreDiagnosticsReader
                 TruncatedTail = truncated,
                 InvalidLines = invalid,
                 SequenceGaps = gaps,
+                InvalidSequences = invalidSequences,
+                RecordCountMismatch = countMismatch,
+                IncompleteLifecycles = incompleteLifecycles,
                 VersionsSupported = versionsSupported,
                 EvidenceIncomplete = manifest == null || status != "complete" || truncated || invalid > 0 || gaps > 0 ||
+                                     invalidSequences || countMismatch || incompleteLifecycles ||
                                      manifest.Counters?.EvidenceIncomplete == true
             });
     }

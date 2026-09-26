@@ -1,6 +1,6 @@
 # QRE 执行证据链与 SDK 出站诊断改造计划
 
-- 状态：已实施（R6，2026-09-26）。实施结果、P0 证据与验收见第 18 节、[ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md) 与[验收报告](sdk-outbound-diagnostics-acceptance-report.zh-CN.md)；下文保留 R5 设计原文，待验证项以第 18 节回填为准。
+- 状态：已实施并完成 R7 诊断缺陷修复（2026-09-27）；文本结束原因门槛仍未满足。实施结果、P0 证据与核查闭环见第 18–19 节、[ADR-009](adr/ADR-009-sdk-outbound-diagnostics.md) 与[验收报告](sdk-outbound-diagnostics-acceptance-report.zh-CN.md)；下文保留 R5 设计原文。
 - 日期：2026-09-26。
 - 修订：R5，补齐定稿前的演示响应序列、终态断言和工具搜索参数说明；仓库代码可直接确认的结论与第三方 SDK 待验证行为分开记录。
 - 分析基线：仓库提交 `9c56da3`；实施时需重新确认目标版本。
@@ -478,4 +478,12 @@ R4 同时细化了 R3 的空工具案例：初始校验与 Step 校验是两条�
 | 数值容差（8.1） | 以 float 精度相等为 expected_transform（double_to_float_precision） | `TemperaturePrecisionAndNestedPathAreExpectedTransforms` |
 
 范围外问题按第 3.2、14 节保持未修改，并在验收报告第 5 节列为后续任务。
+
+## 19. R7 独立核查闭环
+
+修复跨包未映射身份、共同缺失结构、未匹配调用、尾部完整行缺失、后续 HTTP 尝试漏比、JSON null/absent 混淆及队列丢弃字节计数问题。完整行为和回归证据见验收报告第 7 节。
+
+投影/比较规则升为 /2；增加 invalid 字段状态表示字段存在但数值类型或值无效，仍保留 present(null) 与 absent 的区别。旧规则包只可作历史证据，不通过新规则自动认证为一致。
+
+第 14 节要求文本响应不得依赖缺失 finish reason 降级，锁定 SDK 仍不满足该要求。R7 不修改 SDK、不自动豁免此门槛，也不把本地 fixture 的 Completed 当成供应商正常结束的证明。跨平台验收必须补充实际 CI 结果，不能仅引用配置。
 

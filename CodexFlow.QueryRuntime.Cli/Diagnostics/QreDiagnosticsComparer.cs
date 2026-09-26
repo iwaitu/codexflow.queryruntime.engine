@@ -41,6 +41,10 @@ internal static class QreDiagnosticsComparer
 
         var leftCalls = Calls(left);
         var rightCalls = Calls(right);
+        if (leftCalls.Count == 0 || rightCalls.Count == 0)
+        {
+            return NotComparable(leftName, rightName, "model_calls_not_observed");
+        }
         var sameSegment = left.Manifest != null && right.Manifest != null &&
                           string.Equals(left.Manifest.SegmentId, right.Manifest.SegmentId, StringComparison.Ordinal);
         var (aligned, alignment, reason) = Align(leftCalls, rightCalls, sameSegment, stepMap);
@@ -63,15 +67,17 @@ internal static class QreDiagnosticsComparer
         {
             foreach (var stage in StageOrder)
             {
+                if (stage == QreDiagnosticsAnalyzer.HttpStage)
+                {
+                    CompareAttempts(leftCall, rightCall, sameSegment, aliasMap, differences, notes);
+                    continue;
+                }
                 var l = Stage(leftCall.Records, stage);
                 var r = Stage(rightCall.Records, stage);
                 if (l == null || r == null)
                 {
-                    if (l != null || r != null)
-                    {
-                        insufficient = true;
-                        differences.Add(Difference(leftCall.Id, stage, "*", l == null ? "unobserved" : "observed", r == null ? "unobserved" : "observed", QreFindingClass.InsufficientEvidence));
-                    }
+                    insufficient = true;
+                    differences.Add(Difference(leftCall.Id, stage, "*", l == null ? "unobserved" : "observed", r == null ? "unobserved" : "observed", QreFindingClass.InsufficientEvidence));
                     continue;
                 }
                 CompareSemantic(leftCall.Id, stage, l, r, sameSegment, aliasMap, differences, notes);
@@ -84,12 +90,14 @@ internal static class QreDiagnosticsComparer
                     $"{lo?.Outcome}/{lo?.Classification}", $"{ro?.Outcome}/{ro?.Classification}", QreFindingClass.UnexpectedChange));
             }
         }
-        if (left.Integrity.EvidenceIncomplete || right.Integrity.EvidenceIncomplete)
+        if (left.Integrity.EvidenceIncomplete || right.Integrity.EvidenceIncomplete ||
+            !QreDiagnosticsEvidence.LifecyclesComplete(left.Records) || !QreDiagnosticsEvidence.LifecyclesComplete(right.Records))
         {
             insufficient = true;
             notes.Add("evidence_incomplete_in_input");
         }
 
+        insufficient |= differences.Any(d => d.Classification is QreFindingClass.NotComparable or QreFindingClass.InsufficientEvidence);
         var earliest = differences.FirstOrDefault(static d => d.Classification == QreFindingClass.UnexpectedChange);
         return new QreDiagnoseCompareOutput
         {
@@ -103,6 +111,52 @@ internal static class QreDiagnosticsComparer
             Differences = differences,
             Notes = notes.Distinct(StringComparer.Ordinal).ToArray()
         };
+    }
+
+    private static void CompareAttempts(
+        Call left, Call right, bool sameSegment, IReadOnlyDictionary<string, string> aliasMap,
+        List<QreDiagnosticFinding> differences, List<string> notes)
+    {
+        const string stage = QreDiagnosticsAnalyzer.HttpStage;
+        var l = QreDiagnosticsEvidence.HttpAttempts(left.Records);
+        var r = QreDiagnosticsEvidence.HttpAttempts(right.Records);
+        if (l.Count == 0 || r.Count == 0)
+        {
+            differences.Add(Difference(left.Id, stage, "httpAttempts", "unobserved", "unobserved", QreFindingClass.InsufficientEvidence));
+            return;
+        }
+        if (l.Count != r.Count)
+        {
+            differences.Add(Difference(left.Id, stage, "httpAttempts.count", l.Count.ToString(CultureInfo.InvariantCulture),
+                r.Count.ToString(CultureInfo.InvariantCulture), QreFindingClass.UnexpectedChange));
+        }
+        static bool OrdinalsKnown(IReadOnlyList<QreOutboundDiagnosticRecord[]> attempts)
+            => attempts.All(a => a[0].AttemptOrdinal is > 0 && a.All(e => e.AttemptOrdinal == a[0].AttemptOrdinal)) &&
+               attempts.Select(a => a[0].AttemptOrdinal).Distinct().Count() == attempts.Count;
+        if (!OrdinalsKnown(l) || !OrdinalsKnown(r))
+        {
+            differences.Add(Difference(left.Id, stage, "httpAttempts", null, null, QreFindingClass.NotComparable));
+            return;
+        }
+        foreach (var attempt in l)
+        {
+            var match = r.FirstOrDefault(a => a[0].AttemptOrdinal == attempt[0].AttemptOrdinal);
+            if (match == null)
+            {
+                differences.Add(Difference(left.Id, stage, "httpAttempts.ordinal", attempt[0].AttemptOrdinal!.Value.ToString(CultureInfo.InvariantCulture),
+                    "unobserved", QreFindingClass.InsufficientEvidence, attempt[0].Sequence));
+                continue;
+            }
+            var ls = attempt.Where(e => e.EventType == QreDiagnosticEventTypes.RequestStructureObserved).ToArray();
+            var rs = match.Where(e => e.EventType == QreDiagnosticEventTypes.RequestStructureObserved).ToArray();
+            if (ls.Length != 1 || rs.Length != 1 || !Complete(ls[0]) || !Complete(rs[0]))
+            {
+                differences.Add(Difference(left.Id, stage, "httpAttempts.structure", null, null,
+                    QreFindingClass.InsufficientEvidence, attempt[0].Sequence, match[0].Sequence));
+                continue;
+            }
+            CompareSemantic(left.Id, stage, ls[0], rs[0], sameSegment, aliasMap, differences, notes);
+        }
     }
 
     private static void CompareSemantic(
@@ -138,13 +192,25 @@ internal static class QreDiagnosticsComparer
         else
         {
             notes.Add("tool_aliases_not_compared_without_alias_map");
+            differences.Add(Difference(callId, stage, "tools.aliases", null, null, QreFindingClass.NotComparable, leftRecord.Sequence, rightRecord.Sequence));
         }
         Check("toolChoice.mode", l.ToolChoice.Mode, r.ToolChoice.Mode);
         Check("toolChoice.relation", l.ToolChoice.RequiredToolRelation, r.ToolChoice.RequiredToolRelation);
-        Check("temperature", $"{l.Temperature.State}:{QreDiagnosticsAnalyzer.Number(l.Temperature)}", $"{r.Temperature.State}:{QreDiagnosticsAnalyzer.Number(r.Temperature)}");
-        Check("maxOutputTokens", $"{l.MaxOutputTokens.State}:{QreDiagnosticsAnalyzer.Number(l.MaxOutputTokens)}", $"{r.MaxOutputTokens.State}:{QreDiagnosticsAnalyzer.Number(r.MaxOutputTokens)}");
-        Check("responseFormat", $"{l.ResponseFormat.State}:{l.ResponseFormat.Value}", $"{r.ResponseFormat.State}:{r.ResponseFormat.Value}");
-        Check("stream", $"{l.Stream.State}:{l.Stream.Value}", $"{r.Stream.State}:{r.Stream.Value}");
+        void CheckValue(string field, string leftState, string rightState, string? leftValue, string? rightValue)
+        {
+            if (!QreDiagnosticsAnalyzer.IsObservedState(leftState) || !QreDiagnosticsAnalyzer.IsObservedState(rightState))
+            {
+                differences.Add(Difference(callId, stage, field, leftState, rightState, QreFindingClass.NotComparable, leftRecord.Sequence, rightRecord.Sequence));
+                return;
+            }
+            Check(field, $"{leftState}:{leftValue}", $"{rightState}:{rightValue}");
+        }
+        CheckValue("temperature", l.Temperature.State, r.Temperature.State, QreDiagnosticsAnalyzer.Number(l.Temperature), QreDiagnosticsAnalyzer.Number(r.Temperature));
+        CheckValue("maxOutputTokens", l.MaxOutputTokens.State, r.MaxOutputTokens.State, QreDiagnosticsAnalyzer.Number(l.MaxOutputTokens), QreDiagnosticsAnalyzer.Number(r.MaxOutputTokens));
+        CheckValue("responseFormat", l.ResponseFormat.State, r.ResponseFormat.State, l.ResponseFormat.Value, r.ResponseFormat.Value);
+        // Runtime has no stream flag; streaming is selected by the adapter.
+        if (stage != QreDiagnosticsAnalyzer.RuntimeStage)
+            CheckValue("stream", l.Stream.State, r.Stream.State, l.Stream.Value, r.Stream.Value);
         Check("model.state", $"{l.Model.State}:{l.Model.Source}", $"{r.Model.State}:{r.Model.Source}");
         if (AliasesComparable([l.Model.Alias, l.Model.EffectiveAlias]))
         {
@@ -153,6 +219,7 @@ internal static class QreDiagnosticsComparer
         else
         {
             notes.Add("model_aliases_not_compared_without_alias_map");
+            differences.Add(Difference(callId, stage, "model.alias", null, null, QreFindingClass.NotComparable, leftRecord.Sequence, rightRecord.Sequence));
         }
     }
 
@@ -165,6 +232,8 @@ internal static class QreDiagnosticsComparer
         var pairs = new List<(Call, Call, string)>();
         if (sameSegment)
         {
+            if (left.Count != right.Count)
+                return (null, "correlation_ids", "call_count_differs");
             foreach (var call in left)
             {
                 var match = right.FirstOrDefault(r => r.Id == call.Id);
@@ -178,6 +247,10 @@ internal static class QreDiagnosticsComparer
         }
         if (stepMap.Count > 0)
         {
+            if (stepMap.Values.Distinct(StringComparer.Ordinal).Count() != stepMap.Count ||
+                left.Any(c => c.Step == null || !stepMap.ContainsKey(c.Step)) ||
+                right.Any(c => c.Step == null || !stepMap.Values.Contains(c.Step, StringComparer.Ordinal)))
+                return (null, "explicit_step_map", "step_map_incomplete_or_ambiguous");
             foreach (var (leftStep, rightStep) in stepMap)
             {
                 var l = left.Where(c => c.Step == leftStep).ToArray();
@@ -237,10 +310,13 @@ internal static class QreDiagnosticsComparer
     private static QreOutboundDiagnosticRecord? Stage(IReadOnlyList<QreOutboundDiagnosticRecord> records, string stage)
         => stage switch
         {
-            QreDiagnosticsAnalyzer.RuntimeStage => records.FirstOrDefault(static r => r.EventType == QreDiagnosticEventTypes.ModelCallStarted && r.Request != null),
-            QreDiagnosticsAnalyzer.AdapterStage => records.FirstOrDefault(static r => r.EventType == QreDiagnosticEventTypes.AdapterPrepared && r.Request != null),
-            _ => records.FirstOrDefault(static r => r.EventType == QreDiagnosticEventTypes.RequestStructureObserved && r.Request != null)
+            QreDiagnosticsAnalyzer.RuntimeStage => records.FirstOrDefault(static r => r.EventType == QreDiagnosticEventTypes.ModelCallStarted && Complete(r)),
+            QreDiagnosticsAnalyzer.AdapterStage => records.FirstOrDefault(static r => r.EventType == QreDiagnosticEventTypes.AdapterPrepared && Complete(r)),
+            _ => throw new ArgumentOutOfRangeException(nameof(stage))
         };
+
+    private static bool Complete(QreOutboundDiagnosticRecord record)
+        => record.Request != null && record.CaptureStatus == QreDiagnosticCaptureStatus.Complete;
 
     private static string Versions(QreDiagnosticsDocument document)
     {
