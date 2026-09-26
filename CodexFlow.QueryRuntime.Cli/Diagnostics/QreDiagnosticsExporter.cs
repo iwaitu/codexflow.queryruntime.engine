@@ -135,8 +135,8 @@ internal static class QreDiagnosticsExporter
             Stage = Keep(record.Stage, Stages, context),
             ApiMode = Keep(record.ApiMode, ApiModes, context),
             ProviderCategory = Keep(record.ProviderCategory, Providers, context),
-            SdkVersion = record.SdkVersion is { Length: <= 32 } version && version.All(static c => char.IsAsciiDigit(c) || c == '.') ? version : Drop(context, (string?)null),
-            AdapterVersion = record.AdapterVersion == QreOutboundDiagnosticSchema.AdapterVersion ? record.AdapterVersion : Drop(context, (string?)null),
+            SdkVersion = record.SdkVersion == null || (record.SdkVersion.Length <= 32 && record.SdkVersion.All(static c => char.IsAsciiDigit(c) || c == '.')) ? record.SdkVersion : Drop(context, (string?)null),
+            AdapterVersion = record.AdapterVersion is null or QreOutboundDiagnosticSchema.AdapterVersion ? record.AdapterVersion : Drop(context, (string?)null),
             ObservationPoint = Keep(record.ObservationPoint, Points, context) ?? "unknown",
             AttemptCoverage = record.AttemptCoverage is "handler_visible" or "not_applicable" ? record.AttemptCoverage : Drop(context, "unknown"),
             CaptureStatus = Keep(record.CaptureStatus, Captures, context) ?? QreDiagnosticCaptureStatus.Failed,
@@ -164,17 +164,17 @@ internal static class QreDiagnosticsExporter
                 Classification = Keep(record.HttpOutcome.Classification, Classes, context) ?? QreDiagnosticClassifications.Unknown,
                 ClassificationSource = Keep(record.HttpOutcome.ClassificationSource, Sources, context) ?? "unknown",
                 StreamTermination = Keep(record.HttpOutcome.StreamTermination, Terminations, context) ?? "unknown",
-                TransportErrorKind = record.HttpOutcome.TransportErrorKind is { } kind && Enum.TryParse<HttpRequestError>(kind, out _) ? kind : Drop(context, (string?)null)
+                TransportErrorKind = SafeEnum<HttpRequestError>(record.HttpOutcome.TransportErrorKind, context)
             },
             ModelOutcome = record.ModelOutcome == null ? null : record.ModelOutcome with
             {
                 Outcome = record.ModelOutcome.Outcome is "completed" or "failed" or "cancelled" or "abandoned" ? record.ModelOutcome.Outcome : Drop(context, "unknown"),
-                StopReason = record.ModelOutcome.StopReason is { } stop && Enum.TryParse<CodexFlow.QueryRuntime.Protocol.RuntimeModelStopReason>(stop, out _) ? stop : Drop(context, (string?)null),
+                StopReason = SafeEnum<CodexFlow.QueryRuntime.Protocol.RuntimeModelStopReason>(record.ModelOutcome.StopReason, context),
                 FailurePhase = Keep(record.ModelOutcome.FailurePhase, Phases, context) ?? QreDiagnosticFailurePhases.Unknown,
                 Classification = Keep(record.ModelOutcome.Classification, Classes, context) ?? QreDiagnosticClassifications.Unknown,
                 ClassificationSource = Keep(record.ModelOutcome.ClassificationSource, Sources, context) ?? "unknown",
                 ErrorCode = SafeCode(record.ModelOutcome.ErrorCode, context),
-                ErrorCategory = record.ModelOutcome.ErrorCategory is { } category && Enum.TryParse<CodexFlow.QueryRuntime.Protocol.RuntimeErrorCategory>(category, out _) ? category : Drop(context, (string?)null)
+                ErrorCategory = SafeEnum<CodexFlow.QueryRuntime.Protocol.RuntimeErrorCategory>(record.ModelOutcome.ErrorCategory, context)
             }
         };
 
@@ -218,7 +218,7 @@ internal static class QreDiagnosticsExporter
             Stream = new QreSemanticValue
             {
                 State = Keep(request.Stream.State, States, context) ?? QreDiagnosticFieldStates.Unobserved,
-                Value = request.Stream.Value is "true" or "false" ? request.Stream.Value : Drop(context, (string?)null),
+                Value = request.Stream.Value is null or "true" or "false" ? request.Stream.Value : Drop(context, (string?)null),
                 SourcePath = SafePath(request.Stream.SourcePath, context)
             },
             Model = new QreSemanticModel
@@ -250,6 +250,15 @@ internal static class QreDiagnosticsExporter
         => code == null ? null
             : code.Length <= 96 && code.All(static c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '_')
                 ? code
+                : Drop(context, (string?)null);
+
+    /// <summary>Keeps only a defined enum member name; numeric strings and unknown names are dropped.</summary>
+    private static string? SafeEnum<TEnum>(string? value, ExportContext context)
+        where TEnum : struct, Enum
+        => value == null ? null
+            : value.Length > 0 && !char.IsAsciiDigit(value[0]) && value[0] != '-' &&
+              Enum.TryParse<TEnum>(value, out var parsed) && Enum.IsDefined(parsed) && parsed.ToString() == value
+                ? value
                 : Drop(context, (string?)null);
 
     private static string? Keep(string? value, HashSet<string> vocabulary, ExportContext context)

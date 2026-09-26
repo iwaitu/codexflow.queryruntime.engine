@@ -31,7 +31,7 @@ internal sealed record QreDiagnosticsManifest
     public DateTimeOffset? CompletedUtc { get; init; }
 
     /// <summary>Always <c>client_side_handler</c>: records are client observations, not network proof.</summary>
-    public string ObservationScope { get; init; } = "client_side_handler";
+    public string ObservationScope { get; init => field = value ?? "client_side_handler"; } = "client_side_handler";
 
     public required QreDiagnosticsCoverage Coverage { get; init; }
 
@@ -43,7 +43,7 @@ internal sealed record QreDiagnosticsManifest
     public string? EntryOutcome { get; init; }
 
     /// <summary><c>local</c> for a run directory, <c>export</c> for a re-projected bundle.</summary>
-    public string Origin { get; init; } = "local";
+    public string Origin { get; init => field = value ?? "local"; } = "local";
 
     public string? ExportPolicyVersion { get; init; }
 }
@@ -371,20 +371,20 @@ internal sealed record QreRebuildFixture
     public string? AdapterVersion { get; init; }
 
     /// <summary><c>qre-cli</c> (the CLI options mapping) or <c>passthrough-empty</c> (a host that maps nothing).</summary>
-    public string OptionsMapping { get; init; } = "qre-cli";
+    public string OptionsMapping { get; init => field = value ?? "qre-cli"; } = "qre-cli";
 
     public required QreFixtureRequest Request { get; init; }
 
-    public IReadOnlyList<QreFixtureAssertion> Assertions { get; init; } = [];
+    public IReadOnlyList<QreFixtureAssertion> Assertions { get; init => field = value ?? []; } = [];
 
-    public IReadOnlyList<string> Missing { get; init; } = [];
+    public IReadOnlyList<string> Missing { get; init => field = value ?? []; } = [];
 }
 
 internal sealed record QreFixtureRequest
 {
     public required IReadOnlyList<QreFixtureMessage> Messages { get; init; }
 
-    public IReadOnlyList<QreFixtureTool> Tools { get; init; } = [];
+    public IReadOnlyList<QreFixtureTool> Tools { get; init => field = value ?? []; } = [];
 
     public double? Temperature { get; init; }
 
@@ -420,9 +420,9 @@ internal sealed record QreFixtureTool
 {
     public required string Name { get; init; }
 
-    public string Description { get; init; } = string.Empty;
+    public string Description { get; init => field = value ?? string.Empty; } = string.Empty;
 
-    public string InputSchemaJson { get; init; } = "{\"type\":\"object\"}";
+    public string InputSchemaJson { get; init => field = value ?? "{\"type\":\"object\"}"; } = "{\"type\":\"object\"}";
 }
 
 /// <summary>

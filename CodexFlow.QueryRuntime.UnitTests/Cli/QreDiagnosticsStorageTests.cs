@@ -179,6 +179,73 @@ public sealed class QreDiagnosticsStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_KeepsCleanRecordsIntactAndDropsUnknownVocabulary()
+    {
+        var options = new QreOutboundDiagnosticsOptions { Mode = QreOutboundDiagnosticMode.Structure };
+        var (diagnostics, store) = Open(options);
+        await RunOneCallAsync(diagnostics);
+        await store.CompleteAsync(diagnostics, Coverage);
+        await store.DisposeAsync();
+        var clean = QreDiagnosticsReader.Load(store.RunDirectory);
+
+        var (records, dropped) = QreDiagnosticsExporter.Export(clean, Path.Combine(_root, "clean.zip"), force: false);
+        Assert.Equal(clean.Records.Count, records);
+        Assert.Equal(0, dropped);
+
+        var tampered = clean with
+        {
+            Records = clean.Records.Select(static r => r.EventType == QreDiagnosticEventTypes.ModelCallEnded
+                ? r with
+                {
+                    ProviderCategory = "tenant-SECRET-deployment",
+                    ReasonCode = "Contains Spaces SECRET",
+                    ModelOutcome = r.ModelOutcome! with { StopReason = "123", ErrorCode = "SECRET/path" }
+                }
+                : r).ToArray()
+        };
+        var bundle = Path.Combine(_root, "tampered.zip");
+        var (_, tamperedDrops) = QreDiagnosticsExporter.Export(tampered, bundle, force: false);
+        Assert.Equal(4, tamperedDrops);
+        using var archive = ZipFile.OpenRead(bundle);
+        foreach (var entry in archive.Entries)
+        {
+            using var reader = new StreamReader(entry.Open());
+            var text = reader.ReadToEnd();
+            Assert.DoesNotContain("SECRET", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"stopReason\":\"123\"", text, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task HandWrittenInputsWithOmittedOptionalFields_KeepSafeDefaults()
+    {
+        var fixturePath = Path.Combine(_root, "minimal.fixture.json");
+        File.WriteAllText(fixturePath, """
+            {"schema":"qre.sdk-rebuild-fixture/1","status":"runnable","apiMode":"chat_completions","model":"qwen3-next-80b",
+             "request":{"messages":[{"role":"user","items":[{"kind":"text","text":"hi"}]}]},
+             "assertions":[{"kind":"no_unexpected_change"}]}
+            """);
+        var fixture = QreDiagnosticsRebuilder.LoadFixture(fixturePath);
+        Assert.Equal("qre-cli", fixture.OptionsMapping);
+        Assert.Empty(fixture.Request.Tools);
+        Assert.Empty(fixture.Missing);
+        Assert.Equal("passed", (await QreDiagnosticsRebuilder.RebuildAsync(fixture, "minimal", null, Ct)).Result);
+
+        var run = Path.Combine(_root, "diag-minimal-manifest");
+        Directory.CreateDirectory(run);
+        File.WriteAllText(Path.Combine(run, QreDiagnosticsStore.ManifestFileName), $$$"""
+            {"manifestSchema":"{{{QreDiagnosticsManifest.CurrentSchema}}}","eventSchema":"{{{QreOutboundDiagnosticSchema.SchemaVersion}}}",
+             "projectionPolicyVersion":"{{{QreOutboundDiagnosticSchema.ProjectionPolicyVersion}}}","normalizerVersion":"{{{QreOutboundDiagnosticSchema.NormalizerVersion}}}",
+             "diagnosticRunId":"x","segmentId":"s","mode":"metadata","completionStatus":"complete","createdUtc":"2026-01-01T00:00:00Z",
+             "coverage":{"transportCapture":"handler","attemptCoverage":"handler_visible"},
+             "quotas":{"maxRequestCaptureBytes":1,"maxRecordBytes":1,"maxRunBytes":1,"maxPendingRecords":1,"maxPendingBytes":1,"maxJsonDepth":1,"retentionDays":1}}
+            """);
+        var manifest = QreDiagnosticsReader.Load(run).Manifest!;
+        Assert.Equal("local", manifest.Origin);
+        Assert.Equal("client_side_handler", manifest.ObservationScope);
+    }
+
+    [Fact]
     public void Prune_AppliesRetentionAndRunCountOnlyInsideTheRoot()
     {
         var outside = Path.Combine(_root, "not-a-diagnostic-run");

@@ -211,7 +211,7 @@ public sealed record QreSemanticRequest
     public required int UncheckedFieldCount { get; init; }
 
     /// <summary>Registered protocol observations such as <c>system_hoisted_to_top_level</c>.</summary>
-    public IReadOnlyList<string> Notes { get; init; } = [];
+    public IReadOnlyList<string> Notes { get; init => field = value ?? []; } = [];
 }
 
 public sealed record QreSemanticMessages
