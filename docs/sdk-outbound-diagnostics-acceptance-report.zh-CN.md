@@ -124,3 +124,9 @@ R7 修复后的发布验证（win-x64）：
 - 增加 windows-latest 全量单元测试 CI 作业；未将 CI 配置视为已在远端执行通过。
 
 本机 Release 验证：受影响筛选测试 16/16 通过；全套 563/563 通过、0 失败、0 跳过。结果文件为上述验证目录中的 `windows-portable.trx`。本次只修改测试工程、fixture、CI 和文档，未修改生产行为；Linux/macOS 本轮未本地复现。
+
+### 0.23.0 发布前的托管 Windows runner 修正
+
+远端 CI 暴露了本机 PATH 中已有 rg.exe 掩盖的问题：UseShellExecute=false 无法直接执行 Windows 的 rg.cmd 替身。替身现使用 .NET 原生 apphost rg.exe，保留原有三项命令输出与隐私断言；发布工作流同时强制执行 Ubuntu 和 Windows 全量测试。修正后本机 Release 563/563 通过、0 失败、0 跳过，证据为 `release-023.trx`。
+
+密钥扫描命中诊断测试的合成标记 CANARY-API-KEY-8d1e；配置仅豁免该完整精确值，保留默认规则和全历史扫描。发布前本机全历史 50 个提交扫描通过。托管 CI 结果仍需以发布运行记录为准。

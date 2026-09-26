@@ -22,7 +22,7 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.2.0-preview.21", result.StandardOutput);
+        Assert.Contains("0.23.0", result.StandardOutput);
     }
 
     [Fact]
@@ -2030,9 +2030,12 @@ public sealed class QreCliSmokeTests
 
             if (OperatingSystem.IsWindows())
             {
-                File.WriteAllText(
-                    Path.Combine(path, "rg.cmd"),
-                    $"@echo off{Environment.NewLine}echo {output}{Environment.NewLine}");
+                foreach (var name in new[] { "Qre.TestProcess.exe", "Qre.TestProcess.dll", "Qre.TestProcess.deps.json", "Qre.TestProcess.runtimeconfig.json" })
+                {
+                    File.Copy(Path.Combine(AppContext.BaseDirectory, name),
+                        Path.Combine(path, name.EndsWith(".exe", StringComparison.Ordinal) ? "rg.exe" : name));
+                }
+                File.WriteAllText(Path.Combine(path, "rg-output.txt"), output);
             }
             else
             {

@@ -10,6 +10,13 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
+        // A native apphost is required for UseShellExecute=false on Windows.
+        if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "rg")
+        {
+            Console.WriteLine(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "rg-output.txt")));
+            return 0;
+        }
+
         switch (args[0])
         {
             case "environment":

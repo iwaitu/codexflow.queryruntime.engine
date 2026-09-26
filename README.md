@@ -8,7 +8,7 @@
 
 CodexFlow QueryRuntime is a cross-platform .NET runtime for model loops, tool execution, policy enforcement, audit/replay, checkpoint recovery, and sandboxed automation. It can be embedded in a host application or shipped as the standalone `qre` CLI without requiring the CodexFlow web platform.
 
-This repository is on the **0.2 preview, v2-only** line. New integrations should use `CodexFlow.QueryRuntime.Protocol` and `CodexFlow.QueryRuntime.Engine.V2`. The earlier v1 API remains only as source-migration and historical-trace context; it is not a selectable CLI or CodexFlow backend.
+This repository is on the **0.23.0 stable, v2-only** line. New integrations should use `CodexFlow.QueryRuntime.Protocol` and `CodexFlow.QueryRuntime.Engine.V2`. The earlier v1 API remains only as source-migration and historical-trace context; it is not a selectable CLI or CodexFlow backend.
 
 ## What it provides
 
@@ -121,7 +121,7 @@ The runtime refuses a resume when ownership, lease, checkpoint integrity, worksp
 
 ## Embed in .NET
 
-The current preview package is `CodexFlow.QueryRuntime.Engine` `0.2.0-preview.21`. Applications should depend on the v2 surface:
+The current stable package is `CodexFlow.QueryRuntime.Engine` `0.23.0`. Applications should depend on the v2 surface:
 
 - `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` for new turns.
 - `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime` when local checkpoint recovery is required.

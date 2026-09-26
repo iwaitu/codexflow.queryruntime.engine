@@ -8,7 +8,7 @@
 
 CodexFlow QueryRuntime 是一个跨平台 .NET Agent Runtime，负责模型循环、工具执行、策略门禁、审计/回放、检查点恢复与沙箱自动化。它既可以嵌入宿主应用，也可以作为独立的 `qre` CLI 运行，不依赖 CodexFlow Web 平台。
 
-当前仓库处于 **0.2 preview、仅 v2** 阶段。新集成应使用 `CodexFlow.QueryRuntime.Protocol` 和 `CodexFlow.QueryRuntime.Engine.V2`。早期 v1 API 仅用于源码迁移和历史 trace 兼容，不再是 CLI 或 CodexFlow 可选后端。
+当前仓库处于 **0.23.0 正式版、仅 v2** 阶段。新集成应使用 `CodexFlow.QueryRuntime.Protocol` 和 `CodexFlow.QueryRuntime.Engine.V2`。早期 v1 API 仅用于源码迁移和历史 trace 兼容，不再是 CLI 或 CodexFlow 可选后端。
 
 ## 当前能力
 
@@ -121,7 +121,7 @@ qre resume latest --workspace . --json
 
 ## 嵌入 .NET 应用
 
-当前预览包为 `CodexFlow.QueryRuntime.Engine` `0.2.0-preview.21`。应用应依赖 v2 接口：
+当前正式包为 `CodexFlow.QueryRuntime.Engine` `0.23.0`。应用应依赖 v2 接口：
 
 - 使用 `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` 发起新 Turn。
 - 需要本地检查点恢复时使用 `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime`。

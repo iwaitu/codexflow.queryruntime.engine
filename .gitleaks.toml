@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+# Synthetic marker used to verify diagnostic credential redaction, including
+# historical commits. This exact value is not a credential.
+[allowlist]
+description = "Outbound diagnostics synthetic API key canary"
+regexTarget = "secret"
+regexes = ['''^CANARY-API-KEY-8d1e$''']
