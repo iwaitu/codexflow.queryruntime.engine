@@ -226,20 +226,44 @@ public sealed class AgentRuntime : IResumableAgentRuntime
             continuationCount: result.Turn.Progress.ContinuationCount,
             error: result.Error);
 
+    /// <summary>
+    /// Presentation wrapper around the host model client. It always exposes the
+    /// attempt-aware capability so the Runtime can hand over its authoritative
+    /// attempt context; the context reaches the inner client only when the inner
+    /// client itself implements <see cref="IRuntimeModelAttemptClient"/>.
+    /// </summary>
     private sealed class PresentingModelClient(
         IRuntimeModelClient inner,
-        RuntimePresentationEmitter emitter) : IRuntimeModelClient
+        RuntimePresentationEmitter emitter) : IRuntimeModelAttemptClient
     {
-        public async IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
+        public IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
             RuntimeModelRequest request,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+            CancellationToken ct = default)
+            => PresentAsync(request, context: null, ct);
+
+        public IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
+            RuntimeModelRequest request,
+            RuntimeModelAttemptContext context,
+            CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            return PresentAsync(request, context, ct);
+        }
+
+        private async IAsyncEnumerable<RuntimeModelStreamEvent> PresentAsync(
+            RuntimeModelRequest request,
+            RuntimeModelAttemptContext? context,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
         {
             await emitter.EmitAsync(
                 RuntimePresentationEventType.StepStarted,
                 ct,
                 stepId: request.StepId).ConfigureAwait(false);
 
-            await foreach (var runtimeEvent in inner.StreamAsync(request, ct).ConfigureAwait(false))
+            var source = context != null && inner is IRuntimeModelAttemptClient attemptClient
+                ? attemptClient.StreamAsync(request, context, ct)
+                : inner.StreamAsync(request, ct);
+            await foreach (var runtimeEvent in source.ConfigureAwait(false))
             {
                 switch (runtimeEvent)
                 {

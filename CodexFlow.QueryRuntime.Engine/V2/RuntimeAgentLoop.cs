@@ -301,7 +301,11 @@ public sealed class RuntimeAgentLoop
                     finalText,
                     token).ConfigureAwait(false);
 
-                (session, var output) = await SampleAsync(session, stepContext, token).ConfigureAwait(false);
+                (session, var output) = await SampleAsync(
+                    session,
+                    stepContext,
+                    attempt.AttemptId.Value,
+                    token).ConfigureAwait(false);
                 session = RuntimeStateReducer.CommitModelOutput(session, stepId, output);
                 finalText = output.Text;
                 await audit.EmitAsync(
@@ -513,6 +517,7 @@ public sealed class RuntimeAgentLoop
     private async Task<(RuntimeSessionState Session, RuntimeModelOutput Output)> SampleAsync(
         RuntimeSessionState session,
         RuntimeStepContext step,
+        string runAttemptId,
         CancellationToken ct)
     {
         while (true)
@@ -524,9 +529,17 @@ public sealed class RuntimeAgentLoop
             var usage = RuntimeUsageTotals.Empty;
             try
             {
-                await foreach (var runtimeEvent in _modelClient
-                                   .StreamAsync(step.ModelRequest, ct)
-                                   .ConfigureAwait(false))
+                // Attempt-aware clients receive the reducer's authoritative ordinal;
+                // legacy clients keep the original call shape and no ordinal.
+                var stream = _modelClient is IRuntimeModelAttemptClient attemptClient
+                    ? attemptClient.StreamAsync(
+                        step.ModelRequest,
+                        new RuntimeModelAttemptContext(
+                            session.ActiveTurn!.Steps[^1].ModelAttempts,
+                            runAttemptId),
+                        ct)
+                    : _modelClient.StreamAsync(step.ModelRequest, ct);
+                await foreach (var runtimeEvent in stream.ConfigureAwait(false))
                 {
                     validator.Apply(runtimeEvent);
                     switch (runtimeEvent)

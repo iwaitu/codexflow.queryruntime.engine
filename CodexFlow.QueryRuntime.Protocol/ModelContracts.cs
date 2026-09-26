@@ -10,6 +10,42 @@ public interface IRuntimeModelClient
         CancellationToken ct = default);
 }
 
+/// <summary>
+/// Optional capability for model clients that accept the Runtime's authoritative
+/// model-attempt information. The Runtime calls this overload only after it has
+/// recorded the attempt in reducer state; clients that do not implement it keep
+/// using <see cref="IRuntimeModelClient.StreamAsync"/> and must treat the attempt
+/// ordinal as unavailable rather than inventing one.
+/// </summary>
+public interface IRuntimeModelAttemptClient : IRuntimeModelClient
+{
+    IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
+        RuntimeModelRequest request,
+        RuntimeModelAttemptContext context,
+        CancellationToken ct = default);
+}
+
+/// <summary>
+/// Provider-free attempt metadata for one Runtime model sampling call.
+/// </summary>
+/// <param name="RuntimeModelAttemptOrdinal">
+/// The Step's <c>ModelAttempts</c> value after the Runtime recorded this attempt
+/// (1-based). After recovery it reflects only the recovered state and can repeat
+/// an ordinal that was used before a crash.
+/// </param>
+/// <param name="RunAttemptId">
+/// The host run/recovery attempt identity when known. It is unrelated to model
+/// retries and HTTP retries.
+/// </param>
+public sealed record RuntimeModelAttemptContext(
+    int RuntimeModelAttemptOrdinal,
+    string? RunAttemptId = null)
+{
+    public int RuntimeModelAttemptOrdinal { get; } = RuntimeModelAttemptOrdinal >= 1
+        ? RuntimeModelAttemptOrdinal
+        : throw new ArgumentOutOfRangeException(nameof(RuntimeModelAttemptOrdinal));
+}
+
 public sealed record RuntimeModelRequest(
     RuntimeSessionId SessionId,
     RuntimeTurnId TurnId,
