@@ -46,7 +46,7 @@ internal sealed class QreDiagnosticsStore : IQreOutboundDiagnosticSink, IAsyncDi
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait
+            FullMode = BoundedChannelFullMode.DropWrite
         });
         _writer = Task.Run(WriteLoopAsync);
     }

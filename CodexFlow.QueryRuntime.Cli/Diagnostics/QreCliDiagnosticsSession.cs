@@ -120,11 +120,17 @@ internal sealed class QreCliDiagnosticsSession : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Volatile.Read(ref _completed) == 0)
+        try
         {
-            await CompleteAsync(null).ConfigureAwait(false);
+            if (Volatile.Read(ref _completed) == 0)
+            {
+                await CompleteAsync(null).ConfigureAwait(false);
+            }
         }
-        await Store.DisposeAsync().ConfigureAwait(false);
+        finally
+        {
+            await Store.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private sealed class DeferredSink : IQreOutboundDiagnosticSink
