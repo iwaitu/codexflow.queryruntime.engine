@@ -45,6 +45,7 @@ internal static class QreCli
         {
             "run" => await RunQueryAsync(args[1..], ct).ConfigureAwait(false),
             "trace" => Trace(args[1..]),
+            "logs" => QreLogCommands.Run(args[1..]),
             "tool" => Tool(args[1..]),
             "policy" => Policy(args[1..]),
             "replay" => await Replay(args[1..], ct).ConfigureAwait(false),
@@ -3051,6 +3052,7 @@ internal static class QreCli
     private static async Task<int> ReplayLatestAsync(string[] args, CancellationToken ct)
     {
         var workspace = Directory.GetCurrentDirectory();
+        string? auditFile = null;
         var runtime = "v2";
         var json = false;
         var summaryOnly = false;
@@ -3083,6 +3085,10 @@ internal static class QreCli
                     }
                     runtime = args[i];
                     break;
+                case "--audit-file":
+                    if (++i >= args.Length) return Fail("--audit-file requires a path.");
+                    auditFile = args[i];
+                    break;
                 default:
                     return Fail($"Unknown replay latest option: {args[i]}");
             }
@@ -3090,8 +3096,10 @@ internal static class QreCli
 
         if (runtime == "v2")
         {
-            return ReplayLatestV2(workspace, json, summaryOnly, strict, ct);
+            return ReplayLatestV2(workspace, json, summaryOnly, strict, ct, auditFile);
         }
+
+        if (auditFile != null) return Fail("--audit-file requires runtime v2.");
 
         if (!summaryOnly)
         {
@@ -3270,11 +3278,14 @@ internal static class QreCli
         bool json,
         bool summaryOnly,
         bool strict,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? selectedAuditFile = null)
     {
         try
         {
-            var auditFile = RuntimeJsonlAuditStore.FindLatestAuditFile(workspace);
+            var auditFile = selectedAuditFile == null ? RuntimeJsonlAuditStore.FindLatestAuditFile(workspace)
+                : QueryRuntimePathSafety.ResolveUnderRoot(Path.GetFullPath(workspace), selectedAuditFile);
+            QueryRuntimePathSafety.RejectWorkspaceLinks(Path.GetFullPath(workspace), auditFile, "replayed");
             var recording = RuntimeJsonlAuditStore.Read(auditFile, ct: ct);
             if (summaryOnly)
             {
@@ -3762,6 +3773,9 @@ internal static class QreCli
         Console.WriteLine("  qre --version");
         Console.WriteLine("  qre init --workspace . [--json] [--force]");
         Console.WriteLine("  qre doctor --workspace . [--json]");
+        Console.WriteLine("  qre logs list|delete --workspace . [--date YYYY-MM-DD|--before YYYY-MM-DD] [--json]");
+        Console.WriteLine("    list: [--from ISO8601] [--to ISO8601] [--descending] [--skip N] [--take N]");
+        Console.WriteLine("    delete: preview by default, --execute to delete; see qre logs --help.");
         Console.WriteLine();
         PrintRunHelp();
         Console.WriteLine();
@@ -3846,6 +3860,7 @@ internal static class QreCli
     {
         Console.WriteLine("Usage:");
         Console.WriteLine("  qre replay latest --workspace . [--runtime v2] [--json] [--summary] [--strict]");
+        Console.WriteLine("    --audit-file <path> selects a v2 audit.v1.jsonl from qre logs list instead of latest.");
         Console.WriteLine("  qre replay latest --workspace . --runtime v1 --summary [--json]  Legacy read-only inspection.");
         Console.WriteLine("    --summary  Read-only trace summary; the runtime is not executed.");
         Console.WriteLine("    --strict   Validates the complete recorded trajectory and emits a stable replay_digest.");

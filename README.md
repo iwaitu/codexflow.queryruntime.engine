@@ -10,7 +10,7 @@ CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and ligh
 
 QRE can be embedded directly into .NET host applications via official NuGet packages or published as a standalone, zero-dependency `qre` Native AOT binary, operating independently of the CodexFlow web platform.
 
-This repository is on the **0.23.1 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
+This repository is on the **0.23.2 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
 
 ---
 
@@ -41,6 +41,7 @@ This repository is on the **0.23.1 stable, v2-only** line. All active developmen
   - [5. Ecosystem Skills & Typical Scenarios](#5-ecosystem-skills--typical-scenarios)
 - [Sandboxing & Security Model](#sandboxing--security-model)
 - [Fault Recovery & Deterministic Replay](#fault-recovery--deterministic-replay)
+- [Troubleshooting & Logs](#troubleshooting--logs)
 - [Model Providers & Thinking Policies](#model-providers--thinking-policies)
   - [Thinking Policy Control (`--thinking`)](#thinking-policy-control---thinking)
   - [Structured Outputs via JSON Schema](#structured-outputs-via-json-schema)
@@ -175,6 +176,7 @@ qre <command> [options]
   tool       List, register, or invoke tools directly
   policy     Pre-flight check tool execution policies and risks
   trace      Inspect event logs, tokens, and execution traces
+  logs       Find runs by time and preview or execute date-based cleanup
   replay     Summarize traces or execute strict offline replay
   rerun      Re-execute the latest task with existing configuration
   resume     Recover an interrupted run from a checkpoint (H1)
@@ -540,6 +542,63 @@ For long-running tasks, QRE's V2 engine guarantees seamless fault recovery:
 
 ---
 
+## Troubleshooting & Logs
+
+Start with the failure time in your application logs, list QRE runs overlapping that interval, then select the corresponding audit for replay. Set `--workspace` to the production workspace that actually stores `.qre`; replace `/app/data` below with that path.
+
+### Find Runs Around a Failure
+
+```sh
+# List all matching runs in ascending start-time order (14:00–14:30 at UTC+08:00)
+qre logs list --workspace /app/data --from 2026-09-27T14:00:00+08:00 --to 2026-09-27T14:30:00+08:00
+
+# Return the same interval as JSON for scripted analysis
+qre logs list --workspace /app/data --from 2026-09-27T14:00:00+08:00 --to 2026-09-27T14:30:00+08:00 --json
+
+# Page through audits in descending start-time order
+qre logs list --workspace /app/data --kind audit --descending --skip 0 --take 100
+
+# Filter by UTC creation date
+qre logs list --workspace /app/data --date 2026-09-27
+```
+
+The range includes its start and excludes its end. Timestamps require seconds and a timezone; output uses UTC. Matching uses **overlapping run intervals**, so a task that started before the failure window can still appear. Each row represents a whole run, not an individual event. Active records are treated as unfinished, including stale active records left by a crashed process. Either `--from` or `--to` may be used alone; neither can be combined with `--date` or `--before`.
+
+Rows include start time, last update time, kind, run ID, status, directory size and absolute path. `--kind` accepts `all` (default), `audit`, `private` or `diagnostics`, covering v2 audits, private audits and SDK diagnostics. Host application logs, v1 traces and externally exported bundles are outside this scope. Pagination limits output only; queries still scan directory metadata.
+
+### Replay a Selected Historical Audit
+
+Append `audit.v1.jsonl` to an audit directory returned by the list command and substitute that path below:
+
+```sh
+# Inspect the selected historical audit summary
+qre replay latest --workspace /app/data --audit-file /app/data/.qre/v2/runs/RUN_ID/audit.v1.jsonl --summary --json
+
+# Strictly validate an audit that supports recorded replay
+qre replay latest --workspace /app/data --audit-file /app/data/.qre/v2/runs/RUN_ID/audit.v1.jsonl --strict --json
+```
+
+`--audit-file` overrides automatic `latest` selection. The file must remain inside the specified workspace and cannot use linked paths. Public redacted audits support summaries only; strict replay requires recorded replay data. Recorded replay does not contact a model or execute real tools. Inspect the selected JSONL for individual failure events. SDK diagnostic directories must be analyzed using the commands in `qre diagnose --help`, rather than passed to audit replay.
+
+### Clean Up Logs by Date
+
+```sh
+# Preview cleanup for one UTC creation date
+qre logs delete --workspace /app/data --date 2026-09-20
+
+# Preview runs created strictly before midnight UTC on this date
+qre logs delete --workspace /app/data --before 2026-09-20
+
+# Apply cleanup after checking the preview
+qre logs delete --workspace /app/data --before 2026-09-20 --execute --json
+```
+
+Deletion requires `--date` or `--before` and only previews matches unless `--execute` is supplied. It removes entire run directories, including checkpoints, replay blobs, artifacts and patches; those records can no longer be replayed or resumed. Active, unknown, corrupt or linked records and `incomplete` SDK diagnostics are preserved. Open writers cause deletion to fail.
+
+Unreadable records appear in JSON `warnings`; deletion failures are reported per run. Invalid arguments, unreadable records or deletion failures return exit code 1. Filesystem deletion is not transactional: permission changes or concurrent external modifications can cause partial deletion. See the [log management guide (Chinese)](docs/log-management.zh-CN.md) for details and `qre logs --help` for all options.
+
+---
+
 ## Model Providers & Thinking Policies
 
 ### Supported Providers
@@ -633,12 +692,12 @@ Model Studio recommends omitting `max_tokens` for structured output to avoid tru
 Embed the QRE V2 engine and model providers directly into any C# / .NET 10 host application:
 
 ### 1. Package References
-Add the official NuGet packages (`0.23.1`):
+Add the official NuGet packages (`0.23.2`):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.1" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.2" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.2" />
 </ItemGroup>
 ```
 
@@ -751,6 +810,7 @@ dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
 
 ## Technical Documentation Index
 
+- [Production Log Management (Chinese)](docs/log-management.zh-CN.md)
 - 📘 [Technical Guide](docs/queryruntime-technical-guide.md) ([中文](docs/queryruntime-technical-guide.zh-CN.md))
 - 🧭 [0.2 Preview Migration Guide](docs/migration-0.2-preview.md) ([中文](docs/migration-0.2-preview.zh-CN.md))
 - 🛡️ [Security Policy (SECURITY.md)](SECURITY.md)

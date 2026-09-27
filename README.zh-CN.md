@@ -10,7 +10,7 @@ CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发�
 
 QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中，也可以编译为零外部依赖的独立 `qre` Native AOT 命令行工具直接运行，完全解耦于 CodexFlow Web 平台。
 
-当前仓库处于 **0.23.1 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
+当前仓库处于 **0.23.2 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
 
 ---
 
@@ -41,6 +41,7 @@ QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中�
   - [5. 典型生态技能与示例](#5-典型生态技能与示例)
 - [沙箱隔离与安全模型](#沙箱隔离与安全模型)
 - [故障自愈与确定性回放](#故障自愈与确定性回放)
+- [故障分析与日志](#故障分析与日志)
 - [模型支持与智能思考策略](#模型支持与智能思考策略)
   - [思考策略控制 (`--thinking`)](#思考策略控制---thinking)
   - [结构化输出与 JSON Schema 请求](#结构化输出与-json-schema-请求)
@@ -179,6 +180,7 @@ qre <command> [options]
   tool       枚举、注册或单步调试调用工具
   policy     静态核查工具命令的安全策略与审批门禁
   trace      审查执行轨迹、事件日志与 Token 用量
+  logs       按时间查询运行日志，预览或执行按日期清理
   replay     执行轨迹摘要阅读或确定性严格重放校验
   rerun      依据历史配置重新发起真实运行
   resume     读取检查点恢复中断的 Agent 任务 (H1 Recovery)
@@ -548,6 +550,63 @@ QRE 拥有出色的离线调试能力：
 
 ---
 
+## 故障分析与日志
+
+生产环境排障可以从应用日志中的故障时间出发：先列出相同时间段内的 QRE 运行记录，再选择对应审计文件进行回放分析。`--workspace` 必须指向生产应用实际保存 `.qre` 的工作区；以下示例中的 `/app/data` 请替换为实际路径。
+
+### 按故障时间段查询
+
+```sh
+# 查询北京时间 14:00 至 14:30，默认按开始时间升序列出全部匹配运行
+qre logs list --workspace /app/data --from 2026-09-27T14:00:00+08:00 --to 2026-09-27T14:30:00+08:00
+
+# 同一时间段输出 JSON，便于脚本分析
+qre logs list --workspace /app/data --from 2026-09-27T14:00:00+08:00 --to 2026-09-27T14:30:00+08:00 --json
+
+# 按开始时间倒序分页查看运行审计
+qre logs list --workspace /app/data --kind audit --descending --skip 0 --take 100
+
+# 按 UTC 创建日期查询
+qre logs list --workspace /app/data --date 2026-09-27
+```
+
+时间段包含起点、不包含终点，时间参数必须带秒和时区，输出统一为 UTC。查询按**运行区间重叠**匹配，因此也会包含在故障前启动、故障期间仍执行的任务；每行表示整次运行，不是单条事件。活动状态按尚未结束处理，异常退出遗留的活动记录也可能匹配。可单独使用 `--from` 或 `--to`，但不能与 `--date` / `--before` 混用。
+
+列表包含开始时间、最后更新时间、类别、运行 ID、状态、目录大小和绝对路径。`--kind` 支持 `all`（默认）、`audit`、`private`、`diagnostics`，覆盖 v2 审计、私有审计和 SDK 诊断。宿主应用日志、v1 trace 和外部导出包不在查询范围内。分页仅限制输出，查询仍扫描目录元数据。
+
+### 选择历史记录回放分析
+
+把列表返回的审计目录加上 `audit.v1.jsonl`，替换以下示例中的路径：
+
+```sh
+# 查看选定历史审计的摘要
+qre replay latest --workspace /app/data --audit-file /app/data/.qre/v2/runs/RUN_ID/audit.v1.jsonl --summary --json
+
+# 对支持记录回放的审计执行严格校验
+qre replay latest --workspace /app/data --audit-file /app/data/.qre/v2/runs/RUN_ID/audit.v1.jsonl --strict --json
+```
+
+`--audit-file` 覆盖 `latest` 的自动选择，不会误选另一条最新记录；文件必须位于指定工作区内，且不能经过链接路径。公共脱敏审计只支持摘要；具备回放数据的记录才支持严格回放。记录回放不会重新调用模型或执行真实工具。需要查看具体故障事件时，可进一步检查所选目录中的 JSONL；SDK 诊断目录使用 `qre diagnose --help` 中的命令分析，不能作为审计文件回放。
+
+### 按日期清理日志
+
+```sh
+# 预览指定 UTC 创建日期的清理范围
+qre logs delete --workspace /app/data --date 2026-09-20
+
+# 预览创建时间早于该 UTC 日期零点的记录
+qre logs delete --workspace /app/data --before 2026-09-20
+
+# 核对预览后实际执行
+qre logs delete --workspace /app/data --before 2026-09-20 --execute --json
+```
+
+删除必须指定 `--date` 或 `--before`，默认仅预览，添加 `--execute` 才实际清理。删除以整个运行目录为单位，包含检查点、回放 blobs、产物与补丁，清理后无法继续用这些记录回放或恢复。活动记录、未知或损坏记录、包含链接的记录以及 `incomplete` SDK 诊断会保留；打开中的写入文件会导致删除失败。
+
+不可读记录会出现在 JSON 的 `warnings` 中，删除失败会逐条报告；参数错误、不可读记录或删除失败返回退出码 1。文件系统删除不是事务，执行时的权限变化或外部并发修改可能导致部分删除。更多说明见[生产环境日志定位与清理](docs/log-management.zh-CN.md)，完整参数见 `qre logs --help`。
+
+---
+
 ## 模型支持与智能思考策略
 
 ### 模型供应商支持
@@ -641,12 +700,12 @@ var options = new VllmChatOptions
 你可以直接将 QRE 核心与模型库作为 NuGet 包集成到任意 C# / .NET 10 应用中（Web API、后台服务或桌面客户端）。
 
 ### 1. 引用核心包
-在你的 `.csproj` 中引入官方 NuGet 包（`0.23.1`）：
+在你的 `.csproj` 中引入官方 NuGet 包（`0.23.2`）：
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.1" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.2" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.2" />
 </ItemGroup>
 ```
 
@@ -769,6 +828,7 @@ dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
 
 ## 技术文档导航
 
+- [生产环境日志定位与清理](docs/log-management.zh-CN.md)
 - 📘 [QRE 架构技术指南 (中文)](docs/queryruntime-technical-guide.zh-CN.md) ｜ [English](docs/queryruntime-technical-guide.md)
 - 🧭 [0.2 预览版迁移指南 (中文)](docs/migration-0.2-preview.zh-CN.md) ｜ [English](docs/migration-0.2-preview.md)
 - 🛡️ [安全政策与漏洞提报 (SECURITY.md)](SECURITY.md)

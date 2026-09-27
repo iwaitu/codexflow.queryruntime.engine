@@ -29,6 +29,7 @@ if [[ ! -x "${QRE_BIN}" ]]; then
 fi
 
 mkdir -p "${SCRATCH}"
+SCRATCH="$(cd "${SCRATCH}" && pwd)"
 
 # Extract a compact-JSON string field: json_str <file> <key>
 json_str() {
@@ -125,4 +126,22 @@ echo "replay_digest #2:  ${D2}"
 [[ "${D1}" == "${D2}" ]] || fail "strict replay digest is not deterministic (${D1} != ${D2})"
 
 echo
+echo "== qre logs list and selected audit replay =="
+"${QRE_BIN}" logs list --workspace "${RUN_WS}" --from 2000-01-01T00:00:00Z --to 9999-01-01T00:00:00Z --json > "${SCRATCH}/logs.json"
+grep -aq '"runId"' "${SCRATCH}/logs.json" || fail "logs list did not return run records"
+grep -aq '"warnings": \[\]' "${SCRATCH}/logs.json" || fail "logs list reported unreadable runs"
+for AUDIT_FILE in "${RUN_WS}"/.qre/v2/runs/*/audit.v1.jsonl; do
+  "${QRE_BIN}" replay latest --workspace "${RUN_WS}" --audit-file "${AUDIT_FILE}" --strict --json > "${SCRATCH}/selected-replay.json"
+  [[ "$(json_str "${SCRATCH}/selected-replay.json" type)" == "qre.v2.replay.completed" ]] || fail "selected audit replay failed"
+  break
+done
+
+echo "== qre logs delete preview and execute on disposable copy =="
+"${QRE_BIN}" logs delete --workspace "${W1}" --before 9999-01-01 --json > "${SCRATCH}/logs-preview.json"
+grep -aq '"outcome": "would_delete"' "${SCRATCH}/logs-preview.json" || fail "cleanup preview did not match completed runs"
+"${QRE_BIN}" logs delete --workspace "${W1}" --before 9999-01-01 --execute --json > "${SCRATCH}/logs-delete.json"
+grep -aq '"outcome": "deleted"' "${SCRATCH}/logs-delete.json" || fail "cleanup did not delete completed runs"
+"${QRE_BIN}" logs list --workspace "${W1}" --json > "${SCRATCH}/logs-empty.json"
+grep -aq '"total": 0' "${SCRATCH}/logs-empty.json" || fail "cleanup left run records behind"
+
 echo "Native AOT smoke passed."

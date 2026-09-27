@@ -105,5 +105,42 @@ The GitHub release workflow uploads `artifacts/nuget/SHA256SUMS` together with
 the `.nupkg` and `.snupkg` files. Native CLI archives also have per-file
 `.sha256` files.
 
-Package signing or provenance attestations should be added before publishing QRE
-packages to a public feed.
+## Automated NuGet Publishing
+
+`.github/workflows/release.yml` publishes both `CodexFlow.QueryRuntime.Engine`
+and `CodexFlow.QueryRuntime.Models` through NuGet Trusted Publishing. In the
+`iwaitu` NuGet account, the policy must cover both package IDs and bind to:
+
+- Repository owner: `iwaitu`
+- Repository: `codexflow.queryruntime.engine`
+- Workflow: `release.yml` (filename only)
+- Environment: empty (the publishing job does not use a GitHub environment)
+
+The current policy permits new versions of these existing packages. Adding a new
+package ID requires a matching policy scope before attempting its first upload.
+No long-lived `NUGET_API_KEY` repository secret is required: the publishing job
+uses `id-token: write` and the pinned `NuGet/login` action to exchange GitHub's
+OIDC token for a temporary API key immediately before uploading.
+
+After updating `Directory.Build.props`, version examples and the CLI version
+test, commit and push the changes. Open **Actions → Release → Run workflow**, set
+`version` to the same version (for example `0.23.2`), and set `release_ref` to the
+reviewed commit SHA on `main`. Ordinary pushes run CI only; they do not publish.
+
+The workflow builds and tests the selected commit, validates native binaries,
+checks security, packs and smoke-tests the packages, then downloads the exact
+tested packages and verifies their checksums. It pushes Engine followed by
+Models to `https://api.nuget.org/v3/index.json`. Only after successful NuGet
+uploads does it create the GitHub Release and artifact provenance attestations.
+`.snupkg` files are retained as release assets; automatic symbol publishing is
+disabled.
+
+NuGet validation and indexing may finish after the upload succeeds. Check both
+package version pages before reporting public availability. If a publish attempt
+partially succeeds, rerun the failed jobs; `--skip-duplicate` permits retrying
+already-uploaded versions. NuGet versions remain immutable, so a changed package
+requires a new version. A 401 or 403 should be investigated against the policy's
+account, repository, workflow, package scope and environment, rather than worked
+around by adding a permanent API key.
+
+See [NuGet's Trusted Publishing documentation](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing).
