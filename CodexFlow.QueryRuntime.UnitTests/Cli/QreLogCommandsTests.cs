@@ -67,13 +67,27 @@ public sealed class QreLogCommandsTests : IDisposable
         Assert.True(Directory.Exists(boundary));
     }
 
-    [Fact]
-    public void LockedRunFailsWithoutDeletingFiles()
+    [Theory]
+    [InlineData(FileShare.Read)]
+    [InlineData(FileShare.ReadWrite)]
+    public void LockedRunFailsWithoutDeletingFiles(FileShare writerShare)
     {
         var path = Add("locked", "2026-09-26T00:00:00Z", "2026-09-26T00:01:00Z");
-        using var writer = new FileStream(Path.Combine(path, "audit.v1.jsonl"), FileMode.Open, FileAccess.Write, FileShare.Read);
-        Assert.Equal(1, Run("delete", "--date", "2026-09-26", "--execute").Code);
-        Assert.True(File.Exists(Path.Combine(path, "manifest.json")));
+        var auditPath = Path.Combine(path, "audit.v1.jsonl");
+        var manifestPath = Path.Combine(path, "manifest.json");
+        var originalManifest = File.ReadAllText(manifestPath);
+        using (var writer = new FileStream(auditPath, FileMode.Open, FileAccess.Write, writerShare))
+        {
+            var result = Run("delete", "--date", "2026-09-26", "--execute");
+            Assert.Equal(1, result.Code);
+            Assert.Contains("\"outcome\": \"failed\"", result.Output);
+            Assert.Equal(originalManifest, File.ReadAllText(manifestPath));
+            using var reader = new StreamReader(new FileStream(auditPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+            Assert.Equal("fixture", reader.ReadToEnd());
+        }
+        // Failed cleanup must release every earlier lease, allowing a subsequent retry.
+        Assert.Equal(0, Run("delete", "--date", "2026-09-26", "--execute").Code);
+        Assert.False(Directory.Exists(path));
     }
 
     [Fact]

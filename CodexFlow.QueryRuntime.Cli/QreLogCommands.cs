@@ -83,12 +83,14 @@ internal static class QreLogCommands
                         if (!current.CanDelete || current.CreatedUtc != entry.CreatedUtc)
                             throw new IOException("Run changed or is no longer eligible for deletion.");
                         var files = SafeFiles(workspace, entry.Path).ToArray();
-                        // Refuse open writers before touching any file. FileShare.Delete permits our deletion
-                        // while exclusive leases exclude cooperating .NET readers/writers across platforms.
+                        // Unix maps only FileShare.None to LOCK_EX; even Delete uses LOCK_SH.
+                        // Unix permits unlink while holding that exclusive advisory lock. Windows
+                        // instead needs Delete sharing to allow our own deletion with open handles.
+                        var deleteShare = OperatingSystem.IsWindows() ? FileShare.Delete : FileShare.None;
                         var leases = new List<FileStream>();
                         try
                         {
-                            foreach (var file in files) leases.Add(new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Delete));
+                            foreach (var file in files) leases.Add(new FileStream(file, FileMode.Open, FileAccess.Read, deleteShare));
                             QueryRuntimePathSafety.RejectWorkspaceLinks(workspace, entry.Path, "deleted");
                             foreach (var file in files)
                             {
