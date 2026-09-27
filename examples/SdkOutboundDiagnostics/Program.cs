@@ -95,7 +95,7 @@ internal static class DefectiveHostDemo
             [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("Return a JSON object describing the fixture.")])],
             [],
             new RuntimeModelParameters(Model: Model, Temperature: 0.2, MaxOutputTokens: 256, RequireJsonObject: true),
-            new RuntimePolicySnapshot("example-v1", "none"),
+            new RuntimePolicySnapshot("diagnostics-v2", "none"),
             new RuntimeEnvironmentSnapshot("local", workspace, "sdk-diagnostics-demo"),
             new RuntimeBudgetSnapshot(2, 1, maxContinuations: 0));
         var result = await new AgentRuntime(modelClient).RunAsync(new RuntimeRunRequest(request), null, ct);

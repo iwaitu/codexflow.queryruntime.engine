@@ -31,15 +31,45 @@ DEFAULT_PROMPT = (
 )
 
 
+def resolve_qre_path(explicit_path: str | None = None) -> str:
+    if explicit_path and explicit_path != "qre":
+        target = Path(explicit_path)
+        if sys.platform == "win32" and not target.suffix and target.with_suffix(".exe").is_file():
+            return str(target.with_suffix(".exe"))
+        return explicit_path
+    env_path = os.environ.get("QRE_BIN")
+    if env_path:
+        target = Path(env_path)
+        if sys.platform == "win32" and not target.suffix and target.with_suffix(".exe").is_file():
+            return str(target.with_suffix(".exe"))
+        return env_path
+
+    root = Path(__file__).resolve().parents[2]
+    binary_name = "qre.exe" if sys.platform == "win32" else "qre"
+    candidates = [
+        root / f"CodexFlow.QueryRuntime.Cli/bin/Debug/net10.0/{binary_name}",
+        root / f"CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/{binary_name}",
+        root / f"CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/osx-arm64/publish/{binary_name}",
+        root / f"CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/linux-x64/publish/{binary_name}",
+        root / f"CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/win-x64/publish/{binary_name}",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return "qre"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", nargs="?", default=".", help="Repository/workspace to inspect.")
-    parser.add_argument("--qre", default=os.environ.get("QRE_BIN", "qre"), help="qre binary path.")
+    parser.add_argument("--qre", default=None, help="qre binary path.")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Prompt passed to qre run.")
     parser.add_argument("--max-rounds", default="6", help="QRE runtime round limit.")
     parser.add_argument("--appsettings", default=str(DEFAULT_APPSETTINGS), help="CodexFlow appsettings.json provider source.")
     parser.add_argument("--provider-section", default=DEFAULT_PROVIDER_SECTION, help="Provider section inside appsettings.json.")
     args = parser.parse_args()
+
+    qre_bin = resolve_qre_path(args.qre)
 
     env = os.environ.copy()
     provider_source = load_provider_env(
@@ -55,7 +85,7 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "Set QRE_API_URL, QRE_API_KEY, QRE_MODEL, or point --appsettings at a CodexFlow appsettings.json.",
+            "Set QRE_API_URL, QRE_API_KEY, QRE_MODEL, or point --appsettings at a provider appsettings.json.",
             file=sys.stderr,
         )
         return 2
@@ -75,7 +105,7 @@ def main() -> int:
     print("Streaming live provider answer:")
 
     command = [
-        args.qre,
+        qre_bin,
         "run",
         "--workspace",
         str(workspace),
@@ -94,7 +124,7 @@ def main() -> int:
     if exit_code != 0:
         return exit_code
 
-    replay = read_latest_replay(args.qre, workspace, env)
+    replay = read_latest_replay(qre_bin, workspace, env)
     # A successful required-tool run guarantees qre_list_files was called.
     # Let QRE validate the versioned audit and any blob payloads rather than
     # interpreting raw storage records in this host.

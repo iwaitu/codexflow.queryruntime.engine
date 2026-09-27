@@ -1,87 +1,97 @@
 # ExternalTools
 
-This example shows how to register a new out-of-process QRE tool without linking
-third-party code into the Native AOT CLI.
+This example demonstrates how to register and execute out-of-process custom tools in QRE without compiling third-party code into the Native AOT CLI binary.
 
-## Register
+---
 
-Install the manifest into the workspace-local registry at `.qre/tools`:
+## 1. Tool Manifest (`echo_tool.manifest.json`)
 
-```bash
-qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json
-```
-
-The command copies the manifest to `.qre/tools/demo_echo_tool.json`. Re-run with
-`--force` when you intentionally want to overwrite an existing registration.
-
-The manifest points at a stdio process:
+The manifest defines the tool command, protocol, capabilities, and arguments schema:
 
 ```json
 {
   "name": "demo_echo_tool",
+  "description": "Echo a message and report the workspace directory name.",
   "transport": "stdio",
-  "command": "python3",
+  "command": "python",
   "args": ["examples/ExternalTools/echo_tool.py"],
-  "capabilities": ["read_fs"]
-}
-```
-
-For `stdio`, QRE writes this JSON shape to the tool's stdin:
-
-```json
-{
-  "name": "demo_echo_tool",
-  "workspacePath": "/path/to/workspace",
-  "arguments": {
-    "message": "hello"
+  "capabilities": ["read_fs"],
+  "timeoutSeconds": 30,
+  "maxOutputBytes": 200000,
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "Message to echo."
+      }
+    }
   }
 }
 ```
 
-The tool returns either plain text or:
+> **Note**: On Linux / macOS systems where Python 3 is installed as `python3`, specify `"command": "python3"`. On Windows or unified environments, use `"command": "python"`.
 
-```json
-{ "result": { "message": "hello", "workspaceName": "repo" } }
+---
+
+## 2. Register Tool
+
+Register the manifest into the workspace registry (`.qre/tools/`):
+
+```bash
+qre tool register --workspace . --manifest examples/ExternalTools/echo_tool.manifest.json --force
 ```
 
-## Discover
-
+Verify registration:
 ```bash
 qre tool list --workspace . --profile readonly --external --json
 ```
 
-## Invoke Through QRE
+---
 
-Use `--external` to include manifests in the runtime tool surface. Use
-`--required-tool` when you want a deterministic smoke that forces a specific tool
-call before normal tool mode resumes:
+## 3. Direct Tool Invocation (Debugging)
+
+Test the tool in isolation without launching the LLM loop:
+
+```bash
+qre tool invoke \
+  --workspace . \
+  --name demo_echo_tool \
+  --arguments '{"message":"hello QRE"}' \
+  --json
+```
+
+Output:
+```json
+{
+  "result": {
+    "message": "hello QRE",
+    "workspaceName": "codexflow.queryruntime.engine"
+  }
+}
+```
+
+---
+
+## 4. Model-Driven Tool Execution
+
+When running with `--external`, external tools require explicit plan approval (`--approve-risk`) to enforce fail-closed security:
 
 ```bash
 qre run \
   --workspace . \
   --profile readonly \
   --external \
-  --approve-risk "Run the reviewed local example tool" \
+  --approve-risk "Run reviewed local echo tool" \
   --required-tool demo_echo_tool \
   --stream \
   "Call demo_echo_tool with message='hello from QRE', then summarize the result."
 ```
 
-## Boundaries
+---
 
-External tools are intentionally process-isolated:
+## Security Boundaries
 
-- QRE does not load tool DLLs into the CLI process.
-- The tool process receives an allowlisted environment, not provider secrets.
-- The process is killed on timeout or cancellation.
-- `mcp-stdio` is also supported for one-shot JSON-RPC `tools/call`, but the full
-  MCP initialize lifecycle is not implemented yet.
-
-External tools in v2 require plan-bound approval even with `read_fs`. The
-`--approve-risk` reason authorizes external tool plans for this run; use a
-workspace containing only manifests you have reviewed. Stdio processes run as
-the local user, so these examples are for trusted local workspaces.
-
-The current QRE external adapter exposes a fixed argument envelope
-(`extension`, `max_files`, `max_chars`, `message`, `path`, `pattern`). Manifest
-`inputSchema` is recorded for compatibility but is not the model-facing schema.
+- **Process Isolation**: External tools run as standalone OS child processes communicating exclusively via standard IO (JSON over stdin/stdout).
+- **Environment Isolation**: Tools receive allowlisted environment variables, never provider API credentials or tokens.
+- **Fail-Closed Approval**: External tool plans always require `--approve-risk "<reason>"`.

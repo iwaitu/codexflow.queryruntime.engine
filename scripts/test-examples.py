@@ -13,7 +13,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIGURATION = os.environ.get('QRE_EXAMPLE_CONFIGURATION', 'Debug')
-QRE = Path(os.environ.get('QRE_BIN', ROOT / f'CodexFlow.QueryRuntime.Cli/bin/{CONFIGURATION}/net10.0/qre'))
+QRE_RAW = os.environ.get('QRE_BIN')
+if QRE_RAW:
+    QRE = Path(QRE_RAW)
+else:
+    binary_name = 'qre.exe' if sys.platform == 'win32' else 'qre'
+    QRE = ROOT / f'CodexFlow.QueryRuntime.Cli/bin/{CONFIGURATION}/net10.0/{binary_name}'
+
+if sys.platform == 'win32' and not str(QRE).lower().endswith('.exe') and QRE.with_suffix('.exe').is_file():
+    QRE = QRE.with_suffix('.exe')
 
 
 class Model(http.server.BaseHTTPRequestHandler):
@@ -71,8 +79,9 @@ class Examples(unittest.TestCase):
         result = subprocess.run([str(x) for x in args], cwd=ROOT, env=self.env,
                                 input=json.dumps(request) if request else None,
                                 capture_output=True, text=True, timeout=300)
-        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-        return result.stdout
+        out = (result.stdout or "") + (result.stderr or "")
+        self.assertEqual(result.returncode, expected, out)
+        return result.stdout or ""
 
     @contextlib.contextmanager
     def model(self):

@@ -39,14 +39,12 @@ if (!Directory.Exists(workspace))
     return 1;
 }
 
-var qrePath = options.QrePath ??
-    Environment.GetEnvironmentVariable("QRE_BIN") ??
-    "qre";
+var qrePath = ResolveQrePath(options.QrePath);
 var provider = LoadProviderSettings(options);
 if (!options.Offline && !provider.HasRequiredSettings)
 {
     Console.Error.WriteLine("Missing real-provider configuration: QRE_API_URL, QRE_API_KEY, QRE_MODEL.");
-    Console.Error.WriteLine("Set environment variables, or pass --appsettings /path/to/codexflow/CodexFlow/appsettings.json.");
+    Console.Error.WriteLine("Set environment variables (QRE_API_URL, QRE_API_KEY, QRE_MODEL), or pass --appsettings /path/to/appsettings.json.");
     return 2;
 }
 
@@ -339,6 +337,50 @@ static bool HasRequiredProviderSettings(IReadOnlyDictionary<string, string> envi
     => environment.ContainsKey("QRE_API_URL") &&
        environment.ContainsKey("QRE_API_KEY") &&
        environment.ContainsKey("QRE_MODEL");
+
+static string ResolveQrePath(string? explicitPath)
+{
+    if (!string.IsNullOrWhiteSpace(explicitPath))
+    {
+        return explicitPath;
+    }
+
+    var envPath = Environment.GetEnvironmentVariable("QRE_BIN");
+    if (!string.IsNullOrWhiteSpace(envPath))
+    {
+        return envPath;
+    }
+
+    var current = new DirectoryInfo(Directory.GetCurrentDirectory());
+    while (current != null)
+    {
+        if (File.Exists(Path.Combine(current.FullName, "CodexFlow.QueryRuntime.slnx")))
+        {
+            var binaryName = OperatingSystem.IsWindows() ? "qre.exe" : "qre";
+            var candidates = new[]
+            {
+                Path.Combine(current.FullName, "CodexFlow.QueryRuntime.Cli", "bin", "Debug", "net10.0", binaryName),
+                Path.Combine(current.FullName, "CodexFlow.QueryRuntime.Cli", "bin", "Release", "net10.0", binaryName),
+                Path.Combine(current.FullName, "CodexFlow.QueryRuntime.Cli", "bin", "Release", "net10.0", "osx-arm64", "publish", binaryName),
+                Path.Combine(current.FullName, "CodexFlow.QueryRuntime.Cli", "bin", "Release", "net10.0", "linux-x64", "publish", binaryName),
+                Path.Combine(current.FullName, "CodexFlow.QueryRuntime.Cli", "bin", "Release", "net10.0", "win-x64", "publish", binaryName),
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+            break;
+        }
+
+        current = current.Parent;
+    }
+
+    return "qre";
+}
 
 static string ResolveDefaultAppsettingsPath()
 {

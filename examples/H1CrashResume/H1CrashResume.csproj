@@ -7,7 +7,6 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\CodexFlow.QueryRuntime.Abstractions\CodexFlow.QueryRuntime.Abstractions.csproj" />
     <ProjectReference Include="..\..\CodexFlow.QueryRuntime.Engine\CodexFlow.QueryRuntime.Engine.csproj" />
     <ProjectReference Include="..\..\CodexFlow.QueryRuntime.Experimental\CodexFlow.QueryRuntime.Experimental.csproj" />
     <ProjectReference Include="..\..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" />

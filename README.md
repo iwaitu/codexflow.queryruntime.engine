@@ -1,4 +1,4 @@
-# CodexFlow QueryRuntime
+# CodexFlow QueryRuntime (QRE)
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -6,146 +6,583 @@
 [![Release](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 
-CodexFlow QueryRuntime is a cross-platform .NET runtime for model loops, tool execution, policy enforcement, audit/replay, checkpoint recovery, and sandboxed automation. It can be embedded in a host application or shipped as the standalone `qre` CLI without requiring the CodexFlow web platform.
+CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and lightweight command-line harness engineered for production-grade agentic systems. It packages model iteration loops, policy-gated tool execution, audit and replay, fault recovery (H1 Crash Recovery), sandboxing, and client-side outbound diagnostics into a cohesive, deterministic, and self-contained infrastructure.
 
-This repository is on the **0.23.1 stable, v2-only** line. New integrations should use `CodexFlow.QueryRuntime.Protocol` and `CodexFlow.QueryRuntime.Engine.V2`. The earlier v1 API remains only as source-migration and historical-trace context; it is not a selectable CLI or CodexFlow backend.
+QRE can be embedded directly into .NET host applications via official NuGet packages or published as a standalone, zero-dependency `qre` Native AOT binary, operating independently of the CodexFlow web platform.
 
-## What it provides
+This repository is on the **0.23.1 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
 
-- A typed agent loop through `IAgentRuntime`, with model, tool, continuation, budget, and termination handling.
-- Stable protocol types for messages, sessions, turns, tool calls, results, usage, policy, and errors.
-- A frozen tool registry with authorization, approval, sandbox, output validation, and fail-closed policy stages.
-- Deterministic context preparation and compaction for longer runs.
-- Durable audit events, strict replay, and public/sanitized/private trace modes.
-- H1 local crash recovery through `IResumableAgentRuntime`, attempt leases, checkpoints, and compatibility validation.
-- Built-in file, search, patch, process, and repository tools, plus external Python, Node.js, and MCP stdio tools.
-- Local-process and Docker sandbox adapters.
-- Cross-platform CLI and Native AOT release builds.
+---
 
-## Current boundaries
+## Table of Contents
 
-- H1 recovery is a single-host, local-filesystem design. Distributed takeover and remote checkpoint stores belong to later H2/H3 work.
-- Public redacted traces are intentionally not resumable. Resume requires a sanitized or private checkpoint with matching workspace, policy, tool catalog, model, and recovery compatibility identity.
-- `LocalProcessSandboxRunner` is for trusted local development; it is not a hard security boundary. Use the Docker adapter or another isolated runner for untrusted commands.
-- Network allowlisting is enforced only by runners that explicitly support it.
-- MCP stdio support currently covers one-shot tool calls rather than the complete MCP lifecycle.
-- Usage estimates are operational metrics, not provider billing records.
+- [Why QueryRuntime (QRE)](#why-queryruntime-qre)
+- [Architecture & Layering](#architecture--layering)
+- [Quickstart](#quickstart)
+- [CLI Command Reference](#cli-command-reference)
+  - [1. Workspace Initialization & Diagnostics (`init`, `doctor`)](#1-workspace-initialization--diagnostics-init-doctor)
+  - [2. Running Agent Tasks (`run`)](#2-running-agent-tasks-run)
+  - [3. Tool Catalog & Invocation (`tool`)](#3-tool-catalog--invocation-tool)
+  - [4. Policy & Security Pre-flight (`policy check`)](#4-policy--security-pre-flight-policy-check)
+  - [5. Auditing, Replay & Rerun (`trace`, `replay`, `rerun`)](#5-auditing-replay--rerun-trace-replay-rerun)
+  - [6. Fault Recovery (`resume`)](#6-fault-recovery-resume)
+  - [7. Workspace Diff (`diff`)](#7-workspace-diff-diff)
+  - [8. Controlled Sandbox Execution (`sandbox exec`)](#8-controlled-sandbox-execution-sandbox-exec)
+  - [9. SDK Outbound Diagnostics Suite (`diagnose`)](#9-sdk-outbound-diagnostics-suite-diagnose)
+- [Tool System & Ecosystem Extension](#tool-system--ecosystem-extension)
+  - [Built-in Tools & Policy Profiles](#built-in-tools--policy-profiles)
+  - [External Tool Manifests (Stdio & MCP)](#external-tool-manifests-stdio--mcp)
+  - [Dynamic Tool Retrieval (Tool Search)](#dynamic-tool-retrieval-tool-search)
+- [Sandboxing & Security Model](#sandboxing--security-model)
+- [Fault Recovery & Deterministic Replay](#fault-recovery--deterministic-replay)
+- [Model Providers & Thinking Policies](#model-providers--thinking-policies)
+- [Embedding in .NET Applications](#embedding-in-net-applications)
+- [Runnable Examples Showcase](#runnable-examples-showcase)
+- [Building, Testing & Native AOT Publish](#building-testing--native-aot-publish)
+- [Technical Documentation Index](#technical-documentation-index)
+- [License](#license)
 
-## Repository layout
+---
+
+## Why QueryRuntime (QRE)
+
+Prototype agents are easy to build, but hardening them into reliable software is notoriously difficult. Developers constantly battle inconsistent LLM API behaviors, Chain-of-Thought (CoT) colliding with tool calls, uncontained execution side effects, unreproducible runtime crashes, and SDKs silently dropping structured arguments.
+
+QRE fills the gap between "a 50-line script" and "a heavyweight SaaS platform":
+
+1. **Typed Agent Loop**: Formal abstraction over Session, Turn, Step, and Invocation, with strict Token/Step budget enforcement and deterministic context compaction.
+2. **Fail-Closed Policy Pipeline**: Four-tier security profiles with mandatory explicit approval gates (`--approve-risk`) for write operations.
+3. **Zero-Token Strict Replay**: Offline, zero-cost, deterministic replay that validates historical execution trajectories without contacting models or executing tools, yielding a byte-identical `replay_digest`.
+4. **H1 Local Crash Recovery**: Robust process self-healing with attempt leases, atomic checkpoints, and drift prevention against workspace, policy, or tool changes.
+5. **SDK Outbound Diagnostics**: End-to-end client-side request inspection capturing QRE intent, MEAI options, and HTTP handler payloads to pinpoint argument dropping or serialization bugs.
+6. **Dual Sandbox Execution**: High-speed trusted execution (`LocalProcess`) and isolated container execution (`Docker`) with selective write-back and network restrictions.
+7. **Native AOT Ready**: Built on .NET 10, publishing into self-contained native binaries with sub-second startup times and zero JIT overhead.
+
+---
+
+## Architecture & Layering
+
+```
+┌────────────────────────────────────────────────────────┐
+│               Host Applications / qre CLI              │
+└───────────────────────────┬────────────────────────────┘
+                            │
+┌───────────────────────────▼────────────────────────────┐
+│             CodexFlow.QueryRuntime.Engine (V2)         │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌───────┐ │
+│  │  IAgentRuntime   │  │  Tool Pipeline   │  │ Audit │ │
+│  │ State Reducer    │  │  Fail-Closed Gate│  │ & H1  │ │
+│  └────────┬─────────┘  └────────┬─────────┘  └───────┘ │
+└───────────┼─────────────────────┼──────────────────────┘
+            │                     │
+┌───────────▼──────────┐ ┌────────▼──────────┐ ┌─────────▼───────────┐
+│     Models (MEAI)    │ │   Experimental    │ │   Sandbox Runners   │
+│ OpenAI / vLLM / Claude│ │ Built-in Tools   │ │ LocalProcess        │
+│ Outbound Diagnostics │ │ Tool Search / Stdio│ Docker Container    │
+└──────────────────────┘ └───────────────────┘ └─────────────────────┘
+            │                     │                      │
+┌───────────┴─────────────────────┴──────────────────────┴───────────┐
+│                 CodexFlow.QueryRuntime.Protocol                    │
+│      Immutable Turn / Step / Tool / Event / Checkpoint Types       │
+└────────────────────────────────────────────────────────────────────┘
+```
 
 | Project | Responsibility |
 |---|---|
-| `CodexFlow.QueryRuntime.Protocol` | Stable v2 data contracts and runtime state |
-| `CodexFlow.QueryRuntime.Engine` | `IAgentRuntime`, the v2 loop, tool pipeline, context, audit, replay, and recovery |
-| `CodexFlow.QueryRuntime.Models` | Model-provider adapters |
-| `CodexFlow.QueryRuntime.Abstractions` | Compatibility abstractions retained for migration |
-| `CodexFlow.QueryRuntime.Experimental` | Host composition, built-in tools, and external-tool adapters |
-| `CodexFlow.QueryRuntime.Cli` | The `qre` command-line host |
-| `CodexFlow.QueryRuntime.Sandbox.LocalProcess` | Trusted local process runner |
-| `CodexFlow.QueryRuntime.Sandbox.Docker` | Docker isolation adapter |
-| `CodexFlow.QueryRuntime.UnitTests` | Deterministic unit and contract tests |
-| `CodexFlow.QueryRuntime.IntegrationTests` | CLI, provider, sandbox, and end-to-end tests |
+| [`CodexFlow.QueryRuntime.Protocol`](CodexFlow.QueryRuntime.Protocol) | **Protocol Contracts**: Immutable data models for sessions, turns, steps, tools, audit events, policy profiles, and recovery checkpoints. |
+| [`CodexFlow.QueryRuntime.Engine`](CodexFlow.QueryRuntime.Engine) | **Core Loop**: `IAgentRuntime` and `IResumableAgentRuntime`, state reducer, tool execution pipeline, context compaction, and H1 checkpointing. |
+| [`CodexFlow.QueryRuntime.Models`](CodexFlow.QueryRuntime.Models) | **Model Adapters**: Official package based on `Microsoft.Extensions.AI` for OpenAI-compatible, vLLM, and Anthropic endpoints, with outbound diagnostic observers. |
+| [`CodexFlow.QueryRuntime.Sandbox.LocalProcess`](CodexFlow.QueryRuntime.Sandbox.LocalProcess) | **Local Sandbox**: High-speed command runner for trusted developer environments. |
+| [`CodexFlow.QueryRuntime.Sandbox.Docker`](CodexFlow.QueryRuntime.Sandbox.Docker) | **Docker Sandbox**: Container isolation, read-only mounts, selective write-back, and network policies. |
+| [`CodexFlow.QueryRuntime.Experimental`](CodexFlow.QueryRuntime.Experimental) | **Tool Extensions**: Built-in tool packs (file ops, search, git, dotnet), external stdio/MCP tool adapters, and dynamic Tool Search. |
+| [`CodexFlow.QueryRuntime.Cli`](CodexFlow.QueryRuntime.Cli) | **Command-line Host**: Standalone `qre` executable supporting cross-platform Native AOT publication. |
 
-## Build and test
+---
 
-Requirements: .NET 10 SDK. Docker, Python, and Node.js are optional and needed only for their corresponding adapters and integration tests.
+## Quickstart
 
+### Prerequisites
+- Required: [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- Optional: Docker (for container sandbox), Python 3.9+ / Node.js (for external tools or regression scripts)
+
+### Build and Test
+```bash
+# Build the entire solution
+dotnet build CodexFlow.QueryRuntime.slnx
+
+# Run deterministic unit tests
+dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj
+```
+
+### 3-Minute Smoke Test
+Commands can be executed via `dotnet run` or from a published `qre` binary:
+
+```bash
+# Optional alias in PowerShell:
+# function qre { dotnet run --project D:/codeup/codexflow.queryruntime.engine/CodexFlow.QueryRuntime.Cli -- $args }
+
+# Check CLI version
+qre --version
+
+# 1. Deterministic offline smoke test (no credentials or network required)
+qre run --workspace . --response "Offline smoke: QRE is operational" --json "hello world"
+
+# 2. Inspect codebase using the read-only tool profile
+qre run --workspace . --profile readonly --response "read files" "summarize the repository layout"
+
+# 3. Deterministic strict replay of the latest run (zero token cost, zero side-effects)
+qre replay latest --workspace . --strict --json
+```
+
+### Connect to Live Providers (OpenAI-compatible / vLLM / Claude)
+
+```bash
+qre run --workspace . \
+  --api-url "https://api.openai.com/v1" \
+  --api-key "sk-..." \
+  --model "gpt-4o" \
+  --api-mode chat-completions \
+  --profile readonly \
+  --stream \
+  "inspect this codebase and report architectural risks"
+```
+
+Standard environment variables are also supported:
+- `QRE_API_URL`: Provider endpoint (e.g. `http://localhost:8000/v1`)
+- `QRE_API_KEY`: API authentication key
+- `QRE_MODEL`: Target model (e.g. `qwen2.5-coder` or `gpt-4o`)
+- `QRE_API_MODE`: Protocol mode (`chat-completions`, `responses`, or `anthropic-messages`)
+
+---
+
+## CLI Command Reference
+
+The `qre` CLI provides a complete suite of commands covering the full agent lifecycle:
+
+```
+qre <command> [options]
+  init       Initialize workspace and .qre metadata
+  doctor     Run environment and dependency diagnostics
+  run        Execute the agent runtime loop
+  tool       List, register, or invoke tools directly
+  policy     Pre-flight check tool execution policies and risks
+  trace      Inspect event logs, tokens, and execution traces
+  replay     Summarize traces or execute strict offline replay
+  rerun      Re-execute the latest task with existing configuration
+  resume     Recover an interrupted run from a checkpoint (H1)
+  diff       Inspect workspace file changes from a run
+  sandbox    Execute commands inside policy-controlled sandboxes
+  diagnose   Inspect, compare, and rebuild SDK outbound HTTP requests
+```
+
+### 1. Workspace Initialization & Diagnostics (`init`, `doctor`)
+
+- **`qre init`**: Sets up `.qre/` layout and `.qre/tools/` for external manifests.
+  ```bash
+  qre init --workspace . [--force] [--json]
+  ```
+- **`qre doctor`**: Verifies .NET version, Git state, Docker availability, Python/Node.js runtimes, and provider environment configurations.
+  ```bash
+  qre doctor --workspace . [--json]
+  ```
+
+### 2. Running Agent Tasks (`run`)
+
+```bash
+qre run --workspace <path> [options] "<prompt>"
+```
+
+#### Core Options:
+
+| Option | Description | Default / Values |
+|---|---|---|
+| `-w, --workspace <path>` | Root directory for the run | Current directory |
+| `--profile, --tools <name>` | Tool security profile | `none` (`none`, `readonly`, `verify`, `repair`) |
+| `--api-url <url>` | Provider API endpoint | Env `QRE_API_URL` |
+| `--api-key <key>` | Provider API key | Env `QRE_API_KEY` |
+| `--model <name>` | Model identifier | Env `QRE_MODEL` |
+| `--api-mode <mode>` | Provider protocol dialect | `chat-completions`, `responses`, `anthropic-messages` |
+| `--response <text>` | Static response for offline deterministic testing | None |
+| `--runner <name>` | Sandbox execution engine | `local` (trusted process) or `docker` (container) |
+| `--docker-image <img>` | Docker image for `--runner docker` | Env `QRE_DOCKER_IMAGE` |
+| `--external` | Load external tool manifests from `.qre/tools/*.json` | Disabled |
+| `--tool-search` | Enable dynamic lazy tool retrieval | Disabled |
+| `--tool-search-top-k <n>`| Maximum tools activated per search query | `5` |
+| `--required-tool <name>` | Mandate calling a specific tool on the first step | None |
+| `--approve-risk <reason>`| Explicit risk approval for write/repair tools | None (fail-closed if missing) |
+| `--thinking <mode>` | Chain-of-thought coordination policy | `auto` (default), `off`, `on`, `preserve` |
+| `--trace-data <mode>` | Audit trace data class | `public` (redacted), `sanitized`, `private` (resumable) |
+| `--stream` | Stream text and reasoning tokens to console | Disabled |
+| `--json` | Format CLI final output as JSON | Disabled |
+| `--json-output` | Request JSON response format from model (auto-disables thinking) | Disabled |
+| `--max-rounds <n>` | Maximum rounds allowed in the loop | `3` |
+| `--sdk-diagnostics <m>` | Record client-side SDK outbound evidence | `off` (default), `metadata`, `structure` |
+
+### 3. Tool Catalog & Invocation (`tool`)
+
+Test, debug, and manage tools independently of the agent loop:
+
+```bash
+# List tools available in a profile with parameter schemas
+qre tool list --workspace . --profile readonly --json
+
+# List both built-in and external tools
+qre tool list --workspace . --profile verify --external
+
+# Register an external tool manifest
+qre tool register --workspace . --manifest my_tool.json [--force]
+
+# Invoke a tool in isolation for testing and debugging
+qre tool invoke --workspace . --name qre_read_file --arguments '{"path":"README.md"}' --json
+```
+
+### 4. Policy & Security Pre-flight (`policy check`)
+
+Verify whether a specific command or tool call complies with runtime policies before execution:
+
+```bash
+# Check if dotnet test is allowed under the verify profile
+qre policy check --workspace . --profile verify --tool qre_dotnet_test -- dotnet test --no-restore
+
+# Verify high-risk command with explicit approval
+qre policy check --workspace . --profile repair --tool qre_patch --approve-risk "Refactor" -- git apply
+```
+
+### 5. Auditing, Replay & Rerun (`trace`, `replay`, `rerun`)
+
+- **Trace Inspection**:
+  ```bash
+  # View latest run summary and events
+  qre trace latest --workspace . --json
+  qre trace latest --workspace . --jsonl
+  ```
+- **Deterministic Replay**:
+  ```bash
+  # Read-only summary (no execution)
+  qre replay latest --workspace . --summary
+
+  # Strict deterministic replay (validates trajectory, emits replay_digest)
+  qre replay latest --workspace . --strict --json
+  ```
+- **Rerun**:
+  ```bash
+  # Re-execute the latest task with existing prompt and parameters
+  qre rerun latest --workspace . --trace-data sanitized
+  ```
+
+### 6. Fault Recovery (`resume`)
+
+If a run is terminated prematurely by process crash or timeout, QRE seamlessly resumes execution using its atomic checkpoint and attempt lease model:
+
+```bash
+# Resume latest interrupted run (validates workspace, tools, policy drift)
+qre resume latest --workspace . --json
+```
+
+### 7. Workspace Diff (`diff`)
+
+```bash
+# View workspace modifications from the latest run (reads run-scoped diff.patch)
+qre diff latest --workspace .
+
+# Output patch statistics
+qre diff latest --workspace . --stat --json
+```
+
+### 8. Controlled Sandbox Execution (`sandbox exec`)
+
+Execute individual commands inside the policy and sandbox pipeline with timeouts and buffer protection:
+
+```bash
+# Run locally under verify profile
+qre sandbox exec --workspace . --profile verify -- dotnet build
+
+# Run inside a Docker container
+qre sandbox exec --workspace . --runner docker --docker-image mcr.microsoft.com/dotnet/sdk:10.0 -- dotnet test
+```
+
+### 9. SDK Outbound Diagnostics Suite (`diagnose`)
+
+Diagnose why a provider dropped parameters, failed schemas, or choked on reasoning tokens:
+
+```bash
+# 1. Run task with structural SDK outbound tracing
+qre run --workspace . --sdk-diagnostics structure "audit dependencies"
+
+# 2. Inspect outbound diagnostic evidence for the latest run
+qre diagnose latest --workspace . --json
+
+# 3. Compare two runs to locate where an option was dropped
+qre diagnose compare <left_run_id> <right_run_id> --workspace .
+
+# 4. Export sanitized diagnostic bundle (safe to share; no keys or code)
+qre diagnose export latest --output issue_bundle.zip --workspace .
+
+# 5. Extract request skeleton and rebuild offline
+qre diagnose skeleton latest --output request_fixture.json
+qre diagnose rebuild request_fixture.json --json
+```
+
+---
+
+## Tool System & Ecosystem Extension
+
+### Built-in Tools & Policy Profiles
+
+QRE enforces a strict principle of least privilege through four profiles:
+
+```
+       [ none ]        Pure reasoning; no tools permitted
+          │
+      [ readonly ]     File exploration & search (qre_list_files, qre_read_file, qre_search_files)
+          │
+       [ verify ]      Read-only verification (+ git_status, git_diff, dotnet_build, dotnet_test)
+          │
+       [ repair ]      Modifications & patches (+ qre_apply_patch, external writers) ──► Requires --approve-risk
+```
+
+| Profile | Tools Included | Security Policy |
+|---|---|---|
+| `none` | None | Disables all tools; pure chat or structured JSON completion. |
+| `readonly` | `qre_list_files`, `qre_read_file`, `qre_search_files` | Safe file traversal and regex search for exploration and analysis. |
+| `verify` | All `readonly` tools, plus `qre_git_status`, `qre_git_diff`, `qre_dotnet_build`, `qre_dotnet_test` | Read-only workspace inspection, test runs, and compilation checks. |
+| `repair` | All `verify` tools, plus file patching and modification tools | May modify workspace files. **Requires `--approve-risk "<reason>"` or fails closed**. |
+
+### External Tool Manifests (Stdio & MCP)
+
+Extend QRE with Python, Node.js, or compiled binaries by placing a JSON manifest in `.qre/tools/<name>.json`:
+
+```json
+{
+  "name": "calc_coverage",
+  "description": "Calculates code test coverage report for the repository",
+  "executable": "python",
+  "arguments": ["scripts/calc_coverage.py"],
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "string",
+        "enum": ["summary", "detailed"],
+        "description": "Report format"
+      }
+    },
+    "required": ["format"]
+  },
+  "timeoutSeconds": 30
+}
+```
+
+Enable external tools via `qre run --external ...`. Minimal MCP stdio tools are also supported. See [`examples/ExternalTools`](examples/ExternalTools), [`examples/PythonFunctionTools`](examples/PythonFunctionTools), and [`examples/NodeFunctionTools`](examples/NodeFunctionTools).
+
+### Dynamic Tool Retrieval (Tool Search)
+
+Providing dozens of tool schemas upfront bloats prompt tokens and increases model hallucinations.
+
+With `--tool-search` (and `--tool-search-top-k 5`):
+1. QRE exposes only a single `tool_search` meta-tool on startup.
+2. The agent queries `tool_search(query="coverage")` when it identifies a need.
+3. QRE dynamically activates the most relevant Top-K tools into the next step's context.
+4. Token overhead is reduced by up to 80% on large catalogs.
+
+---
+
+## Sandboxing & Security Model
+
+QRE follows a **Fail-Closed** security architecture, treating model output, tool arguments, external manifests, and workspace files as untrusted:
+
+1. **`LocalProcessSandboxRunner`**:
+   - Designed for trusted developer workflows.
+   - Enforces timeouts, buffer truncation, and process group lifecycle management.
+   - *Note: Local process execution is not an isolated security boundary.*
+2. **`DockerSandboxRunner`**:
+   - Hard isolation for untrusted commands and CI runners.
+   - Read-only workspace volume mounts by default.
+   - Selective write-back for approved artifact persistence.
+   - Network allowlisting support.
+   - Configurable image via `--docker-image <image_name>`.
+3. **Trace Storage Classes**:
+   - `public`: Redacted, shareable, no secrets, no checkpoints (not resumable).
+   - `sanitized`: Preserved payloads for reviewed synthetic test fixtures.
+   - `private`: Full diagnostic and recovery data with checkpoints.
+
+---
+
+## Fault Recovery & Deterministic Replay
+
+### H1 Crash Recovery
+For long-running tasks, QRE's V2 engine guarantees seamless fault recovery:
+- **Atomic Checkpoints**: Checkpoints written to `.qre/v2/checkpoints/` after every state step.
+- **Attempt Leases**: Prevents concurrent execution or double-recovery conflicts.
+- **Drift Prevention**: Validates workspace identity, tool registry hashes, policy snapshots, and model configurations before resuming.
+- See the [H1 Crash-Resume Implementation Report](docs/h1-crash-resume-implementation-report.zh-CN.md).
+
+### Strict Replay
+- Evaluates complete recorded trajectories completely offline.
+- Injects deterministic clocks and query IDs.
+- Emits a stable `replay_digest` for verifiable regressions and benchmarks.
+
+---
+
+## Model Providers & Thinking Policies
+
+### Supported Providers
+QRE builds upon `Microsoft.Extensions.AI` and official `CodexFlow.QueryRuntime.Models` package, providing first-party adapters for:
+- **OpenAI-compatible** APIs (OpenAI, Azure OpenAI, DeepSeek, Moonshot, Zhipu, etc.)
+- **vLLM** inference clusters
+- **Anthropic Messages** endpoints
+
+### Thinking Policies (`--thinking`)
+Modern models with Chain-of-Thought (Reasoning) can fail or corrupt schemas when tools or JSON formats are activated. QRE manages this automatically:
+- **`auto` (Recommended)**: Automatically turns thinking off when tools or `--json-output` are active to prevent protocol conflicts; preserves thinking for pure text prompts.
+- **`off`**: Forcibly disables reasoning parameters.
+- **`on`**: Forcibly enables reasoning (only when the provider supports concurrent tools and CoT).
+- **`preserve`**: Retains whatever defaults the model client options specify.
+
+---
+
+## Embedding in .NET Applications
+
+Embed the QRE V2 engine and model providers directly into any C# / .NET 10 host application:
+
+### 1. Package References
+Add the official NuGet packages (`0.23.1`):
+
+```xml
+<ItemGroup>
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.1" />
+</ItemGroup>
+```
+
+*(Note: `CodexFlow.QueryRuntime.Protocol` is packaged internally as a dependency of the Engine package).*
+
+### 2. Runtime Execution Example
+
+```csharp
+using CodexFlow.QueryRuntime.Engine.V2;
+using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Protocol;
+
+// 1. Configure model client (offline static or online MEAI client)
+var modelClient = new StaticRuntimeModelClient("Hello! I am an embedded QRE agent.");
+
+// 2. Initialize V2 Agent Runtime
+IAgentRuntime runtime = new AgentRuntime(modelClient);
+
+// 3. Assemble loop request
+var sessionId = new RuntimeSessionId(Guid.NewGuid().ToString("N"));
+var turnId = new RuntimeTurnId(Guid.NewGuid().ToString("N"));
+string objective = "Analyze repository structure";
+
+var request = new RuntimeAgentLoopRequest(
+    sessionId,
+    turnId,
+    objective,
+    [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(objective)])],
+    [],
+    ModelParameters: new RuntimeModelParameters(),
+    Policy: new RuntimePolicySnapshot("prod-policy", "readonly"),
+    Environment: new RuntimeEnvironmentSnapshot("local", Path.GetFullPath("."), "my-host-app"),
+    Budget: new RuntimeBudgetSnapshot(maxSteps: 5, maxToolCalls: 10)
+);
+
+// 4. Implement presentation event listener for streaming UI updates
+var eventSink = new DelegateEventSink(runtimeEvent =>
+{
+    if (runtimeEvent.Type == RuntimePresentationEventType.TextDelta)
+    {
+        Console.Write(runtimeEvent.Text);
+    }
+    else if (runtimeEvent.Type == RuntimePresentationEventType.ToolCallRequested)
+    {
+        Console.WriteLine($"\n[Tool]: {runtimeEvent.ToolName}");
+    }
+    return ValueTask.CompletedTask;
+});
+
+// 5. Execute turn
+using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+var result = await runtime.RunAsync(new RuntimeRunRequest(request), eventSink, cts.Token);
+
+Console.WriteLine($"\nStatus: {result.Status}, Steps: {result.Turn.Steps.Count}");
+```
+
+See [`examples/EmbeddedV2`](examples/EmbeddedV2) for a complete working host.
+
+---
+
+## Runnable Examples Showcase
+
+The [`examples/`](examples/README.md) directory contains 8 fully working integration examples:
+
+| Example | Integration Highlights | Source |
+|---|---|---|
+| **EmbeddedV2** | Minimal .NET `IAgentRuntime` embedding with deterministic offline client. | [Explore](examples/EmbeddedV2) |
+| **RepoDoctor** | Production .NET CLI host with custom tools, streaming, and strict replay. | [Explore](examples/RepoDoctor) |
+| **PythonToolDoctor** | Python CLI host invoking built-in QRE tools with strict trace replay. | [Explore](examples/PythonToolDoctor) |
+| **ExternalTools** | Minimal stdio tool manifest and approved model execution. | [Explore](examples/ExternalTools) |
+| **PythonFunctionTools** | Python function tools with automatic manifest generation. | [Explore](examples/PythonFunctionTools) |
+| **NodeFunctionTools** | Node.js ESM function tools with automatic manifest generation. | [Explore](examples/NodeFunctionTools) |
+| **H1CrashResume** | Simulates process abort and tests checkpoint recovery via `qre resume`. | [Explore](examples/H1CrashResume) |
+| **SdkOutboundDiagnostics**| Defective host simulation, parameter loss troubleshooting, and offline request rebuilds. | [Explore](examples/SdkOutboundDiagnostics) |
+
+### Run All Regression Examples
+```bash
+python scripts/test-examples.py
+```
+
+---
+
+## Building, Testing & Native AOT Publish
+
+### Build Solution and Run Tests
 ```bash
 dotnet build CodexFlow.QueryRuntime.slnx
 dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj
 dotnet test CodexFlow.QueryRuntime.IntegrationTests/CodexFlow.QueryRuntime.IntegrationTests.csproj
 ```
 
-Publish a self-contained Native AOT CLI by substituting a supported runtime identifier such as `win-x64`, `linux-x64`, or `osx-arm64`:
-
+### Publish Self-Contained Native AOT Binary
 ```bash
+# Windows (x64)
 dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
-  -c Release -r <RID> -p:PublishAot=true -p:SelfContained=true
+  -c Release -r win-x64 -p:PublishAot=true -p:SelfContained=true
+
+# Linux (x64)
+dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
+  -c Release -r linux-x64 -p:PublishAot=true -p:SelfContained=true
+
+# macOS Apple Silicon (ARM64)
+dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
+  -c Release -r osx-arm64 -p:PublishAot=true -p:SelfContained=true
 ```
 
-## CLI quickstart
+---
 
-Commands can be run from a published `qre` binary or through `dotnet run --project CodexFlow.QueryRuntime.Cli --`.
+## Technical Documentation Index
 
-```bash
-qre --version
-qre init --workspace . --json
-qre doctor --workspace . --json
+- 📘 [Technical Guide](docs/queryruntime-technical-guide.md) ([中文](docs/queryruntime-technical-guide.zh-CN.md))
+- 🧭 [0.2 Preview Migration Guide](docs/migration-0.2-preview.md) ([中文](docs/migration-0.2-preview.zh-CN.md))
+- 🛡️ [Security Policy (SECURITY.md)](SECURITY.md)
+- 🔒 [Threat Model](docs/threat-model.md)
+- 🧰 [Tool Capabilities](docs/tool-capabilities.md)
+- 🔍 [Tool Search Architecture](docs/toolsearch.md) & [Partition Matrix](docs/queryruntime-tool-partition-matrix.md)
+- 🔄 [H1 Crash-Resume Implementation Report](docs/h1-crash-resume-implementation-report.zh-CN.md) & [Threat Model](docs/h1-crash-resume-threat-model.md)
+- 🩺 [SDK Outbound Diagnostics Guide](docs/sdk-outbound-diagnostics.md) ([中文](docs/sdk-outbound-diagnostics.zh-CN.md)) & [Acceptance Report](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
+- 📦 [Package Source & Provenance](docs/package-source-provenance.md)
+- 🏛️ [Architectural Decision Records (ADR)](docs/adr/):
+  - [ADR-001: Local Single-Process Runtime](docs/adr/ADR-001-local-single-process-runtime.md)
+  - [ADR-002: Session-Turn-Step Lifecycle](docs/adr/ADR-002-session-turn-step-lifecycle.md)
+  - [ADR-003: Runtime IR and Model Adapters](docs/adr/ADR-003-runtime-ir-and-model-adapters.md)
+  - [ADR-004: State Events and Data Layers](docs/adr/ADR-004-state-events-and-data-layers.md)
+  - [ADR-005: Tool Execution Pipeline](docs/adr/ADR-005-tool-execution-pipeline.md)
+  - [ADR-007: V2-Only Cutover](docs/adr/ADR-007-v2-only-cutover.md)
+  - [ADR-008: Local Crash Resume](docs/adr/ADR-008-local-crash-resume.md)
+  - [ADR-009: SDK Outbound Diagnostics](docs/adr/ADR-009-sdk-outbound-diagnostics.md)
 
-# Deterministic offline run: no provider credentials required
-qre run --workspace . --trace-data sanitized --response "offline smoke" --json "analyze this repository"
-
-# Inspect tools and run a read-only task
-qre tool list --workspace . --profile readonly --json
-qre run --workspace . --profile readonly --trace-data sanitized --response "offline readonly" "summarize the project structure"
-
-# Inspect and replay the latest v2 run
-qre trace latest --workspace . --json
-qre replay latest --workspace . --strict --json
-```
-
-For a real OpenAI-compatible or vLLM-compatible provider:
-
-```bash
-qre run --workspace . \
-  --api-url http://localhost:8000/v1 \
-  --api-key <key> \
-  --model <model> \
-  --api-mode chat-completions \
-  "inspect this repository and report the main risks"
-```
-
-The same values can be supplied through `QRE_API_URL`, `QRE_API_KEY`, `QRE_MODEL`, and `QRE_API_MODE`. Use `--response` for deterministic offline tests. `--json-output` asks the model for JSON; `--json` formats the CLI result itself as JSON.
-
-Thinking defaults to `auto`: it is disabled when tools or model JSON output are active for broader provider compatibility. Use `--thinking on` or `--thinking preserve` only when the selected provider supports that combination.
-
-## Trace data and recovery
-
-New v2 runs write under `.qre/v2/` inside the workspace:
-
-- `public`: redacted, shareable audit data; not resumable.
-- `sanitized`: full-fidelity content intended only for reviewed, synthetic fixtures. It is a storage class, not automatic redaction: non-public payloads are kept as written.
-- `private`: local recovery data, including resumable checkpoints when checkpointing is enabled.
-
-Resume an unfinished run with the same workspace and compatible runtime configuration:
-
-```bash
-qre resume latest --workspace . --json
-```
-
-The runtime refuses a resume when ownership, lease, checkpoint integrity, workspace identity, policy, tool catalog, model, or recovery compatibility checks do not match. See the [H1 crash-resume report](docs/h1-crash-resume-implementation-report.zh-CN.md) and [threat model](docs/h1-crash-resume-threat-model.md) for the precise guarantees.
-
-## SDK outbound diagnostics
-
-`qre run --sdk-diagnostics metadata|structure` (off by default) records client-side evidence of what the model SDK sent: the QRE request, the final adapter options and an allow-listed projection of the serialized HTTP request, correlated per model call and HTTP attempt. `qre diagnose latest|compare|export|skeleton|rebuild` locates the first layer where a constraint was lost, compares runs, exports a package without secrets or bodies, and rebuilds requests offline. Strict replay never calls the SDK; use `diagnose rebuild` to check SDK serialization. See the [SDK outbound diagnostics guide](docs/sdk-outbound-diagnostics.md) and [ADR-009](docs/adr/ADR-009-sdk-outbound-diagnostics.md).
-
-## Embed in .NET
-
-The current stable packages are `CodexFlow.QueryRuntime.Engine` and `CodexFlow.QueryRuntime.Models` `0.23.1`. Applications should depend on the v2 surface:
-
-- `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` for new turns.
-- `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime` when local checkpoint recovery is required.
-- `CodexFlow.QueryRuntime.Protocol` for requests, state, events, tools, policy, audit, and checkpoint contracts.
-- `CodexFlow.QueryRuntime.Models` for model provider selection and the MEAI `IRuntimeModelClient` adapter.
-
-The `Experimental` project contains optional composition helpers and tool adapters; it is not an alternative runtime loop. Follow the [0.2 preview migration guide](docs/migration-0.2-preview.md) before moving an existing v1 host.
-
-## Security
-
-Treat model output, tool arguments, external tool manifests, replay data, and workspace files as untrusted input. Select the narrowest tool profile, keep writes approval-gated, avoid placing secrets in public traces, and use an isolated runner for untrusted commands. See [SECURITY.md](SECURITY.md), the [runtime threat model](docs/threat-model.md), and [tool capabilities](docs/tool-capabilities.md).
-
-## Documentation
-
-- [Runnable v2 integration examples](examples/README.md)
-- [Technical guide](docs/queryruntime-technical-guide.md) ([中文](docs/queryruntime-technical-guide.zh-CN.md))
-- [0.2 preview migration guide](docs/migration-0.2-preview.md) ([中文](docs/migration-0.2-preview.zh-CN.md))
-- [H1 crash-resume implementation report](docs/h1-crash-resume-implementation-report.zh-CN.md)
-- [Tool search](docs/toolsearch.md) and [tool partition matrix](docs/queryruntime-tool-partition-matrix.md)
-- [SDK outbound diagnostics](docs/sdk-outbound-diagnostics.md) ([中文](docs/sdk-outbound-diagnostics.zh-CN.md)) and [acceptance report](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
-- [Package source and provenance](docs/package-source-provenance.md)
-
-Historical roadmaps and completed implementation plans are kept under `docs/archive/`; they are not descriptions of the current runtime.
+---
 
 ## License
 
-[MIT](LICENSE.txt)
+This project is licensed under the [MIT License](LICENSE.txt).

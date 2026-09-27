@@ -1,4 +1,4 @@
-# CodexFlow QueryRuntime
+# CodexFlow QueryRuntime (QRE)
 
 [English](README.md) | **简体中文**
 
@@ -6,146 +6,602 @@
 [![Release](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 
-CodexFlow QueryRuntime 是一个跨平台 .NET Agent Runtime，负责模型循环、工具执行、策略门禁、审计/回放、检查点恢复与沙箱自动化。它既可以嵌入宿主应用，也可以作为独立的 `qre` CLI 运行，不依赖 CodexFlow Web 平台。
+CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发的跨平台 .NET 核心运行时与轻量级命令行 Harness。它专注于将模型循环、工具执行、策略门禁、严格审计回放、本地故障恢复（H1 Crash Recovery）、沙箱隔离与 SDK 出站诊断沉淀为高内聚、可复现、可跨平台发布的工程基础设施。
 
-当前仓库处于 **0.23.1 正式版、仅 v2** 阶段。新集成应使用 `CodexFlow.QueryRuntime.Protocol` 和 `CodexFlow.QueryRuntime.Engine.V2`。早期 v1 API 仅用于源码迁移和历史 trace 兼容，不再是 CLI 或 CodexFlow 可选后端。
+QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中，也可以编译为零外部依赖的独立 `qre` Native AOT 命令行工具直接运行，完全解耦于 CodexFlow Web 平台。
 
-## 当前能力
+当前仓库处于 **0.23.1 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
 
-- 通过 `IAgentRuntime` 提供类型化 Agent 循环，统一处理模型、工具、继续条件、预算和终止逻辑。
-- 为消息、会话、Turn、工具调用、结果、用量、策略和错误提供稳定协议类型。
-- 冻结工具注册表，以及授权、审批、沙箱、输出校验和 fail-closed 策略管线。
-- 面向长任务的确定性上下文准备与压缩。
-- 持久化审计事件、严格回放，以及 public/sanitized/private 三种 trace 数据模式。
-- 通过 `IResumableAgentRuntime`、attempt lease、检查点和兼容性校验实现 H1 本地崩溃恢复。
-- 内置文件、搜索、补丁、进程和仓库工具，并支持外部 Python、Node.js 与 MCP stdio 工具。
-- LocalProcess 与 Docker 两类沙箱适配器。
-- 跨平台 CLI 与 Native AOT 发布构建。
+---
 
-## 当前边界
+## 目录
 
-- H1 是单宿主、本地文件系统恢复方案；分布式接管和远程检查点存储属于后续 H2/H3 范围。
-- 公开脱敏 trace 按设计不可恢复。恢复需要 sanitized 或 private 检查点，并要求 workspace、策略、工具目录、模型和 recovery compatibility identity 一致。
-- `LocalProcessSandboxRunner` 只适用于可信本地开发，不是强安全边界。执行不可信命令时应使用 Docker 或其他隔离 runner。
-- 网络白名单只有在 runner 明确支持时才会强制执行。
-- MCP stdio 当前支持一次性工具调用，尚未覆盖完整 MCP 生命周期。
-- 用量估算用于运行观测，不应作为供应商账单依据。
+- [为什么选择 QRE](#为什么选择-qre)
+- [核心架构与代码分层](#核心架构与代码分层)
+- [快速上手](#快速上手)
+- [CLI 完整命令参考](#cli-完整命令参考)
+  - [1. 工作区初始化与环境诊断 (`init`, `doctor`)](#1-工作区初始化与环境诊断-init-doctor)
+  - [2. 执行 Agent 任务 (`run`)](#2-执行-agent-任务-run)
+  - [3. 工具管理与单步调试 (`tool`)](#3-工具管理与单步调试-tool)
+  - [4. 策略门禁静态核验 (`policy check`)](#4-策略门禁静态核验-policy-check)
+  - [5. 审计轨迹与严格回放 (`trace`, `replay`, `rerun`)](#5-审计轨迹与严格回放-trace-replay-rerun)
+  - [6. 故障断点续跑 (`resume`)](#6-故障断点续跑-resume)
+  - [7. 文件变更对比 (`diff`)](#7-文件变更对比-diff)
+  - [8. 受控沙箱命令执行 (`sandbox exec`)](#8-受控沙箱命令执行-sandbox-exec)
+  - [9. SDK 出站诊断套件 (`diagnose`)](#9-sdk-出站诊断套件-diagnose)
+- [工具体系与扩展机制](#工具体系与扩展机制)
+  - [内置工具与安全分区 (Tool Profiles)](#内置工具与安全分区-tool-profiles)
+  - [外部工具 Manifest 扩展 (Stdio & MCP)](#外部工具-manifest-扩展-stdio--mcp)
+  - [动态工具检索 (Tool Search)](#动态工具检索-tool-search)
+- [沙箱隔离与安全模型](#沙箱隔离与安全模型)
+- [故障自愈与确定性回放](#故障自愈与确定性回放)
+- [模型支持与智能思考策略](#模型支持与智能思考策略)
+- [嵌入 .NET 应用开发指南](#嵌入-net-应用开发指南)
+- [示例工程全景 (Examples)](#示例工程全景-examples)
+- [构建、测试与 Native AOT 发布](#构建测试与-native-aot-发布)
+- [技术文档导航](#技术文档导航)
+- [开源许可证](#开源许可证)
 
-## 项目结构
+---
 
-| 项目 | 职责 |
+## 为什么选择 QRE
+
+许多 Agent 演示项目能快速搭建原型，但往往难以跨越“工程化”的鸿沟。模型接口行为不一、思考链（CoT）与工具调用冲突、缺乏执行权限边界、运行崩溃无法复现、SDK 序列化静默丢弃参数等问题屡见不鲜。
+
+QRE 提供了介于“几十行轻量 Demo”与“庞大庞杂 SaaS 平台”之间的标准中间层：
+
+1. **类型化 Agent 状态循环**：统一抽象 Turn、Step、Invocation，内置严谨的 Token/Step 预算控制与确定性上下文压缩。
+2. **Fail-Closed 策略门禁**：四级安全工具分区，针对高危修改操作实施显式审批门禁（`--approve-risk`）。
+3. **零成本确定性回放 (Strict Replay)**：不消耗 Token、不触发真实网络与工具，通过严格数据驱动校验历史轨迹，输出 byte-identical 的 `replay_digest`。
+4. **H1 本地崩溃故障自愈 (Local Crash-Resume)**：单机环境下进程突发中断后，可通过检查点（Checkpoint）与租约（Attempt Lease）无损续跑，具备完善的防漂移校验。
+5. **首创 SDK 出站诊断体系 (Outbound Diagnostics)**：捕获从 QRE 意图到模型 SDK 最终发送至 HTTP 通道的三层真实快照，精准排查模型厂商丢字段、格式错误等疑难问题。
+6. **双沙箱执行环境**：受信任本地极速执行（LocalProcess）与容器化强隔离执行（Docker）无缝切换。
+7. **极轻量、跨平台与 AOT**：基于 .NET 10，支持 Native AOT 编译为单文件原生二进制，启动毫秒级、无 JIT 开销。
+
+---
+
+## 核心架构与代码分层
+
+```
+┌────────────────────────────────────────────────────────┐
+│               Host Applications / qre CLI              │
+└───────────────────────────┬────────────────────────────┘
+                            │
+┌───────────────────────────▼────────────────────────────┐
+│             CodexFlow.QueryRuntime.Engine (V2)         │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌───────┐ │
+│  │  IAgentRuntime   │  │  Tool Pipeline   │  │ Audit │ │
+│  │ State Reducer    │  │  Fail-Closed Gate│  │ & H1  │ │
+│  └────────┬─────────┘  └────────┬─────────┘  └───────┘ │
+└───────────┼─────────────────────┼──────────────────────┘
+            │                     │
+┌───────────▼──────────┐ ┌────────▼──────────┐ ┌─────────▼───────────┐
+│     Models (MEAI)    │ │   Experimental    │ │   Sandbox Runners   │
+│ OpenAI / vLLM / Claude│ │ Built-in Tools   │ │ LocalProcess        │
+│ Outbound Diagnostics │ │ Tool Search / Stdio│ Docker Container    │
+└──────────────────────┘ └───────────────────┘ └─────────────────────┘
+            │                     │                      │
+┌───────────┴─────────────────────┴──────────────────────┴───────────┐
+│                 CodexFlow.QueryRuntime.Protocol                    │
+│      Immutable Turn / Step / Tool / Event / Checkpoint Types       │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+| 工程模块 | 职责定位 |
 |---|---|
-| `CodexFlow.QueryRuntime.Protocol` | 稳定的 v2 数据契约与运行状态 |
-| `CodexFlow.QueryRuntime.Engine` | `IAgentRuntime`、v2 循环、工具管线、上下文、审计、回放和恢复 |
-| `CodexFlow.QueryRuntime.Models` | 模型供应商适配器 |
-| `CodexFlow.QueryRuntime.Abstractions` | 为迁移保留的兼容抽象 |
-| `CodexFlow.QueryRuntime.Experimental` | 宿主组合、内置工具和外部工具适配器 |
-| `CodexFlow.QueryRuntime.Cli` | `qre` 命令行宿主 |
-| `CodexFlow.QueryRuntime.Sandbox.LocalProcess` | 可信本地进程 runner |
-| `CodexFlow.QueryRuntime.Sandbox.Docker` | Docker 隔离适配器 |
-| `CodexFlow.QueryRuntime.UnitTests` | 确定性单元与契约测试 |
-| `CodexFlow.QueryRuntime.IntegrationTests` | CLI、供应商、沙箱和端到端测试 |
+| [`CodexFlow.QueryRuntime.Protocol`](CodexFlow.QueryRuntime.Protocol) | **协议层**：纯数据契约，定义会话、Turn、Step、工具输入输出、审计事件、策略模型及检查点等不可变状态。 |
+| [`CodexFlow.QueryRuntime.Engine`](CodexFlow.QueryRuntime.Engine) | **核心引擎**：实现 `IAgentRuntime` 与 `IResumableAgentRuntime`，主导 V2 事件循环、状态机转移（State Reducer）、上下文裁剪压缩、审计存储与 H1 崩溃恢复。 |
+| [`CodexFlow.QueryRuntime.Models`](CodexFlow.QueryRuntime.Models) | **模型适配层**：官方 NuGet 包，基于 `Microsoft.Extensions.AI` 适配 OpenAI-compatible、vLLM、Anthropic Messages 等接口协议，提供 SDK 出站诊断探针与语义映射。 |
+| [`CodexFlow.QueryRuntime.Sandbox.LocalProcess`](CodexFlow.QueryRuntime.Sandbox.LocalProcess) | **本地沙箱**：面向受信任本地开发环境的高性能命令执行器。 |
+| [`CodexFlow.QueryRuntime.Sandbox.Docker`](CodexFlow.QueryRuntime.Sandbox.Docker) | **容器沙箱**：提供真正的容器级隔离、工作区只读挂载、选择性写回与网络白名单控制。 |
+| [`CodexFlow.QueryRuntime.Experimental`](CodexFlow.QueryRuntime.Experimental) | **工具生态层**：内置工具包（文件读写、搜索、Git、.NET 构建测试）、外部 Stdio/MCP 插件驱动、动态工具检索（Tool Search）。 |
+| [`CodexFlow.QueryRuntime.Cli`](CodexFlow.QueryRuntime.Cli) | **命令行宿主**：提供原生跨平台 `qre` CLI 工具，原生支持 Native AOT 发布。 |
 
-## 构建与测试
+---
 
-必需环境为 .NET 10 SDK。Docker、Python 和 Node.js 是可选依赖，只在使用对应适配器或集成测试时需要。
+## 快速上手
+
+### 1. 环境准备
+- 必需：[.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- 可选：Docker（用于容器沙箱）、Python 3.9+ / Node.js（用于运行外部脚本工具或运行测试套件）
+
+### 2. 构建与运行验证
+在仓库根目录直接编译整个解决方案：
 
 ```bash
+# 构建整个解决方案
 dotnet build CodexFlow.QueryRuntime.slnx
+
+# 执行单元测试
 dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj
-dotnet test CodexFlow.QueryRuntime.IntegrationTests/CodexFlow.QueryRuntime.IntegrationTests.csproj
 ```
 
-发布自包含 Native AOT CLI 时，将 `<RID>` 替换为 `win-x64`、`linux-x64` 或 `osx-arm64` 等受支持的运行时标识：
+### 3. 三分钟极速体验
+
+你可以直接通过 `dotnet run` 执行 CLI，也可以将其发布为本地 `qre` 二进制使用。
 
 ```bash
-dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
-  -c Release -r <RID> -p:PublishAot=true -p:SelfContained=true
-```
+# 别名设置（Windows PowerShell 示例）
+function qre { dotnet run --project D:/codeup/codexflow.queryruntime.engine/CodexFlow.QueryRuntime.Cli -- $args }
 
-## CLI 快速开始
-
-以下命令既可通过已发布的 `qre` 执行，也可以在前面加上 `dotnet run --project CodexFlow.QueryRuntime.Cli --` 从源码运行。
-
-```bash
+# 查看版本
 qre --version
-qre init --workspace . --json
-qre doctor --workspace . --json
 
-# 确定性离线运行，不需要供应商凭据
-qre run --workspace . --trace-data sanitized --response "offline smoke" --json "分析这个仓库"
+# 1. 确定性离线 Smoke 测试（无需任何 API Key 或网络）
+qre run --workspace . --response "离线响应：QRE 运行正常" --json "你好，请自我介绍"
 
-# 查看工具并运行只读任务
-qre tool list --workspace . --profile readonly --json
-qre run --workspace . --profile readonly --trace-data sanitized --response "offline readonly" "总结项目结构"
+# 2. 以只读工具模式分析当前代码库
+qre run --workspace . --profile readonly --response "已读取目录结构" "列出当前仓库的核心模块"
 
-# 查看并严格回放最近一次 v2 运行
-qre trace latest --workspace . --json
+# 3. 严格离线回放刚刚的执行轨迹（零 Token、零副作用）
 qre replay latest --workspace . --strict --json
 ```
 
-连接真实 OpenAI-compatible 或 vLLM-compatible 服务：
+### 4. 连接真实大语言模型 (OpenAI-compatible / vLLM / Claude)
 
 ```bash
+# 通过命令行参数接入真实模型
 qre run --workspace . \
-  --api-url http://localhost:8000/v1 \
-  --api-key <key> \
-  --model <model> \
+  --api-url "https://api.openai.com/v1" \
+  --api-key "sk-..." \
+  --model "gpt-4o" \
   --api-mode chat-completions \
-  "检查这个仓库并报告主要风险"
+  --profile readonly \
+  --stream \
+  "分析当前项目的架构特点并总结主要风险"
 ```
 
-也可以使用 `QRE_API_URL`、`QRE_API_KEY`、`QRE_MODEL` 和 `QRE_API_MODE` 环境变量。`--response` 用于确定性离线测试；`--json-output` 要求模型输出 JSON，`--json` 则控制 CLI 自身以 JSON 格式输出结果。
+你也可以配置标准环境变量，免去每次输入：
+- `QRE_API_URL`：接口地址（例如 `http://localhost:8000/v1`）
+- `QRE_API_KEY`：API 密钥
+- `QRE_MODEL`：模型名称（例如 `qwen2.5-coder` 或 `gpt-4o`）
+- `QRE_API_MODE`：接口模式，支持 `chat-completions`、`responses` 或 `anthropic-messages`
 
-thinking 默认使用 `auto`：启用工具或模型 JSON 输出时会关闭 thinking，以兼容更多供应商。只有确认供应商支持相应组合时才使用 `--thinking on` 或 `--thinking preserve`。
+---
 
-## Trace 数据与恢复
+## CLI 完整命令参考
 
-新的 v2 运行数据写入 workspace 下的 `.qre/v2/`：
+`qre` 提供了一套完备且严谨的子命令族，覆盖 Agent 的完整生命周期：
 
-- `public`：可分享的脱敏审计数据，不可用于恢复。
-- `sanitized`：仅用于已审查、人工构造 fixture 的完整保真内容。它是存储类别而非自动脱敏：非 public 内容按原样保存。
-- `private`：本地恢复数据；启用检查点后包含可恢复检查点。
+```
+qre <command> [options]
+  init       初始化当前工作区与 .qre 规范目录
+  doctor     体检系统运行环境、依赖工具链与服务连通性
+  run        启动 Agent 执行模型循环任务
+  tool       枚举、注册或单步调试调用工具
+  policy     静态核查工具命令的安全策略与审批门禁
+  trace      审查执行轨迹、事件日志与 Token 用量
+  replay     执行轨迹摘要阅读或确定性严格重放校验
+  rerun      依据历史配置重新发起真实运行
+  resume     读取检查点恢复中断的 Agent 任务 (H1 Recovery)
+  diff       对比 Agent 运行产生的工作区文件补丁
+  sandbox    在沙箱与策略门禁约束下执行单条命令
+  diagnose   SDK 出站网络请求诊断与排查工具箱
+```
 
-使用相同 workspace 和兼容的 Runtime 配置恢复未完成运行：
+### 1. 工作区初始化与环境诊断 (`init`, `doctor`)
+
+- **`qre init`**：在工作区建立 `.qre/` 基础配置目录与外部工具目录 `.qre/tools/`。
+  ```bash
+  qre init --workspace . [--force] [--json]
+  ```
+- **`qre doctor`**：一键排查当前宿主环境状态，包括 .NET 运行时版本、Git 状态、Docker 守护进程连通性、Python/Node.js 可用性及供应商环境变量配置。
+  ```bash
+  qre doctor --workspace . [--json]
+  ```
+
+### 2. 执行 Agent 任务 (`run`)
+
+`qre run` 是驱动 Agent 核心循环的主入口：
 
 ```bash
+qre run --workspace <path> [options] "<prompt>"
+```
+
+#### 关键参数一览：
+
+| 参数 | 说明 | 默认值 / 选项 |
+|---|---|---|
+| `-w, --workspace <path>` | 设定目标工作区根路径 | 当前工作目录 |
+| `--profile, --tools <name>` | 工具安全策略分区 | `none`（可选：`none`, `readonly`, `verify`, `repair`） |
+| `--api-url <url>` | 模型服务地址（支持 OpenAI / vLLM / 兼容端点） | 环境变量 `QRE_API_URL` |
+| `--api-key <key>` | 模型访问凭证 | 环境变量 `QRE_API_KEY` |
+| `--model <name>` | 目标模型标识 | 环境变量 `QRE_API_MODEL` / `QRE_MODEL` |
+| `--api-mode <mode>` | 协议模式 | `chat-completions` / `responses` / `anthropic-messages` |
+| `--response <text>` | 设定静态模型响应（用于无网络确定性回归测试） | 无 |
+| `--runner <name>` | 命令沙箱执行器类型 | `local`（受信任本地执行）或 `docker`（容器隔离） |
+| `--docker-image <img>` | 沙箱容器镜像名称（当 runner 为 docker 时使用） | 环境变量 `QRE_DOCKER_IMAGE` |
+| `--external` | 自动载入 `.qre/tools/*.json` 定义的外部工具 | 默认关闭 |
+| `--tool-search` | 开启动态工具按需检索，防止过多工具污染 Context | 默认关闭 |
+| `--tool-search-top-k <n>`| 动态激活工具的最大数量 | 默认 `5` |
+| `--required-tool <name>` | 强制 Agent 在首轮必须率先调用指定工具 | 无 |
+| `--approve-risk <reason>`| 显式授权风险写操作（`repair` 分区写工具必填） | 无（未提供且触发高危工具时将直接阻断） |
+| `--thinking <mode>` | 思考模式管理策略 | `auto`（推荐，有工具或要求 JSON 时自动关闭），可选 `off`, `on`, `preserve` |
+| `--trace-data <mode>` | Trace 存储数据隐私级别 | `public`（默认脱敏，不可恢复）、`sanitized`（保真测试数据）、`private`（含恢复 checkpoint） |
+| `--stream` | 实时流式输出模型思考内容与文本回答 | 默认关闭 |
+| `--json` | 将 CLI 的最终执行结果以 JSON 格式输出到控制台 | 默认关闭 |
+| `--json-output` | 提示模型返回纯 JSON 对象（此时会自动关闭 thinking） | 默认关闭 |
+| `--max-rounds <n>` | 限制 Agent 循环的最大执行轮数 | 默认 `3` |
+| `--sdk-diagnostics <m>` | 开启 SDK 出站网络诊断探针 | `off`（默认），可选 `metadata`, `structure` |
+
+### 3. 工具管理与单步调试 (`tool`)
+
+无需启动完整 Agent 循环，即可直接测试或管理工具：
+
+```bash
+# 查看指定 Profile 下的所有可用工具及其 JSON Schema
+qre tool list --workspace . --profile readonly --json
+
+# 同时列出内置工具与外部注册的工具
+qre tool list --workspace . --profile verify --external
+
+# 注册一个新的外部工具 Manifest
+qre tool register --workspace . --manifest my_tool.manifest.json [--force]
+
+# 独立单步执行指定工具（用于单元调试与行为验证）
+qre tool invoke --workspace . --name qre_read_file --arguments '{"path":"README.md"}' --json
+```
+
+### 4. 策略门禁静态核验 (`policy check`)
+
+在执行任何高危命令前，使用 policy check 静态判定当前规则是否放行：
+
+```bash
+# 验证在 verify 策略下是否允许执行测试
+qre policy check --workspace . --profile verify --tool qre_dotnet_test -- dotnet test --no-restore
+
+# 验证带审批原因的高危命令
+qre policy check --workspace . --profile repair --tool qre_patch --approve-risk "重构代码" -- git apply
+```
+
+### 5. 审计轨迹与严格回放 (`trace`, `replay`, `rerun`)
+
+- **查看轨迹**：
+  ```bash
+  # 查看最近一次运行的详细概要与事件流
+  qre trace latest --workspace . --json
+  
+  # 流式输出事件全量 JSONL
+  qre trace latest --workspace . --jsonl
+  ```
+- **确定性回放 (Replay)**：
+  ```bash
+  # 只读查看回放轨迹摘要（不运行任何代码）
+  qre replay latest --workspace . --summary
+  
+  # 严格模式执行确定性回放（校验每一步状态转移并输出不可篡改的 replay_digest）
+  qre replay latest --workspace . --strict --json
+  ```
+- **原样重跑 (Rerun)**：
+  ```bash
+  # 读取上一轮任务的 Prompt 与配置重新执行一次全新的任务
+  qre rerun latest --workspace . --trace-data sanitized
+  ```
+
+### 6. 故障断点续跑 (`resume`)
+
+当 Agent 运行由于断电、宿主崩溃或被意外中断时，若此前使用了 `--trace-data private` 或 `sanitized`，QRE 会通过检查点与租约锁定机制实现故障无损自愈：
+
+```bash
+# 从最新中断的检查点恢复执行（自动校验 workspace、tools、policy 防漂移一致性）
 qre resume latest --workspace . --json
 ```
 
-当 ownership、lease、检查点完整性、workspace identity、策略、工具目录、模型或 recovery compatibility 校验不一致时，Runtime 会拒绝恢复。精确保证请参阅 [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)和[威胁模型](docs/h1-crash-resume-threat-model.md)。
+### 7. 文件变更对比 (`diff`)
 
-## SDK 出站诊断
+```bash
+# 查看最近一次 Agent 执行对工作区产生的代码修改（优先展示独立 diff.patch）
+qre diff latest --workspace .
 
-`qre run --sdk-diagnostics metadata|structure`（默认关闭）记录模型 SDK 实际发出内容的客户端证据：QRE 请求、适配器最终选项，以及已序列化 HTTP 请求的白名单投影，并按模型调用和 HTTP 尝试关联。`qre diagnose latest|compare|export|skeleton|rebuild` 可定位约束首次丢失的层、比较两次运行、导出不含密钥与正文的诊断包，并离线重建请求。严格回放不会调用 SDK；验证 SDK 序列化请使用 `diagnose rebuild`。详见 [SDK 出站诊断指南](docs/sdk-outbound-diagnostics.zh-CN.md)与 [ADR-009](docs/adr/ADR-009-sdk-outbound-diagnostics.md)。
+# 仅输出变更统计
+qre diff latest --workspace . --stat --json
+```
 
-## 嵌入 .NET 应用
+### 8. 受控沙箱命令执行 (`sandbox exec`)
 
-当前正式包为 `CodexFlow.QueryRuntime.Engine` 与 `CodexFlow.QueryRuntime.Models` `0.23.1`。应用应依赖 v2 接口：
+通过 QRE 沙箱和安全策略管道执行命令，自动获得审计、超时与输出截断保护：
 
-- 使用 `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` 发起新 Turn。
-- 需要本地检查点恢复时使用 `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime`。
-- 使用 `CodexFlow.QueryRuntime.Protocol` 中的请求、状态、事件、工具、策略、审计和检查点契约。
-- 使用 `CodexFlow.QueryRuntime.Models` 进行模型 Provider 选择，并通过 MEAI `IRuntimeModelClient` 适配器接入模型。
+```bash
+# 本地受控执行
+qre sandbox exec --workspace . --profile verify -- dotnet build
 
-`Experimental` 项目只提供可选的组合帮助器和工具适配器，不是另一套 Runtime 循环。现有 v1 宿主升级前请先阅读 [0.2 preview 迁移指南](docs/migration-0.2-preview.zh-CN.md)。
+# 在 Docker 容器沙箱内执行构建
+qre sandbox exec --workspace . --runner docker --docker-image mcr.microsoft.com/dotnet/sdk:10.0 -- dotnet test
+```
 
-## 安全
+### 9. SDK 出站诊断套件 (`diagnose`)
 
-应将模型输出、工具参数、外部工具 manifest、回放数据和 workspace 文件视为不可信输入。选择最小工具 profile，为写操作保留审批门禁，不要把密钥写入公开 trace，并使用隔离 runner 执行不可信命令。详见 [SECURITY.md](SECURITY.md)、[Runtime 威胁模型](docs/threat-model.md)和[工具能力说明](docs/tool-capabilities.md)。
+排查模型调用“参数为何丢失”、“为什么厂商返回格式错误”的终极利器：
 
-## 文档
+```bash
+# 1. 运行任务并捕获结构化出站探针数据
+qre run --workspace . --sdk-diagnostics structure "分析依赖"
 
-- [可运行的 v2 集成示例](examples/README.md)
-- [技术指南](docs/queryruntime-technical-guide.zh-CN.md)（[English](docs/queryruntime-technical-guide.md)）
-- [0.2 preview 迁移指南](docs/migration-0.2-preview.zh-CN.md)（[English](docs/migration-0.2-preview.md)）
-- [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)
-- [工具搜索](docs/toolsearch.md)与[工具分区矩阵](docs/queryruntime-tool-partition-matrix.md)
-- [SDK 出站诊断](docs/sdk-outbound-diagnostics.zh-CN.md)（[English](docs/sdk-outbound-diagnostics.md)）与[验收报告](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
-- [包来源与溯源](docs/package-source-provenance.md)
+# 2. 检查最近一次运行的出站记录
+qre diagnose latest --workspace . --json
 
-历史路线图和已完成实施计划保存在 `docs/archive/`，不应视为当前 Runtime 行为说明。
+# 3. 对比两次运行的请求序列化差异（定位参数在哪里丢失）
+qre diagnose compare <left_run_id> <right_run_id> --workspace .
 
-## 许可证
+# 4. 导出完全脱敏的诊断包（不包含密钥和代码正文，可安全分享排查）
+qre diagnose export latest --output issue_diag.zip --workspace .
 
-[MIT](LICENSE.txt)
+# 5. 离线生成请求骨架并重构 SDK 发送包（无需连接网络）
+qre diagnose skeleton latest --output request_fixture.json
+qre diagnose rebuild request_fixture.json --json
+```
+
+---
+
+## 工具体系与扩展机制
+
+### 内置工具与安全分区 (Tool Profiles)
+
+QRE 遵循最小权限原则，通过四级 Profile 实施隔离：
+
+```
+       [ none ]        纯模型推理，无工具调用权限
+          │
+      [ readonly ]     文件遍历与检索 (qre_list_files, qre_read_file, qre_search_files)
+          │
+       [ verify ]      只读状态与环境验证 (+ git_status, git_diff, dotnet_build, dotnet_test)
+          │
+       [ repair ]      危险写入与修补操作 (+ qre_apply_patch, 外部写入工具) ──► 必须显式 --approve-risk
+```
+
+| Profile 分区 | 适用工具列表 | 说明与安全策略 |
+|---|---|---|
+| `none` | 无 | 禁用一切工具调用，仅做纯文本或 JSON 问答。 |
+| `readonly` | `qre_list_files`, `qre_read_file`, `qre_search_files` | 只读文件与搜索工具，适用于代码走查、架构梳理、静态风险排查。 |
+| `verify` | 包含 `readonly` 全部工具，外加 `qre_git_status`, `qre_git_diff`, `qre_dotnet_build`, `qre_dotnet_test` | 只读状态查看、编译构建与单元测试，用于构建合规审查与自动化验证。 |
+| `repair` | 包含 `verify` 全部工具，外加写文件、打补丁等具备变更能力的工具 | 允许对工作区造成永久修改。**触发时必须携带 `--approve-risk "<理由>"`，否则 Fail-Closed 阻断**。 |
+
+### 外部工具 Manifest 扩展 (Stdio & MCP)
+
+QRE 原生支持通过外部独立脚本或程序来扩展工具集。只需在工作区创建 `.qre/tools/<tool_name>.json` 声明 Manifest：
+
+```json
+{
+  "name": "calc_coverage",
+  "description": "计算当前项目的代码测试覆盖率报告",
+  "executable": "python",
+  "arguments": ["scripts/calc_coverage.py"],
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "string",
+        "enum": ["summary", "detailed"],
+        "description": "报告格式"
+      }
+    },
+    "required": ["format"]
+  },
+  "timeoutSeconds": 30
+}
+```
+运行 `qre run --external ...` 即可自动识别并挂载这些外部工具。同时支持 minimal MCP stdio 工具。详细编写示例见 [`examples/ExternalTools`](examples/ExternalTools)、[`examples/PythonFunctionTools`](examples/PythonFunctionTools) 及 [`examples/NodeFunctionTools`](examples/NodeFunctionTools)。
+
+### 动态工具检索 (Tool Search)
+
+当挂载数十甚至上百个工具时，将所有 Schema 注入 Prompt 会导致模型上下文（Context）急剧膨胀甚至模型幻觉。
+
+通过指定 `--tool-search`（配合 `--tool-search-top-k 5`）：
+1. QRE 初始化时仅向模型暴露一个精简的元工具 `tool_search`；
+2. 模型根据当前目标调用 `tool_search(query="coverage")` 进行语义检索；
+3. QRE 动态将召回的最相关 Top-K 工具激活并注入下一轮上下文；
+4. 有效节省 80% 以上的工具元数据 Token 消耗。
+
+---
+
+## 沙箱隔离与安全模型
+
+QRE 坚持 **Fail-Closed（默认拒绝）** 的安全理念，并将模型输出、外部工具参数、外部 Manifest 均视为不可信输入：
+
+1. **`LocalProcessSandboxRunner`**：
+   - 适用于受信任的个人开发环境；
+   - 具备进程超时终止、最大输出缓冲截断、参数注入转义防护；
+   - *注意：本地进程 runner 不是硬安全隔离边界。*
+2. **`DockerSandboxRunner`**：
+   - 面向不可信指令或自动化流水线的强隔离方案；
+   - 支持只读绑定挂载（Read-Only Mount）；
+   - 支持工作区修改选择性回写（Selective Write-Back）；
+   - 支持网络禁用或白名单策略（需结合支持的容器网络驱动）；
+   - 自定义镜像隔离（通过 `--docker-image <image_name>` 指定）。
+3. **审计与数据脱敏等级**：
+   - `public`：所有敏感信息脱敏，不保留 Checkpoint，适合公开提交或作为公共 Issue 附件；
+   - `sanitized`：用于离线合成受审查的测试用例（Synthetic Fixtures），保真保留结构；
+   - `private`：本地诊断与故障恢复模式，受系统权限保护，支持故障断点恢复。
+
+---
+
+## 故障自愈与确定性回放
+
+### H1 Crash Recovery（单机故障自愈）
+当执行长时间运行的任务或复杂的修复流程时，若进程意外退出，QRE 的 V2 状态机允许任务无损恢复：
+- **原子检查点 (Checkpointing)**：每一步关键状态转移均持久化写入 `.qre/v2/checkpoints/`；
+- **租约锁 (Attempt Lease)**：防止并发或双重恢复导致状态污染；
+- **防漂移严格校验**：恢复时严格对比 Workspace 路径、Tool Registry 散列值、Policy 规格与 Model 配置，一旦环境被篡改则立即拒绝恢复以确保安全。
+- 详细设计参见 [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md)。
+
+### Strict Replay（确定性回放）
+QRE 拥有出色的离线调试能力：
+- 严格回放不会向任何大模型发送网络请求，也不会执行本地工具；
+- 注入确定性时钟（Deterministic Clock）与 Query ID；
+- 比对整个状态转移序列，输出唯一的 `replay_digest`；
+- 彻底解决 Agent 开发中“难以在本地稳定复现生产 Bug”的痛点。
+
+---
+
+## 模型支持与智能思考策略
+
+### 模型供应商支持
+QRE 底层基于 `Microsoft.Extensions.AI` 构建，并通过官方 `CodexFlow.QueryRuntime.Models` 包对各主流形态进行标准化：
+- **OpenAI-compatible**（OpenAI, Azure OpenAI, DeepSeek, 月之暗面, 智谱等）；
+- **vLLM**（本地部署的高性能推理集群）；
+- **Anthropic Messages** 风格端点。
+
+### 思考策略控制 (`--thinking`)
+许多新型大模型具备思考链（CoT / Reasoning）功能，但在同时启用工具调用或强制指定 JSON Schema 输出时，部分模型厂商容易出现格式损坏。QRE 内置智能协调策略：
+- **`auto`（默认推荐）**：当检测到任务启用了工具调用，或者开启了 `--json-output` 时，QRE 会主动关闭思考链参数，确保工具调用稳定与 JSON 解析可靠；在纯文本无工具任务时保留模型默认表现。
+- **`off`**：强制关闭模型的思考链。
+- **`on`**：强制开启思考链（确保目标模型厂商支持工具与思考链混用）。
+- **`preserve`**：完全不干预，保留模型客户端原始选项。
+
+---
+
+## 嵌入 .NET 应用开发指南
+
+你可以直接将 QRE 核心与模型库作为 NuGet 包集成到任意 C# / .NET 10 应用中（Web API、后台服务或桌面客户端）。
+
+### 1. 引用核心包
+在你的 `.csproj` 中引入官方 NuGet 包（`0.23.1`）：
+
+```xml
+<ItemGroup>
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.1" />
+</ItemGroup>
+```
+
+*(说明：`CodexFlow.QueryRuntime.Protocol` 契约程序集已作为内部依赖打包在 Engine 包中)。*
+
+### 2. 初始化运行时与发起 Agent 任务
+
+```csharp
+using CodexFlow.QueryRuntime.Engine.V2;
+using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Protocol;
+
+// 1. 初始化模型客户端 (支持 Static 离线客户端或基于 MEAI 的在线客户端)
+var modelClient = new StaticRuntimeModelClient("你好！我是 QRE 嵌入式 Agent。");
+// 在线场景可使用:
+// var modelClient = new MeaiRuntimeModelClient(chatClient, QreModelApiMode.ChatCompletions);
+
+// 2. 构造 V2 运行时实例
+IAgentRuntime runtime = new AgentRuntime(modelClient);
+
+// 3. 构建请求上下文 (定义会话ID、目标任务、策略快照与预算)
+var sessionId = new RuntimeSessionId(Guid.NewGuid().ToString("N"));
+var turnId = new RuntimeTurnId(Guid.NewGuid().ToString("N"));
+string userGoal = "分析当前目录的代码结构";
+
+var request = new RuntimeAgentLoopRequest(
+    sessionId,
+    turnId,
+    userGoal,
+    [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(userGoal)])],
+    [], // 传入工具列表
+    ModelParameters: new RuntimeModelParameters(),
+    Policy: new RuntimePolicySnapshot("prod-policy", "readonly"),
+    Environment: new RuntimeEnvironmentSnapshot("local", Path.GetFullPath("."), "my-host-app"),
+    Budget: new RuntimeBudgetSnapshot(maxSteps: 5, maxToolCalls: 10)
+);
+
+// 4. 实现事件监听器以实现实时 UI 流式更新
+var eventSink = new DelegateEventSink(runtimeEvent =>
+{
+    if (runtimeEvent.Type == RuntimePresentationEventType.TextDelta)
+    {
+        Console.Write(runtimeEvent.Text);
+    }
+    else if (runtimeEvent.Type == RuntimePresentationEventType.ToolCallRequested)
+    {
+        Console.WriteLine($"\n[调用工具]: {runtimeEvent.ToolName}");
+    }
+    return ValueTask.CompletedTask;
+});
+
+// 5. 启动执行
+using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+var result = await runtime.RunAsync(new RuntimeRunRequest(request), eventSink, cts.Token);
+
+Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.Steps.Count}");
+```
+
+详细嵌入范例代码请参考 [`examples/EmbeddedV2`](examples/EmbeddedV2)。
+
+---
+
+## 示例工程全景 (Examples)
+
+仓库下的 [`examples/`](examples/README.md) 目录提供了 8 个开箱即用的完整工程，展示了 QRE 在不同语言、不同场景下的集成最佳实践：
+
+| 示例工程 | 核心亮点与场景 | 文档与代码 |
+|---|---|---|
+| **EmbeddedV2** | 原生 .NET 代码嵌入 `IAgentRuntime` 极简示范，离线确定性模型。 | [查看示例](examples/EmbeddedV2) |
+| **RepoDoctor** | 生产级 .NET CLI 宿主应用，集成自定义诊断工具、实时流式输出与严格回放验证。 | [查看示例](examples/RepoDoctor) |
+| **PythonToolDoctor** | Python 编写的外部 CLI 宿主，集成 QRE 核心内置工具并验证严格回放。 | [查看示例](examples/PythonToolDoctor) |
+| **ExternalTools** | 最小化 Stdio 外部工具 Manifest 配置，演示模型如何调用本地 Python 脚本工具。 | [查看示例](examples/ExternalTools) |
+| **PythonFunctionTools** | 演示如何在 Python 中编写原生函数并通过注解自动生成 QRE Manifest。 | [查看示例](examples/PythonFunctionTools) |
+| **NodeFunctionTools** | 演示在 Node.js (ESM) 中编写函数工具并自动生成标准 Manifest。 | [查看示例](examples/NodeFunctionTools) |
+| **H1CrashResume** | 模拟进程执行中断，演练通过 `qre resume` 携带检查点无缝恢复任务状态。 | [查看示例](examples/H1CrashResume) |
+| **SdkOutboundDiagnostics**| 出站诊断综合演示：模拟缺陷宿主、排查请求变形丢失、离线重建请求体。 | [查看示例](examples/SdkOutboundDiagnostics) |
+
+### 一键回归所有示例
+仓库提供了自动化脚本一次性运行全量示例进行回归校验：
+```bash
+python scripts/test-examples.py
+```
+
+---
+
+## 构建、测试与 Native AOT 发布
+
+### 基础构建与单元测试
+```bash
+# 编译整个解决方案
+dotnet build CodexFlow.QueryRuntime.slnx
+
+# 运行单元测试
+dotnet test CodexFlow.QueryRuntime.UnitTests/CodexFlow.QueryRuntime.UnitTests.csproj
+
+# 运行集成测试 (需具备本地环境依赖)
+dotnet test CodexFlow.QueryRuntime.IntegrationTests/CodexFlow.QueryRuntime.IntegrationTests.csproj
+```
+
+### Native AOT 单文件发布
+QRE CLI 针对 .NET 10 Native AOT 进行了深度优化与修剪剪裁配置，可直接发布为无宿主依赖、毫秒级冷启动的原生可执行单文件：
+
+```bash
+# Windows (x64)
+dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
+  -c Release -r win-x64 -p:PublishAot=true -p:SelfContained=true
+
+# Linux (x64)
+dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
+  -c Release -r linux-x64 -p:PublishAot=true -p:SelfContained=true
+
+# macOS Apple Silicon (ARM64)
+dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
+  -c Release -r osx-arm64 -p:PublishAot=true -p:SelfContained=true
+```
+
+---
+
+## 技术文档导航
+
+- 📘 [QRE 架构技术指南 (中文)](docs/queryruntime-technical-guide.zh-CN.md) ｜ [English](docs/queryruntime-technical-guide.md)
+- 🧭 [0.2 预览版迁移指南 (中文)](docs/migration-0.2-preview.zh-CN.md) ｜ [English](docs/migration-0.2-preview.md)
+- 🛡️ [安全政策与漏洞提报 (SECURITY.md)](SECURITY.md)
+- 🔒 [运行时威胁模型分析 (Threat Model)](docs/threat-model.md)
+- 🧰 [工具能力说明 (Tool Capabilities)](docs/tool-capabilities.md)
+- 🔍 [动态工具检索设计 (Tool Search)](docs/toolsearch.md) 与 [工具分区矩阵](docs/queryruntime-tool-partition-matrix.md)
+- 🔄 [H1 崩溃恢复实施报告](docs/h1-crash-resume-implementation-report.zh-CN.md) 与 [威胁模型](docs/h1-crash-resume-threat-model.md)
+- 🩺 [SDK 出站诊断指南 (中文)](docs/sdk-outbound-diagnostics.zh-CN.md) ｜ [English](docs/sdk-outbound-diagnostics.md) ｜ [验收报告](docs/sdk-outbound-diagnostics-acceptance-report.zh-CN.md)
+- 📦 [包来源与分发溯源说明 (Package Provenance)](docs/package-source-provenance.md)
+- 🏛️ [架构决策记录 (ADR 索引)](docs/adr/)：
+  - [ADR-001：本地单进程运行时](docs/adr/ADR-001-local-single-process-runtime.md)
+  - [ADR-002：Session-Turn-Step 生命周期](docs/adr/ADR-002-session-turn-step-lifecycle.md)
+  - [ADR-003：运行时 IR 与模型适配器](docs/adr/ADR-003-runtime-ir-and-model-adapters.md)
+  - [ADR-004：状态事件与数据分层](docs/adr/ADR-004-state-events-and-data-layers.md)
+  - [ADR-005：工具执行流水线](docs/adr/ADR-005-tool-execution-pipeline.md)
+  - [ADR-007：V2 架构彻底收口](docs/adr/ADR-007-v2-only-cutover.md)
+  - [ADR-008：本地崩溃恢复 (H1 Crash-Resume)](docs/adr/ADR-008-local-crash-resume.md)
+  - [ADR-009：SDK 出站诊断探针系统](docs/adr/ADR-009-sdk-outbound-diagnostics.md)
+
+---
+
+## 开源许可证
+
+本项目采用 [MIT 许可证](LICENSE.txt)。

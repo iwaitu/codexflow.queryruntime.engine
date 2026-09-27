@@ -1,48 +1,67 @@
 # PythonToolDoctor
 
-A Python subprocess example that calls [`qre`](../../README.md), streams a live
-provider response, and requires one read-only tool call before the model answers.
+A Python subprocess example that drives [`qre`](../../README.md), streams a real-time provider response, enforces a **required built-in tool call** (`qre_list_files`), and validates the execution trajectory with **strict trace replay**.
 
-The example runs:
-
-```bash
-qre run --profile readonly --required-tool qre_list_files --trace-data sanitized --stream ...
-```
-
-After the run, it uses `qre replay latest --strict --json` to validate the v2
-audit, successful completion, and nonzero tool count without executing anything.
-The successful `--required-tool qre_list_files` run establishes tool identity.
-Sanitized traces retain run content locally; do not commit or share them blindly.
-
-## Provider Configuration
-
-By default, the script reads the `VllmAgent` section from the sibling CodexFlow
-checkout:
-
-```text
-/Users/iwaitu/github/codexflow/CodexFlow/appsettings.json
-```
-
-You can override this or use environment variables:
+The script runs:
 
 ```bash
-export QRE_API_URL="https://your-provider.example/v1"
+qre run \
+  --workspace <repo> \
+  --profile readonly \
+  --required-tool qre_list_files \
+  --trace-data sanitized \
+  --stream \
+  "<prompt>"
+```
+
+After the run, it verifies the run using:
+```bash
+qre replay latest --strict --workspace <repo> --json
+```
+
+---
+
+## How to Run
+
+PythonToolDoctor automatically resolves `qre` from the local build outputs (`CodexFlow.QueryRuntime.Cli/bin/...`), the `QRE_BIN` environment variable, or system `PATH`.
+
+### 1. Set Provider Environment Variables
+
+```bash
+# macOS / Linux
+export QRE_API_URL="https://api.openai.com/v1"
 export QRE_API_KEY="sk-..."
-export QRE_MODEL="your-model"
+export QRE_MODEL="gpt-4o"
 export QRE_API_MODE="chat-completions"
-```
 
-## Run
-
-```bash
 python examples/PythonToolDoctor/doctor.py /path/to/repo
 ```
 
-With explicit config:
+```powershell
+# Windows PowerShell
+$env:QRE_API_URL="https://api.openai.com/v1"
+$env:QRE_API_KEY="sk-..."
+$env:QRE_MODEL="gpt-4o"
+$env:QRE_API_MODE="chat-completions"
+
+python examples/PythonToolDoctor/doctor.py .
+```
+
+### 2. Custom AppSettings File (Optional)
+
+You can also load credentials from any JSON file with a provider section:
 
 ```bash
 python examples/PythonToolDoctor/doctor.py \
-  --appsettings /path/to/codexflow/CodexFlow/appsettings.json \
+  --appsettings /path/to/appsettings.json \
   --provider-section VllmAgent \
   /path/to/repo
 ```
+
+---
+
+## Key Guarantees Demonstrated
+
+1. **Required Tool Enforcement**: `--required-tool qre_list_files` guarantees the model invokes the tool before producing any final answer.
+2. **Real-Time Streaming**: Text output is streamed directly to stdout token by token.
+3. **Strict Zero-Token Replay**: `qre replay latest --strict` verifies tool execution records, status, and digest consistency offline without extra API costs.
