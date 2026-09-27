@@ -123,9 +123,19 @@ uses `id-token: write` and the pinned `NuGet/login` action to exchange GitHub's
 OIDC token for a temporary API key immediately before uploading.
 
 After updating `Directory.Build.props`, version examples and the CLI version
-test, commit and push the changes. Open **Actions → Release → Run workflow**, set
-`version` to the same version (for example `0.23.2`), and set `release_ref` to the
-reviewed commit SHA on `main`. Ordinary pushes run CI only; they do not publish.
+test, commit and push the changes to `main`. When that push's **CI** workflow
+succeeds, **Release** starts automatically, checks out the exact successful CI
+commit, and reads its `VersionPrefix` from `Directory.Build.props`. It publishes
+only if that version has no published GitHub Release. Further commits with an
+already-released version skip publication. Failed/cancelled CI, pull requests,
+forks and manual CI runs do not trigger publication.
+
+The manual **Actions → Release → Run workflow** entry remains available: set
+`version` to the version in the selected commit (for example `0.23.2`) and
+`release_ref` to a reviewed commit SHA on `main`. A version mismatch is rejected.
+Manual and automatic release runs share a concurrency group to prevent competing
+publication. An existing tag without a published release is treated as an error
+requiring inspection, rather than silently overwritten or skipped.
 
 The workflow builds and tests the selected commit, validates native binaries,
 checks security, packs and smoke-tests the packages, then downloads the exact

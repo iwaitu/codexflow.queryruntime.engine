@@ -1,12 +1,16 @@
 name: Release
 
 # Publishes Native AOT `qre` binaries and Engine/Models NuGet packages.
-# Releases are started manually with a version and source ref.
+# Release the exact main commit whose push CI succeeded; manual dispatch remains available.
 #
 # Native AOT cannot cross-compile across operating systems, so each target is
 # built on a matching native runner.
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -22,21 +26,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: qre-release-${{ inputs.version }}
+  # Serialize automatic and manual runs so identical versions cannot race to publish.
+  group: qre-release
   cancel-in-progress: false
 
 jobs:
   metadata:
     name: Resolve release metadata
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       target_commitish: ${{ steps.meta.outputs.target_commitish }}
+      should_publish: ${{ steps.meta.outputs.should_publish }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ inputs.release_ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.release_ref }}
           fetch-depth: 0
 
       - name: Resolve version
@@ -44,8 +56,15 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          VERSION="${{ inputs.version }}"
+          set -euo pipefail
+          VERSION="$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("Directory.Build.props").findtext(".//VersionPrefix", "").strip())')"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$REQUESTED_VERSION" != "$VERSION" ]]; then
+            echo "Requested version must match Directory.Build.props ($VERSION)." >&2
+            exit 1
+          fi
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release version: $VERSION" >&2
             exit 1
@@ -56,7 +75,7 @@ jobs:
           TAG_STATUS=$?
           set -e
           case "$TAG_STATUS" in
-            0) echo "Release tag v$VERSION already exists; published versions are immutable." >&2; exit 1 ;;
+            0) ;;
             2) ;;
             *) echo "Unable to verify whether release tag v$VERSION exists." >&2; exit 1 ;;
           esac
@@ -68,9 +87,20 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION")"
           case "$RELEASE_STATUS" in
             404) ;;
-            200) echo "GitHub release v$VERSION already exists; published versions are immutable." >&2; exit 1 ;;
+            200)
+              if [[ "$EVENT_NAME" == "workflow_run" ]] && python3 -c 'import json; import sys; sys.exit(0 if json.load(open("/tmp/qre-release.json")).get("draft") is False else 1)'; then
+                echo "should_publish=false" >> "$GITHUB_OUTPUT"
+                echo "Version $VERSION already released; skipping automatic publication." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "GitHub release v$VERSION already exists; published versions are immutable." >&2
+              exit 1 ;;
             *) echo "Unable to verify GitHub release v$VERSION (HTTP $RELEASE_STATUS)." >&2; exit 1 ;;
           esac
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "Tag v$VERSION exists without a published release; inspect it before retrying." >&2
+            exit 1
+          fi
 
           CHECKOUT_REF="$(git rev-parse HEAD)"
           git fetch --no-tags origin main
@@ -82,6 +112,7 @@ jobs:
             echo "version=$VERSION"
             echo "checkout_ref=$CHECKOUT_REF"
             echo "target_commitish=$CHECKOUT_REF"
+            echo "should_publish=true"
           } >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION"
           echo "Resolved checkout ref: $CHECKOUT_REF"
@@ -89,6 +120,7 @@ jobs:
   test:
     name: Build & unit-test release ref (${{ matrix.os }})
     needs: metadata
+    if: needs.metadata.outputs.should_publish == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -223,6 +255,7 @@ jobs:
   security:
     name: Secrets, dependencies, licenses & SBOM
     needs: metadata
+    if: needs.metadata.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -268,6 +301,7 @@ jobs:
   nuget:
     name: Pack NuGet package
     needs: metadata
+    if: needs.metadata.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
