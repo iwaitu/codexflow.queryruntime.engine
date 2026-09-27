@@ -8,7 +8,7 @@
 
 CodexFlow QueryRuntime is a cross-platform .NET runtime for model loops, tool execution, policy enforcement, audit/replay, checkpoint recovery, and sandboxed automation. It can be embedded in a host application or shipped as the standalone `qre` CLI without requiring the CodexFlow web platform.
 
-This repository is on the **0.23.0 stable, v2-only** line. New integrations should use `CodexFlow.QueryRuntime.Protocol` and `CodexFlow.QueryRuntime.Engine.V2`. The earlier v1 API remains only as source-migration and historical-trace context; it is not a selectable CLI or CodexFlow backend.
+This repository is on the **0.23.1 stable, v2-only** line. New integrations should use `CodexFlow.QueryRuntime.Protocol` and `CodexFlow.QueryRuntime.Engine.V2`. The earlier v1 API remains only as source-migration and historical-trace context; it is not a selectable CLI or CodexFlow backend.
 
 ## What it provides
 
@@ -121,11 +121,12 @@ The runtime refuses a resume when ownership, lease, checkpoint integrity, worksp
 
 ## Embed in .NET
 
-The current stable package is `CodexFlow.QueryRuntime.Engine` `0.23.0`. Applications should depend on the v2 surface:
+The current stable packages are `CodexFlow.QueryRuntime.Engine` and `CodexFlow.QueryRuntime.Models` `0.23.1`. Applications should depend on the v2 surface:
 
 - `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` for new turns.
 - `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime` when local checkpoint recovery is required.
 - `CodexFlow.QueryRuntime.Protocol` for requests, state, events, tools, policy, audit, and checkpoint contracts.
+- `CodexFlow.QueryRuntime.Models` for model provider selection and the MEAI `IRuntimeModelClient` adapter.
 
 The `Experimental` project contains optional composition helpers and tool adapters; it is not an alternative runtime loop. Follow the [0.2 preview migration guide](docs/migration-0.2-preview.md) before moving an existing v1 host.
 

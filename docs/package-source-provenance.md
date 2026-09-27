@@ -1,13 +1,16 @@
 # Package Source and Provenance
 
 QRE publishes the library package separately from the native `qre` CLI archives.
-The current NuGet package id is:
+The current NuGet package ids are:
 
 - `CodexFlow.QueryRuntime.Engine`
+- `CodexFlow.QueryRuntime.Models` (MEAI/vLLM model providers; depends on `CodexFlow.QueryRuntime.Engine` of the same version)
 
 `CodexFlow.QueryRuntime.Engine` bundles `CodexFlow.QueryRuntime.Abstractions.dll`
-inside the same package as a `lib/net10.0` asset. It should not publish or depend
-on a separate `CodexFlow.QueryRuntime.Abstractions` package.
+and `CodexFlow.QueryRuntime.Protocol.dll` inside the same package as `lib/net10.0`
+assets. It should not publish or depend on separate `Abstractions` or `Protocol`
+packages. `CodexFlow.QueryRuntime.Models` ships only its own assembly and gets
+`Protocol` through its `Engine` dependency, so consumers never see two copies.
 
 The package version is set by `QRE_PACKAGE_VERSION` in local builds or by the
 release workflow metadata for tagged releases.

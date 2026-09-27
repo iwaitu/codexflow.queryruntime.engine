@@ -17,7 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" />
+    <!-- Protocol ships only inside the Engine package; the Engine reference becomes the package dependency. -->
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Engine\CodexFlow.QueryRuntime.Engine.csproj" />
+    <ProjectReference Include="..\CodexFlow.QueryRuntime.Protocol\CodexFlow.QueryRuntime.Protocol.csproj" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

@@ -8,7 +8,7 @@
 
 CodexFlow QueryRuntime 是一个跨平台 .NET Agent Runtime，负责模型循环、工具执行、策略门禁、审计/回放、检查点恢复与沙箱自动化。它既可以嵌入宿主应用，也可以作为独立的 `qre` CLI 运行，不依赖 CodexFlow Web 平台。
 
-当前仓库处于 **0.23.0 正式版、仅 v2** 阶段。新集成应使用 `CodexFlow.QueryRuntime.Protocol` 和 `CodexFlow.QueryRuntime.Engine.V2`。早期 v1 API 仅用于源码迁移和历史 trace 兼容，不再是 CLI 或 CodexFlow 可选后端。
+当前仓库处于 **0.23.1 正式版、仅 v2** 阶段。新集成应使用 `CodexFlow.QueryRuntime.Protocol` 和 `CodexFlow.QueryRuntime.Engine.V2`。早期 v1 API 仅用于源码迁移和历史 trace 兼容，不再是 CLI 或 CodexFlow 可选后端。
 
 ## 当前能力
 
@@ -121,11 +121,12 @@ qre resume latest --workspace . --json
 
 ## 嵌入 .NET 应用
 
-当前正式包为 `CodexFlow.QueryRuntime.Engine` `0.23.0`。应用应依赖 v2 接口：
+当前正式包为 `CodexFlow.QueryRuntime.Engine` 与 `CodexFlow.QueryRuntime.Models` `0.23.1`。应用应依赖 v2 接口：
 
 - 使用 `CodexFlow.QueryRuntime.Engine.V2.IAgentRuntime` 发起新 Turn。
 - 需要本地检查点恢复时使用 `CodexFlow.QueryRuntime.Engine.V2.IResumableAgentRuntime`。
 - 使用 `CodexFlow.QueryRuntime.Protocol` 中的请求、状态、事件、工具、策略、审计和检查点契约。
+- 使用 `CodexFlow.QueryRuntime.Models` 进行模型 Provider 选择，并通过 MEAI `IRuntimeModelClient` 适配器接入模型。
 
 `Experimental` 项目只提供可选的组合帮助器和工具适配器，不是另一套 Runtime 循环。现有 v1 宿主升级前请先阅读 [0.2 preview 迁移指南](docs/migration-0.2-preview.zh-CN.md)。
 
