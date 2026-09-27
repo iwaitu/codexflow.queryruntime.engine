@@ -299,6 +299,19 @@
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "CodexFlow.QueryRuntime.UnitTests\\Cli\\QreCliSmokeTests.cs",
+      "accessCount": 2,
+      "lastAccessed": 1790494333824,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\iwaitu\\.claude\\projects\\D--codeup-codexflow-queryruntime-engine\\memory\\reply-in-chinese.md",
+      "accessCount": 1,
+      "lastAccessed": 1790493989797,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }
