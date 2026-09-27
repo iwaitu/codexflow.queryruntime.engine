@@ -26,6 +26,7 @@ fi
 
 projects=(
   CodexFlow.QueryRuntime.Engine/CodexFlow.QueryRuntime.Engine.csproj
+  CodexFlow.QueryRuntime.Models/CodexFlow.QueryRuntime.Models.csproj
 )
 
 dotnet restore CodexFlow.QueryRuntime.slnx
