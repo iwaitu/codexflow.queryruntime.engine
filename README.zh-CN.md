@@ -568,12 +568,27 @@ QRE 底层基于 `Microsoft.Extensions.AI` 构建，并通过官方 `CodexFlow.Q
 在需要 Agent 产出具备确定性格式（如架构报告、漏洞清单、任务分解表）的工业场景中，QRE 原生支持基于严格 JSON Schema 的结构化输出。
 
 > [!NOTE]
-> **底层驱动**：Logits 级别的严格文法状态机引导解码（Guided Decoding / Grammar-constrained Sampling）底层由 **`VllmChatClient`**（面向 OpenAI-compatible、vLLM、SGLang 等服务）驱动。
+> **底层驱动**：**`VllmChatClient`** 负责序列化 schema 请求；是否实施文法约束解码取决于远端后端与模型的支持。
 > **QRE 协同**：QRE 运行时负责上层 Agent 循环编排、`QreThinkingPolicy` 思考策略协同，以及全链路出站诊断（Outbound Diagnostics）监控。
 
 #### 1. 强模式 vs 弱提示模式
 - **`ChatResponseFormat.Json` (`json_object`)**：模型仅在 Prompt 中被提示输出合法 JSON，但无字段模式校验，可能出现漏字段或类型偏差；
-- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**：由 `VllmChatClient` 在采样解码（Logits）层面施加状态机语法树强约束，保证生成的 Token 序列 **100% 严格符合指定的 JSON Schema**。
+- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**：向服务端请求 schema 约束输出，客户端仍需校验结果。HTTP 200 不代表后端执行了严格约束，参见[真实 API 验证记录](examples/live-api-validation.md)。
+
+**阿里云百炼配置与真实验证**
+
+必须选择明确支持 **JSON Schema** 的模型，不能仅依据 JSON Object 支持范围。2026-09-27 核对的[官方支持列表](https://help.aliyun.com/zh/model-studio/qwen-structured-output)包括 Qwen3.7-Plus、Qwen3.8-Flash、Qwen3.7-Flash、Qwen3.7-Max、Qwen3.8-Max 系列。`qwen3.8-27b` 不在 JSON Schema 支持列表中；仅关闭思维链并不能让不支持的模型获得 schema 约束能力。
+
+已验证组合为 endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1`、model ID `qwen3.8-flash`、`ThinkingEnabled = false`（实际 HTTP 请求顶层为 `enable_thinking: false`）。2026-09-27 **连续 5 次真实 API 调用全部通过**：HTTP 200，出站请求包含完整 schema 与 `strict=true`，响应字段、类型、枚举等约束及 POCO 反序列化全部通过。原始 SSE 文本与 QRE 最终输出一致，没有修复或模拟回退。该结果证明这 5 次调用成功，不代表对所有输入的保证。
+
+```powershell
+$env:QRE_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+$env:QRE_MODEL = 'qwen3.8-flash'
+$env:QRE_API_KEY = $env:VLLM_ALIYUN_API_KEY # 也可使用自己的百炼 API Key。
+dotnet run --project examples/StructuredOutputsJsonSchema -- --live --evidence-dir artifacts/live-examples/schema
+```
+
+不传 `--live` 或 `--endpoint` 时仅执行离线自检。请求/响应证据及此前不受支持模型的测试结果见[验证记录](examples/live-api-validation.md)。
 
 #### 2. .NET 宿主应用使用示例
 ```csharp
@@ -607,9 +622,11 @@ var options = new VllmChatOptions
 {
     ResponseFormat = jsonSchemaFormat,
     Temperature = 0.1f,
-    MaxOutputTokens = 1024
+    ThinkingEnabled = false // 已验证的百炼配置：enable_thinking=false。
 };
 ```
+
+百炼官方建议结构化输出时不设置 `max_tokens`，避免 JSON 被截断。上述真实对照测试保留了示例原有的 1024 token 上限，5 次均以 `stop` 正常结束。
 
 #### 3. QRE 运行时的配套工程保障
 - **思考策略协同 (`QreThinkingPolicy`)**：智能协同模型思考链（Reasoning / CoT）与 JSON Schema 约束解码的共存，避免强约束拦截模型的前置推理过程；

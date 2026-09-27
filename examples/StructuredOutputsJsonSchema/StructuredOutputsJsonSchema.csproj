@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/LiveExample.cs" Link="LiveExample.cs" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0" />
     <PackageReference Include="VllmChatClient" Version="2.0.25" />
   </ItemGroup>

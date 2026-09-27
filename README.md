@@ -560,12 +560,27 @@ Modern models with Chain-of-Thought (Reasoning) can fail or corrupt schemas when
 For production tasks requiring deterministic output shapes (such as architectural reports, security vulnerability manifests, or work item breakdowns), QRE natively supports structured outputs via strict JSON Schema.
 
 > [!NOTE]
-> **Underlying Driver**: Logits-level grammar-constrained decoding (Guided Decoding) is powered by **`VllmChatClient`** (for OpenAI-compatible, vLLM, and SGLang endpoints).
+> **Underlying Driver**: **`VllmChatClient`** serializes schema requests. Grammar-constrained decoding, when supported, is implemented by the remote backend and model.
 > **QRE Orchestration**: QRE manages loop state machines, `QreThinkingPolicy` reasoning coordination, and full-link Outbound Diagnostics.
 
 #### 1. Strict Mode vs. Soft Prompting
 - **`ChatResponseFormat.Json` (`json_object`)**: The model is prompted to emit valid JSON, but without schema enforcement; missing fields or mismatched data types can occur.
-- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**: `VllmChatClient` enforces a finite-state machine directly during logits sampling, ensuring the generated tokens are **100% compliant with the specified JSON Schema**.
+- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**: Requests schema-constrained output. Backend support varies; clients must validate responses. HTTP 200 does not prove schema enforcement. See the [live validation results](examples/live-api-validation.md).
+
+**Alibaba Cloud Model Studio configuration and live validation**
+
+Use a model explicitly listed as supporting **JSON Schema**, rather than only JSON Object. As checked on 2026-09-27, the [official support list](https://help.aliyun.com/zh/model-studio/qwen-structured-output) includes Qwen3.7-Plus, Qwen3.8-Flash, Qwen3.7-Flash, Qwen3.7-Max, and Qwen3.8-Max. `qwen3.8-27b` is not listed for JSON Schema; disabling thinking alone does not add schema support.
+
+The verified combination is endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1`, model ID `qwen3.8-flash`, and `ThinkingEnabled = false` (serialized as top-level `enable_thinking: false`). On 2026-09-27, **5 consecutive real API calls passed**: HTTP 200, complete schema with `strict=true` in the outbound body, valid response fields/types/enums, and successful POCO deserialization. Raw SSE text matched the final QRE output without repair or mock fallback. This validates these five calls, not every possible input.
+
+```powershell
+$env:QRE_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+$env:QRE_MODEL = 'qwen3.8-flash'
+$env:QRE_API_KEY = $env:VLLM_ALIYUN_API_KEY # Or use your own Model Studio API key.
+dotnet run --project examples/StructuredOutputsJsonSchema -- --live --evidence-dir artifacts/live-examples/schema
+```
+
+Running without `--live` or `--endpoint` performs an offline self-test only. See the [validation record](examples/live-api-validation.md) for request/response evidence and earlier unsupported-model results.
 
 #### 2. .NET Host Application Example
 ```csharp
@@ -599,9 +614,11 @@ var options = new VllmChatOptions
 {
     ResponseFormat = jsonSchemaFormat,
     Temperature = 0.1f,
-    MaxOutputTokens = 1024
+    ThinkingEnabled = false // Verified Model Studio configuration: enable_thinking=false.
 };
 ```
+
+Model Studio recommends omitting `max_tokens` for structured output to avoid truncating JSON. The live comparison above retained the example's 1024-token limit; all five responses finished with `stop`.
 
 #### 3. QRE Engineering Guarantees
 - **Thinking Policy Coordination (`QreThinkingPolicy`)**: Intelligently balances Reasoning (CoT) and schema constraints, preventing premature syntax failures during internal reasoning.

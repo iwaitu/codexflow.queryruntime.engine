@@ -8,9 +8,10 @@
    - 客户端（`VllmBaseChatClient`）自动扫描指定技能目录（`SkillDirectoryPath`）；
    - 提取每个技能的 `SKILL.md` 元数据（`name` 与 `description`），以轻量级 `# Skills` 目录注入系统提示词；
    - 保持极低的常驻 Token 开销，避免上下文窗口被冗长的规程污染。
-2. **自动内置工具调度**：
-   - 自动注册 `ListSkillFiles`（列出可用技能清单）与 `ReadSkillFile`（按需读取特定技能的完整指导指令）；
-   - 模型在需要时主动调用 `ReadSkillFile` 加载深层次领域指令。
+2. **QRE 工具调度**：
+   - 宿主把 SDK 的 `ListSkillFiles` 与 `ReadSkillFile` 映射为 QRE 工具声明，并通过 `IRuntimeToolExecutor` 执行；仅设置 `EnableSkills` 并不能完成 QRE 工具执行接线。
+   - 示例通过反射访问锁定版本 VllmChatClient 2.0.25 的私有方法，升级 SDK 时需重新验证。SDK 还提供 `CreateSkillFile`，本示例没有授权其执行。
+   - 在线测试显式要求模型列出并读取技能，验证调用链，不衡量模型自主选择技能的能力。
 
 ## 运行方式
 
@@ -25,6 +26,19 @@ dotnet run --project examples/SkillsWorkflow
 ```bash
 dotnet run --project examples/SkillsWorkflow -- --endpoint http://localhost:8000/v1 --model qwen-2.5
 ```
+
+也可使用 PowerShell 环境变量（只有 `--live` 或 `--endpoint` 才启用网络）：
+
+```powershell
+$env:QRE_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+$env:QRE_MODEL = 'qwen3.8-27b'
+$env:QRE_API_KEY = $env:VLLM_ALIYUN_API_KEY
+dotnet run --project examples/SkillsWorkflow -- --live --evidence-dir artifacts/live-examples/skills
+```
+
+在线模式断言真实 HTTP 200、首次仅注入元数据、两个工具实际执行、正文回传以及最终审查结果。失败返回非零退出码，不降级为模拟响应。证据目录保存请求 JSON、原始响应和最终文本，不保存认证头；证据模式会缓冲响应，不适合测流式首字延迟。无参数运行仍是离线自检，不代表 API 验证通过。
+
+实测结论见 [真实 API 验证记录](../live-api-validation.md)。
 
 ## 目录结构
 

@@ -8,9 +8,9 @@ using Microsoft.Extensions.AI;
 // StructuredOutputsJsonSchema: Demonstrates requesting Structured Outputs using strict JSON Schema
 // with VllmChatClient and QRE runtime state machines.
 //
-// Technical distinction:
-//   Logits-level grammar constrained sampling (Guided Decoding) is powered by VllmChatClient (via vLLM / outlines / xgrammar).
-//   QRE provides Thinking policy orchestration, loop state machines, and fail-closed safety.
+// The SDK serializes the schema; enforcement depends on the remote backend.
+var (endpoint, model, apiKey) = LiveExample.Configuration(args);
+var evidenceDirectory = LiveExample.Argument(args, "--evidence-dir");
 
 Console.WriteLine("============================================================================");
 Console.WriteLine(" CodexFlow QueryRuntime (QRE) - Structured Outputs via JSON Schema Demo");
@@ -73,27 +73,63 @@ var simulatedJsonResponse = """
 }
 """;
 
-Console.WriteLine("\n[3] Simulating QRE Agent Turn Execution with Structured Output...");
-IAgentRuntime runtime = new AgentRuntime(new StaticRuntimeModelClient(simulatedJsonResponse));
+Console.WriteLine("\n[3] Executing QRE Agent Turn with Structured Output...");
+using var evidence = new LiveEvidenceHandler(evidenceDirectory);
+using var http = new HttpClient(evidence);
+using var liveModel = endpoint == null ? null : new MeaiRuntimeModelClient(
+    QreModelProviderSelector.CreateDefault().CreateClient(endpoint, apiKey, model, httpClient: http),
+    _ => new VllmChatOptions
+    {
+        ResponseFormat = jsonSchemaFormat, Temperature = 0.1f, MaxOutputTokens = 1024,
+        ThinkingEnabled = false, EnableSkills = false
+    });
+IAgentRuntime runtime = new AgentRuntime(liveModel is null ? new StaticRuntimeModelClient(simulatedJsonResponse) : liveModel);
 
 var request = new RuntimeAgentLoopRequest(
     new RuntimeSessionId(Guid.NewGuid().ToString("N")),
     new RuntimeTurnId(Guid.NewGuid().ToString("N")),
     "Execute structured review",
-    [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("Generate code review report.")])],
+    [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem(
+        "Return only a JSON code review report for this synthetic code: public string Fetch(HttpClient client) => " +
+        "client.GetStringAsync(\"https://example.invalid\").Result; Blocking on an asynchronous task is a violation. " +
+        "Set approved=false and include at least one violation. Do not claim to have compiled the code.")])],
     [],
-    new RuntimeModelParameters(RequireJsonObject: true),
+    new RuntimeModelParameters(Model: model, MaxOutputTokens: 1024, RequireJsonObject: true),
     new RuntimePolicySnapshot("schema-demo", "none"),
     new RuntimeEnvironmentSnapshot("local", Path.GetFullPath("."), "schema-demo"),
     new RuntimeBudgetSnapshot(maxSteps: 2, maxToolCalls: 0));
 
-using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(180));
 var result = await runtime.RunAsync(new RuntimeRunRequest(request), null, cancellation.Token);
 
 // 4. Extract and deserialize structured output into strong-typed C# POCO
 Console.WriteLine($"\n[4] Parsing Structured Result (Status: {result.Status}):");
-var lastStep = result.Turn.Steps.LastOrDefault();
-var responseText = lastStep?.Output?.Items.OfType<RuntimeTextItem>().FirstOrDefault()?.Text ?? simulatedJsonResponse;
+LiveExample.Require(result.Status == RuntimeTurnStatus.Completed, $"Runtime completed: {result.Error}");
+var responseText = result.FinalText;
+if (endpoint != null && evidenceDirectory != null)
+    await File.WriteAllTextAsync(Path.Combine(evidenceDirectory, "response.json"), responseText);
+Console.WriteLine(responseText);
+if (endpoint != null)
+{
+    LiveExample.Require(evidence.StatusCodes.Count > 0 && evidence.StatusCodes.All(s => s == 200), "Real HTTP 200 response observed");
+    LiveExample.Require(evidence.Requests.All(r => r["response_format"]?["type"]?.GetValue<string>() == "json_schema" &&
+        r["response_format"]?["json_schema"]?["strict"]?.GetValue<bool>() == true &&
+        System.Text.Json.Nodes.JsonNode.DeepEquals(r["response_format"]?["json_schema"]?["schema"], System.Text.Json.Nodes.JsonNode.Parse(schemaJson))),
+        "Actual HTTP body contains the exact schema with json_schema and strict=true");
+}
+LiveExample.Require(!string.IsNullOrWhiteSpace(responseText), "Runtime returned nonempty model output (no fallback)");
+using var responseDoc = JsonDocument.Parse(responseText);
+var root = responseDoc.RootElement;
+LiveExample.Require(root.ValueKind == JsonValueKind.Object, $"Schema requires an object root; actual root: {root.ValueKind}");
+LiveExample.Require(root.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).SequenceEqual(new[] { "approved", "severity", "summary", "violations" }),
+    "All required properties present, no duplicates or additional properties");
+LiveExample.Require(root.GetProperty("summary").ValueKind == JsonValueKind.String &&
+    root.GetProperty("severity").ValueKind == JsonValueKind.String &&
+    new[] { "Low", "Medium", "High", "Critical" }.Contains(root.GetProperty("severity").GetString()) &&
+    root.GetProperty("approved").ValueKind is JsonValueKind.True or JsonValueKind.False &&
+    root.GetProperty("violations").ValueKind == JsonValueKind.Array &&
+    root.GetProperty("violations").EnumerateArray().All(v => v.ValueKind == JsonValueKind.String),
+    "Response conforms to every constraint in the example schema");
 
 var report = JsonSerializer.Deserialize<CodeReviewReport>(responseText, new JsonSerializerOptions
 {
@@ -111,6 +147,11 @@ else
 {
     Console.Error.WriteLine("Error: Failed to deserialize report into C# object.");
     return 1;
+}
+
+if (endpoint != null)
+{
+    LiveExample.Require(!report.Approved && report.Violations.Count > 0, "Live model identified the fixture violation");
 }
 
 Console.WriteLine("\n[5] JSON Schema structured output demo completed successfully.");
