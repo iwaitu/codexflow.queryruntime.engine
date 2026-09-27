@@ -18,6 +18,8 @@ All examples adhere to the **0.23.0 stable, v2-only** runtime architecture.
 | **[NodeFunctionTools](NodeFunctionTools)** | Node.js (ESM) | Native JavaScript `qreTool` helper, zero npm dependencies, and automatic manifest generation. | Manifest generator & tool runner |
 | **[H1CrashResume](H1CrashResume)** | C# / .NET 10 | Process crash injection (`Environment.FailFast`) and same-version atomic checkpoint recovery with attempt leases. | Fault injection & recovery |
 | **[SdkOutboundDiagnostics](SdkOutboundDiagnostics)** | C# / .NET 10 | SDK client-side outbound diagnostics: defective options factory demo, connection pool isolation, and offline request rebuilds. | Diagnostic capture & rebuild |
+| **[SkillsWorkflow](SkillsWorkflow)** | C# / .NET 10 | Skill packaging (`SKILL.md`), progressive two-phase metadata discovery, and automated `ListSkillFiles`/`ReadSkillFile` tool injection. | Offline self-test / Live provider |
+| **[StructuredOutputsJsonSchema](StructuredOutputsJsonSchema)** | C# / .NET 10 | Strict JSON Schema structured outputs powered by `VllmChatClient` guided decoding, with POCO deserialization and diagnostic validation. | In-process simulation & typing |
 
 ---
 

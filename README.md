@@ -33,9 +33,17 @@ This repository is on the **0.23.1 stable, v2-only** line. All active developmen
   - [Built-in Tools & Policy Profiles](#built-in-tools--policy-profiles)
   - [External Tool Manifests (Stdio & MCP)](#external-tool-manifests-stdio--mcp)
   - [Dynamic Tool Retrieval (Tool Search)](#dynamic-tool-retrieval-tool-search)
+- [Skill System & Workflows](#skill-system--workflows)
+  - [1. Conceptual Positioning: Atomic Tools vs. Domain Skills](#1-conceptual-positioning-atomic-tools-vs-domain-skills)
+  - [2. Standard Skill Specification & Directory Structure](#2-standard-skill-specification--directory-structure)
+  - [3. Two-Phase Progressive Loading & Discovery](#3-two-phase-progressive-loading--discovery)
+  - [4. Configuration & Usage in QRE](#4-configuration--usage-in-qre)
+  - [5. Ecosystem Skills & Typical Scenarios](#5-ecosystem-skills--typical-scenarios)
 - [Sandboxing & Security Model](#sandboxing--security-model)
 - [Fault Recovery & Deterministic Replay](#fault-recovery--deterministic-replay)
 - [Model Providers & Thinking Policies](#model-providers--thinking-policies)
+  - [Thinking Policy Control (`--thinking`)](#thinking-policy-control---thinking)
+  - [Structured Outputs via JSON Schema](#structured-outputs-via-json-schema)
 - [Embedding in .NET Applications](#embedding-in-net-applications)
 - [Runnable Examples Showcase](#runnable-examples-showcase)
 - [Building, Testing & Native AOT Publish](#building-testing--native-aot-publish)
@@ -387,6 +395,114 @@ With `--tool-search` (and `--tool-search-top-k 5`):
 
 ---
 
+## Skill System & Workflows
+
+In production engineering, relying solely on atomic tools (e.g., reading files or running shell commands) can cause LLMs to lose strategic direction in multi-phase tasks. Conversely, cramming enterprise coding guidelines and domain workflows into system prompts quickly exhausts the context window. QRE natively supports the **Skill** system to provide agents with modular, on-demand **Procedural Knowledge**.
+
+### 1. Conceptual Positioning: Atomic Tools vs. Domain Skills
+
+| Dimension | Atomic Tool (Tool) | Domain Skill (Skill) |
+|---|---|---|
+| **Core Identity** | Deterministic single-step system I/O primitive | Standardized workflow & procedural knowledge bundle |
+| **Granularity** | Fine-grained, single operation (`read_file`, `dotnet_test`) | End-to-end multi-step guidance (`code-reviewer`, `csharp-scaffolder`) |
+| **Composition** | Executable function/process, input JSON Schema, risk profile | `SKILL.md` (metadata + instructions) + `scripts/` + `references/` |
+| **Token Budget** | Full schemas loaded per turn or via tool search | **Two-Phase Loading**: Lightweight metadata discovery first; detailed body activated on demand |
+| **Security Gate** | Intercepted by QRE profiles and Fail-Closed risk gates | Procedural rules guide the agent; packaged scripts execute in controlled sandboxes |
+
+### 2. Standard Skill Specification & Directory Structure
+
+Each skill is organized as a self-contained directory rooted by a standard `SKILL.md` file:
+
+```text
+my-custom-skill/
+├── SKILL.md                 # [Required] YAML Frontmatter metadata + markdown instructions
+├── scripts/                 # [Optional] Deterministic execution scripts (Python/Bash/Node.js)
+├── references/              # [Optional] Domain schemas, API specs, or reference documents
+└── assets/                  # [Optional] Boilerplates, code templates, or icons
+```
+
+#### `SKILL.md` Specification Example
+```markdown
+---
+name: code-reviewer
+description: Enforces architectural boundaries, zero-warning compilation, immutable protocols, and security standards. Use when reviewing PRs or new code additions.
+---
+
+# Code Reviewer Skill
+
+## Review Principles & Workflow
+1. Verify architectural layering (Protocol contracts must never depend on Engine/UI);
+2. Ensure deterministic resource lifecycle management (all `IDisposable` managed cleanly);
+3. Enforce compiler zero-warning standards under `<Nullable>enable</Nullable>`.
+```
+
+### 3. Two-Phase Progressive Loading & Discovery
+
+To minimize context window consumption, QRE and `VllmChatClient` employ a **Two-Phase Progressive Loading** mechanism:
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Phase 1: Lightweight Metadata Discovery (Low Tokens)  │
+│  Client scans skills directory, extracts frontmatter,   │
+│  and injects a concise `# Skills` catalog into prompt  │
+└───────────────────────────┬────────────────────────────┘
+                            │
+┌───────────────────────────▼────────────────────────────┐
+│  Phase 2: On-Demand Workflow Activation                │
+│  Agent matches task intent -> calls `ReadSkillFile`     │
+│  Loads full skill markdown only when actively needed   │
+└────────────────────────────────────────────────────────┘
+```
+
+#### Multi-Tier Skill Directory Discovery
+QRE automatically discovers skills across multiple priority tiers:
+1. Explicitly configured `SkillDirectoryPath`;
+2. Environment variable `CODEX_SKILLS_DIR`;
+3. Application root `./skills`;
+4. Current workspace `./skills` or `.qre/skills`;
+5. Recursive parent directory scan.
+
+### 4. Configuration & Usage in QRE
+
+#### Enabling Skills in C# Host Applications
+Configure `VllmChatOptions` with `EnableSkills = true` and the directory path. The underlying client automatically handles metadata discovery and built-in tool registration:
+
+```csharp
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+
+var chatOptions = new VllmChatOptions
+{
+    EnableSkills = true,
+    SkillDirectoryPath = Path.Combine(AppContext.BaseDirectory, "skills"),
+    ThinkingEnabled = true
+};
+
+// VllmChatClient automatically advertises available skills in the system prompt
+// and registers two built-in discovery tools:
+// 1. ListSkillFiles: Lists available skills with descriptions and file paths
+// 2. ReadSkillFile: Reads the full markdown instructions of a targeted skill
+```
+
+#### CLI Task Orchestration
+Direct the agent to follow a specific skill from the command line:
+```bash
+qre run --workspace . --profile verify "Follow code-reviewer skill to audit recent architectural changes"
+```
+
+### 5. Ecosystem Skills & Typical Scenarios
+
+| Skill Category | Examples | Value Delivered |
+|---|---|---|
+| **Scaffolding** | `csharp-scaffolder`, `node-scaffolder`, `python-scaffolder` | Standardized boilerplate generation following domain-driven design principles. |
+| **Security & Quality** | `nodejs-security`, `python-security`, `java-security` | Standardized audit procedures wrapping Bandit, ESLint Security, or SpotBugs. |
+| **Meta Skills** | `skill-creator` | Guides developers in authoring, validating, and packaging new skills. |
+| **Package Governance**| `nuget-package-versions` | Verifies real upstream package versions before editing project files to avoid restore deadlocks. |
+
+> For a complete runnable example, see [`examples/SkillsWorkflow`](examples/SkillsWorkflow).
+
+---
+
 ## Sandboxing & Security Model
 
 QRE follows a **Fail-Closed** security architecture, treating model output, tool arguments, external manifests, and workspace files as untrusted:
@@ -438,6 +554,60 @@ Modern models with Chain-of-Thought (Reasoning) can fail or corrupt schemas when
 - **`off`**: Forcibly disables reasoning parameters.
 - **`on`**: Forcibly enables reasoning (only when the provider supports concurrent tools and CoT).
 - **`preserve`**: Retains whatever defaults the model client options specify.
+
+### Structured Outputs via JSON Schema
+
+For production tasks requiring deterministic output shapes (such as architectural reports, security vulnerability manifests, or work item breakdowns), QRE natively supports structured outputs via strict JSON Schema.
+
+> [!NOTE]
+> **Underlying Driver**: Logits-level grammar-constrained decoding (Guided Decoding) is powered by **`VllmChatClient`** (for OpenAI-compatible, vLLM, and SGLang endpoints).
+> **QRE Orchestration**: QRE manages loop state machines, `QreThinkingPolicy` reasoning coordination, and full-link Outbound Diagnostics.
+
+#### 1. Strict Mode vs. Soft Prompting
+- **`ChatResponseFormat.Json` (`json_object`)**: The model is prompted to emit valid JSON, but without schema enforcement; missing fields or mismatched data types can occur.
+- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**: `VllmChatClient` enforces a finite-state machine directly during logits sampling, ensuring the generated tokens are **100% compliant with the specified JSON Schema**.
+
+#### 2. .NET Host Application Example
+```csharp
+using System.Text.Json;
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+
+// 1. Define Strict JSON Schema
+var schemaJson = """
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "severity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+    "approved": { "type": "boolean" },
+    "violations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["summary", "severity", "approved", "violations"],
+  "additionalProperties": false
+}
+""";
+
+using var doc = JsonDocument.Parse(schemaJson);
+var jsonSchemaFormat = ChatResponseFormat.ForJsonSchema(
+    doc.RootElement,
+    schemaName: "code_review_report",
+    schemaDescription: "Enforces structural compliance for automated code review results.");
+
+// 2. Configure Model Options
+var options = new VllmChatOptions
+{
+    ResponseFormat = jsonSchemaFormat,
+    Temperature = 0.1f,
+    MaxOutputTokens = 1024
+};
+```
+
+#### 3. QRE Engineering Guarantees
+- **Thinking Policy Coordination (`QreThinkingPolicy`)**: Intelligently balances Reasoning (CoT) and schema constraints, preventing premature syntax failures during internal reasoning.
+- **Full-Link Outbound Diagnostics (`qre diagnose`)**: Three-tier probes track `response_format` from C# intent through to the HTTP Request Body, catching silent `response_format_dropped` degradations by intermediate proxies.
+
+> For a complete runnable example with strong-typed C# POCO deserialization, see [`examples/StructuredOutputsJsonSchema`](examples/StructuredOutputsJsonSchema).
 
 ---
 
@@ -514,7 +684,7 @@ See [`examples/EmbeddedV2`](examples/EmbeddedV2) for a complete working host.
 
 ## Runnable Examples Showcase
 
-The [`examples/`](examples/README.md) directory contains 8 fully working integration examples:
+The [`examples/`](examples/README.md) directory contains 10 fully working integration examples:
 
 | Example | Integration Highlights | Source |
 |---|---|---|
@@ -526,6 +696,8 @@ The [`examples/`](examples/README.md) directory contains 8 fully working integra
 | **NodeFunctionTools** | Node.js ESM function tools with automatic manifest generation. | [Explore](examples/NodeFunctionTools) |
 | **H1CrashResume** | Simulates process abort and tests checkpoint recovery via `qre resume`. | [Explore](examples/H1CrashResume) |
 | **SdkOutboundDiagnostics**| Defective host simulation, parameter loss troubleshooting, and offline request rebuilds. | [Explore](examples/SdkOutboundDiagnostics) |
+| **SkillsWorkflow** | Skill directory packaging (`SKILL.md`), progressive two-phase metadata injection, and `ReadSkillFile` tool dispatch. | [Explore](examples/SkillsWorkflow) |
+| **StructuredOutputsJsonSchema** | Strict JSON Schema structured outputs via `VllmChatClient` guided decoding, with strong-typed C# deserialization. | [Explore](examples/StructuredOutputsJsonSchema) |
 
 ### Run All Regression Examples
 ```bash

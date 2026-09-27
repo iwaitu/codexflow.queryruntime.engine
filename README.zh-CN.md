@@ -33,9 +33,17 @@ QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中�
   - [内置工具与安全分区 (Tool Profiles)](#内置工具与安全分区-tool-profiles)
   - [外部工具 Manifest 扩展 (Stdio & MCP)](#外部工具-manifest-扩展-stdio--mcp)
   - [动态工具检索 (Tool Search)](#动态工具检索-tool-search)
+- [技能系统与工作流扩展 (Skill System & Workflows)](#技能系统与工作流扩展-skill-system--workflows)
+  - [1. 概念定位：原子工具 (Tool) vs 领域技能 (Skill)](#1-概念定位原子工具-tool-vs-领域技能-skill)
+  - [2. 标准 Skill 规范与工程结构](#2-标准-skill-规范与工程结构)
+  - [3. 两阶段按需加载与发现机制](#3-两阶段按需加载与发现机制)
+  - [4. 在 QRE 中的配置与使用](#4-在-qre-中的配置与使用)
+  - [5. 典型生态技能与示例](#5-典型生态技能与示例)
 - [沙箱隔离与安全模型](#沙箱隔离与安全模型)
 - [故障自愈与确定性回放](#故障自愈与确定性回放)
 - [模型支持与智能思考策略](#模型支持与智能思考策略)
+  - [思考策略控制 (`--thinking`)](#思考策略控制---thinking)
+  - [结构化输出与 JSON Schema 请求](#结构化输出与-json-schema-请求)
 - [嵌入 .NET 应用开发指南](#嵌入-net-应用开发指南)
 - [示例工程全景 (Examples)](#示例工程全景-examples)
 - [构建、测试与 Native AOT 发布](#构建测试与-native-aot-发布)
@@ -394,6 +402,113 @@ QRE 原生支持通过外部独立脚本或程序来扩展工具集。只需在�
 
 ---
 
+## 技能系统与工作流扩展 (Skill System & Workflows)
+
+在工业级复杂研发任务中，单纯依靠底层原子工具（如读写文件、执行命令）往往容易导致模型在长链条规划中迷失方向，而将所有企业规范和技术栈步骤一股脑塞入 System Prompt 又会迅速耗尽上下文窗口。QRE 原生支持 **Skill（技能包）** 扩展机制，为 Agent 注入垂直领域的程序性知识（Procedural Knowledge）。
+
+### 1. 概念定位：原子工具 (Tool) vs 领域技能 (Skill)
+
+| 维度 | 原子工具 (Tool) | 领域技能包 (Skill) |
+|---|---|---|
+| **本质定位** | 确定性的单次系统 I/O 原语 | 封装垂直领域程序性知识的标准化工作流与指导包 |
+| **执行粒度** | 单步、细粒度（如 `read_file`, `dotnet_test`） | 端到端、多阶段（如 `code-reviewer`, `csharp-scaffolder`） |
+| **内容构成** | 可执行函数/进程、输入 JSON Schema、四级安全分区 | `SKILL.md` (规范元数据+详细工作流) + 脚本 (`scripts/`) + 参考手册 (`references/`) |
+| **Token 预算** | Schema 随对话轮次全量加载或按需检索 | **两阶段加载**：初次仅加载轻量元数据，触发命中后动态激活详细正文 |
+| **安全机制** | 受 QRE 四级 Profile 与 Fail-Closed 策略门禁严格拦截 | 规程指导在上下文中执行；附带的脚本在受控沙箱环境下运行 |
+
+### 2. 标准 Skill 规范与工程结构
+
+每个技能均以自包含目录形式组织，核心契约是一个标准的 `SKILL.md` 文件：
+
+```text
+my-custom-skill/
+├── SKILL.md                 # 【必选】YAML Frontmatter 元数据 + Markdown 指导规程
+├── scripts/                 # 【可选】确定性自动化脚本 (Python/Bash/Node.js 等)
+├── references/              # 【可选】按需载入的领域规范、Schema 字典或 API 契约
+└── assets/                  # 【可选】项目初始化模板、图标或样板代码资源
+```
+
+#### `SKILL.md` 规范示例
+```markdown
+---
+name: code-reviewer
+description: 针对企业级架构边界、零警告编译、不可变协议与安全性进行全方位代码走查。当需要评估 PR 或审查新增代码时使用。
+---
+
+# Code Reviewer Skill
+
+## 审查原则与阶段
+1. 架构分层合规性检查（Protocol 契约层不可反向依赖 Engine/UI）；
+2. 资源生命周期管理（所有 IDisposable 均需显式管理）；
+3. 编译器零警告标准（Nullable enable 严格检查）。
+```
+
+### 3. 两阶段按需加载与发现机制
+
+为了最大化节省上下文 Token 预算，QRE 与 `VllmChatClient` 采用了**渐进式两阶段加载（Two-Phase Progressive Loading）**策略：
+
+```
+┌────────────────────────────────────────────────────────┐
+│  阶段 1: 扫描与轻量元数据发现 (Low Token Cost)         │
+│  客户端扫描技能目录，提取 SKILL.md Frontmatter，       │
+│  将精炼的 `# Skills` 目录注入 System Prompt            │
+└───────────────────────────┬────────────────────────────┘
+                            │
+┌───────────────────────────▼────────────────────────────┐
+│  阶段 2: 动态激活与按需规程加载 (On-Demand Loading)    │
+│  Agent 推理命中意图 -> 自动调度 `ReadSkillFile` 工具    │
+│  仅在需要时将完整规程加载入上下文，指导后续多步执行    │
+└────────────────────────────────────────────────────────┘
+```
+
+#### 多级技能目录发现路径
+QRE 会自动按以下优先级多级探测技能根目录：
+1. 显式配置的 `SkillDirectoryPath`；
+2. 环境变量 `CODEX_SKILLS_DIR`；
+3. 本地应用目录 `./skills`；
+4. 当前工作区 `./skills` 或 `.qre/skills`；
+5. 逐级向父目录扫描探测。
+
+### 4. 在 QRE 中的配置与使用
+
+#### 在 C# 宿主应用中启用技能支持
+通过 `VllmChatOptions` 开启技能并指定目录，底层客户端会自动完成技能目录索引与内置工具注册：
+
+```csharp
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+
+var chatOptions = new VllmChatOptions
+{
+    EnableSkills = true,
+    SkillDirectoryPath = Path.Combine(AppContext.BaseDirectory, "skills"),
+    ThinkingEnabled = true
+};
+
+// VllmChatClient 会自动在系统提示词中声明技能清单，并注入两个核心工具：
+// 1. ListSkillFiles: 列出所有可用技能名称与描述
+// 2. ReadSkillFile: 按需读取指定技能的完整 Markdown 指导内容
+```
+
+#### CLI 任务调度联动
+通过命令行启动任务时，可直接在任务目标中指定技能规程：
+```bash
+qre run --workspace . --profile verify "遵循 code-reviewer 技能规范对本次改动执行架构走查"
+```
+
+### 5. 典型生态技能与示例
+
+| 技能类别 | 典型代表 | 核心价值 |
+|---|---|---|
+| **工程脚手架** | `csharp-scaffolder`, `node-scaffolder`, `python-scaffolder` | 按照规范模板与分层原则初始化聚合根、Controller 或模块骨架。 |
+| **质量与安全审计** | `nodejs-security`, `python-security`, `java-security` | 封装 Bandit、ESLint Security、SpotBugs 等垂直工具扫描规程。 |
+| **元技能体系** | `skill-creator` | 指导开发者以标准化规范自动创建、测试和打包新技能包。 |
+| **依赖与包治理** | `nuget-package-versions` | 在编辑项目工程文件前检索真实的官方包版本，避免解析还原死锁。 |
+
+> 完整可运行代码与技能目录示范请参见 [`examples/SkillsWorkflow`](examples/SkillsWorkflow)。
+
+---
+
 ## 沙箱隔离与安全模型
 
 QRE 坚持 **Fail-Closed（默认拒绝）** 的安全理念，并将模型输出、外部工具参数、外部 Manifest 均视为不可信输入：
@@ -447,6 +562,60 @@ QRE 底层基于 `Microsoft.Extensions.AI` 构建，并通过官方 `CodexFlow.Q
 - **`off`**：强制关闭模型的思考链。
 - **`on`**：强制开启思考链（确保目标模型厂商支持工具与思考链混用）。
 - **`preserve`**：完全不干预，保留模型客户端原始选项。
+
+### 结构化输出与 JSON Schema 请求
+
+在需要 Agent 产出具备确定性格式（如架构报告、漏洞清单、任务分解表）的工业场景中，QRE 原生支持基于严格 JSON Schema 的结构化输出。
+
+> [!NOTE]
+> **底层驱动**：Logits 级别的严格文法状态机引导解码（Guided Decoding / Grammar-constrained Sampling）底层由 **`VllmChatClient`**（面向 OpenAI-compatible、vLLM、SGLang 等服务）驱动。
+> **QRE 协同**：QRE 运行时负责上层 Agent 循环编排、`QreThinkingPolicy` 思考策略协同，以及全链路出站诊断（Outbound Diagnostics）监控。
+
+#### 1. 强模式 vs 弱提示模式
+- **`ChatResponseFormat.Json` (`json_object`)**：模型仅在 Prompt 中被提示输出合法 JSON，但无字段模式校验，可能出现漏字段或类型偏差；
+- **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**：由 `VllmChatClient` 在采样解码（Logits）层面施加状态机语法树强约束，保证生成的 Token 序列 **100% 严格符合指定的 JSON Schema**。
+
+#### 2. .NET 宿主应用使用示例
+```csharp
+using System.Text.Json;
+using CodexFlow.QueryRuntime.Models;
+using Microsoft.Extensions.AI;
+
+// 1. 定义 JSON Schema
+var schemaJson = """
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "severity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+    "approved": { "type": "boolean" },
+    "violations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["summary", "severity", "approved", "violations"],
+  "additionalProperties": false
+}
+""";
+
+using var doc = JsonDocument.Parse(schemaJson);
+var jsonSchemaFormat = ChatResponseFormat.ForJsonSchema(
+    doc.RootElement,
+    schemaName: "code_review_report",
+    schemaDescription: "严格约束自动化代码审查结果结构");
+
+// 2. 配置模型请求
+var options = new VllmChatOptions
+{
+    ResponseFormat = jsonSchemaFormat,
+    Temperature = 0.1f,
+    MaxOutputTokens = 1024
+};
+```
+
+#### 3. QRE 运行时的配套工程保障
+- **思考策略协同 (`QreThinkingPolicy`)**：智能协同模型思考链（Reasoning / CoT）与 JSON Schema 约束解码的共存，避免强约束拦截模型的前置推理过程；
+- **全链路出站诊断 (`qre diagnose` / Outbound Diagnostics)**：通过三层探针（意图 $\rightarrow$ 适配层 $\rightarrow$ 传输层 HTTP Request）深度检测 `response_format`，精准捕获中间网关或模型代理可能发生的 `response_format_dropped`（字段丢弃）静默降级风险。
+
+> 完整可运行代码与强类型 POCO 反序列化示范请参见 [`examples/StructuredOutputsJsonSchema`](examples/StructuredOutputsJsonSchema)。
 
 ---
 
@@ -525,7 +694,7 @@ Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.St
 
 ## 示例工程全景 (Examples)
 
-仓库下的 [`examples/`](examples/README.md) 目录提供了 8 个开箱即用的完整工程，展示了 QRE 在不同语言、不同场景下的集成最佳实践：
+仓库下的 [`examples/`](examples/README.md) 目录提供了 10 个开箱即用的完整工程，展示了 QRE 在不同语言、不同场景下的集成最佳实践：
 
 | 示例工程 | 核心亮点与场景 | 文档与代码 |
 |---|---|---|
@@ -537,9 +706,11 @@ Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.St
 | **NodeFunctionTools** | 演示在 Node.js (ESM) 中编写函数工具并自动生成标准 Manifest。 | [查看示例](examples/NodeFunctionTools) |
 | **H1CrashResume** | 模拟进程执行中断，演练通过 `qre resume` 携带检查点无缝恢复任务状态。 | [查看示例](examples/H1CrashResume) |
 | **SdkOutboundDiagnostics**| 出站诊断综合演示：模拟缺陷宿主、排查请求变形丢失、离线重建请求体。 | [查看示例](examples/SdkOutboundDiagnostics) |
+| **SkillsWorkflow** | 技能包组织 (`SKILL.md`)、渐进式两阶段元数据注入与 `ReadSkillFile` 自动调度。 | [查看示例](examples/SkillsWorkflow) |
+| **StructuredOutputsJsonSchema** | 基于 `VllmChatClient` 引导解码的强约束 JSON Schema 结构化请求与 POCO 反序列化。 | [查看示例](examples/StructuredOutputsJsonSchema) |
 
 ### 一键回归所有示例
-仓库提供了自动化脚本一次性运行全量示例进行回归校验：
+仓库提供了自动化脚本一次性运行全量 10 个示例进行回归校验：
 ```bash
 python scripts/test-examples.py
 ```

@@ -195,6 +195,16 @@ class Examples(unittest.TestCase):
             request = {'name': name, 'workspacePath': str(self.workspace), 'arguments': {'path': 'link.txt'}}
             self.run_command([interpreter, ROOT / 'examples' / script], request=request, expected=1)
 
+    def test_skills_workflow(self):
+        output = self.run_command(['dotnet', 'run', '--project', ROOT / 'examples/SkillsWorkflow'])
+        self.assertIn('Skills workflow completed successfully.', output)
+        self.assertIn('code-reviewer', output)
+
+    def test_structured_outputs_json_schema(self):
+        output = self.run_command(['dotnet', 'run', '--project', ROOT / 'examples/StructuredOutputsJsonSchema'])
+        self.assertIn('JSON Schema structured output demo completed successfully.', output)
+        self.assertIn('All architecture rules verified.', output)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

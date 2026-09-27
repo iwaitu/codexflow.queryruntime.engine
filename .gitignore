@@ -15,5 +15,9 @@ coverage/
 # and the contents of files that were read. Never commit them.
 .qre/
 
+# Python
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
