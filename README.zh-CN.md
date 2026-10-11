@@ -766,15 +766,64 @@ Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.St
 
 详细嵌入范例代码请参考 [`examples/EmbeddedV2`](examples/EmbeddedV2)。
 
+### 3. 宿主工具、结构化抽取与收尾
+
+*（自 `0.24.0-preview.1` 起提供，见 [CHANGELOG](CHANGELOG.md)。）*
+
+对于“只读工具 + 一份结构化结论”的会话（例如抽取并评分一条审查规则），Runtime 提供以下 opt-in 能力；不设置时默认行为完全不变：
+
+```csharp
+using CodexFlow.QueryRuntime.Models.Tools;
+
+// 宿主 AIFunction 直接注册为 V2 工具（默认只读、幂等、可并行）。
+var pipeline = new RuntimeToolExecutionPipeline(
+    new RuntimeToolRegistry(RuntimeAIFunctionTool.FromFunctions(hostFunctions)),
+    new RuntimeAllowToolPolicy());
+
+var request = new RuntimeAgentLoopRequest(/* ... */ pipeline.Descriptors,
+    new RuntimeModelParameters(Model: model)
+    {
+        // JSON Schema 输出，只在不暴露工具的 Step 上生效。
+        ResponseFormat = RuntimeResponseFormat.ForJsonSchema(
+            schema, "rule_result", scope: RuntimeResponseFormatScope.ToolFreeStepsOnly)
+    }, /* policy, environment, budget */)
+{
+    ToolPipeline = pipeline,
+    // 工具调用达到 12 次或耗时达到截止时间的 85% 时，追加一个禁止工具的收尾 Step。
+    ToolFinalization = new RuntimeToolFinalizationPolicy
+    {
+        AfterToolCalls = 12,
+        Deadline = TimeSpan.FromMinutes(3),
+        Instruction = "不要再调用工具，直接输出最终 JSON。"
+    },
+    // TerminationPolicy 可返回 RuntimeTerminationDecision.ContinueWithoutTools(feedback)，
+    // 让模型在禁止工具、带格式约束的 Step 中修复不合法的 JSON。
+    TerminationPolicy = jsonRepairPolicy,
+    ModelRetryPolicy = new RuntimeRetryPolicy(), // 带抖动的指数退避
+    ContextManager = new RuntimeContextManager(RuntimeContextOptions.ForModelWindow(128_000))
+};
+
+var modelClient = new MeaiRuntimeModelClient(chatClient, optionsFactory, new MeaiRuntimeModelClientOptions
+{
+    ClassifyProviderErrors = true, // 429/5xx/超时可重试，401/403 终止
+    StreamingMode = MeaiStreamingMode.StreamingWithNonStreamingFallbackOnEmpty
+});
+// 在 provider 的 HttpClient 中加入 QreModelHttpErrorCaptureHandler，
+// 使丢弃 HTTP 状态码的 SDK（如 VllmChatClient）也能被精确分类。
+```
+
+所有决策（实际生效的 response format、收尾触发、`continue_without_tools`、重试）都会进入审计，并由纯数据回放校验。上下文预算的取值说明见[技术指南 §5.11](docs/queryruntime-technical-guide.zh-CN.md)。完整、可离线运行的宿主请参考 [`examples/EmbeddedStructuredExtraction`](examples/EmbeddedStructuredExtraction)。
+
 ---
 
 ## 示例工程全景 (Examples)
 
-仓库下的 [`examples/`](examples/README.md) 目录提供了 10 个开箱即用的完整工程，展示了 QRE 在不同语言、不同场景下的集成最佳实践：
+仓库下的 [`examples/`](examples/README.md) 目录提供了 11 个开箱即用的完整工程，展示了 QRE 在不同语言、不同场景下的集成最佳实践：
 
 | 示例工程 | 核心亮点与场景 | 文档与代码 |
 |---|---|---|
 | **EmbeddedV2** | 原生 .NET 代码嵌入 `IAgentRuntime` 极简示范，离线确定性模型。 | [查看示例](examples/EmbeddedV2) |
+| **EmbeddedStructuredExtraction** | 宿主 `AIFunction` 工具、仅无工具 Step 生效的 JSON Schema、预算驱动收尾、JSON 修复、错误分类重试、空流降级与持久审计。 | [查看示例](examples/EmbeddedStructuredExtraction) |
 | **RepoDoctor** | 生产级 .NET CLI 宿主应用，集成自定义诊断工具、实时流式输出与严格回放验证。 | [查看示例](examples/RepoDoctor) |
 | **PythonToolDoctor** | Python 编写的外部 CLI 宿主，集成 QRE 核心内置工具并验证严格回放。 | [查看示例](examples/PythonToolDoctor) |
 | **ExternalTools** | 最小化 Stdio 外部工具 Manifest 配置，演示模型如何调用本地 Python 脚本工具。 | [查看示例](examples/ExternalTools) |
@@ -786,7 +835,7 @@ Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.St
 | **StructuredOutputsJsonSchema** | 基于 `VllmChatClient` 引导解码的强约束 JSON Schema 结构化请求与 POCO 反序列化。 | [查看示例](examples/StructuredOutputsJsonSchema) |
 
 ### 一键回归所有示例
-仓库提供了自动化脚本一次性运行全量 10 个示例进行回归校验：
+仓库提供了自动化脚本一次性运行全量示例进行回归校验：
 ```bash
 python scripts/test-examples.py
 ```

@@ -1,9 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using CodexFlow.QueryRuntime.Abstractions;
 using CodexFlow.QueryRuntime.Engine.V2;
+using CodexFlow.QueryRuntime.Models.Tools;
 using CodexFlow.QueryRuntime.Protocol;
 using Microsoft.Extensions.AI;
 
@@ -113,9 +113,9 @@ public static class ExperimentalV2ToolComposition
             {
                 throw new InvalidOperationException($"Tool '{function.Name}' has no registered descriptor.");
             }
-            return (IRuntimeTool)new AIFunctionRuntimeTool(
+            return (IRuntimeTool)new RuntimeAIFunctionTool(
                 function,
-                CreateDefinition(function, descriptor, sandboxKind, externalNames.Contains(function.Name)));
+                CreateToolOptions(descriptor, sandboxKind, externalNames.Contains(function.Name)));
         }).ToArray();
         var registry = new RuntimeToolRegistry(tools);
         var sandboxes = tools.Any(static tool => tool.Definition.Sandbox.Kind != RuntimeSandboxKind.None)
@@ -164,8 +164,7 @@ public static class ExperimentalV2ToolComposition
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
     }
 
-    private static RuntimeToolDefinition CreateDefinition(
-        AIFunction function,
+    private static RuntimeAIFunctionToolOptions CreateToolOptions(
         QueryRuntimeToolDescriptor descriptor,
         RuntimeSandboxKind sandboxKind,
         bool isExternal)
@@ -192,20 +191,21 @@ public static class ExperimentalV2ToolComposition
             : descriptor.Capabilities.Contains(QueryRuntimeCapabilities.ExecuteProcess)
                 ? RuntimeToolConcurrency.Serial
                 : RuntimeToolConcurrency.ParallelSafe;
-        return new RuntimeToolDefinition(
-            new RuntimeToolDescriptor(
-                descriptor.Name,
-                "1.0.0",
-                function.Description,
-                function.JsonSchema.Clone(),
-                sideEffect,
-                sideEffect is RuntimeToolSideEffect.ReadOnly or RuntimeToolSideEffect.WorkspaceWrite
-                    ? RuntimeToolIdempotency.Idempotent
-                    : RuntimeToolIdempotency.Unknown),
-            new HashSet<string>(descriptor.Capabilities, StringComparer.Ordinal),
-            concurrency,
-            sandbox,
-            new RuntimeToolLimits(TimeSpan.FromMinutes(30), 800_000));
+        return new RuntimeAIFunctionToolOptions
+        {
+            CanonicalName = descriptor.Name,
+            Version = "1.0.0",
+            SideEffect = sideEffect,
+            Idempotency = sideEffect is RuntimeToolSideEffect.ReadOnly or RuntimeToolSideEffect.WorkspaceWrite
+                ? RuntimeToolIdempotency.Idempotent
+                : RuntimeToolIdempotency.Unknown,
+            Capabilities = new HashSet<string>(descriptor.Capabilities, StringComparer.Ordinal),
+            Concurrency = concurrency,
+            Sandbox = sandbox,
+            Limits = new RuntimeToolLimits(TimeSpan.FromMinutes(30), 800_000),
+            FailureCode = "compatibility_tool_failed",
+            TruncationDetector = static text => text.Contains("output truncated", StringComparison.OrdinalIgnoreCase)
+        };
     }
 
     private sealed class ExperimentalV2ToolCatalogSelector(
@@ -228,54 +228,6 @@ public static class ExperimentalV2ToolComposition
         {
             // tool_search mutates its session during invocation. Selection on the
             // next Step reads the newly activated names from that same session.
-        }
-    }
-
-    private sealed class AIFunctionRuntimeTool(
-        AIFunction function,
-        RuntimeToolDefinition definition) : IRuntimeTool
-    {
-        public RuntimeToolDefinition Definition { get; } = definition;
-
-        public async ValueTask<RuntimeToolResult> InvokeAsync(
-            RuntimeToolInvocation invocation,
-            RuntimeToolExecutionContext context,
-            CancellationToken ct)
-        {
-            try
-            {
-                var value = await function.InvokeAsync(
-                    new AIFunctionArguments(ToObjectDictionary(invocation.NormalizedArguments)),
-                    ct).ConfigureAwait(false);
-                var text = value?.ToString() ?? string.Empty;
-                var truncated = text.Contains("output truncated", StringComparison.OrdinalIgnoreCase);
-                return new RuntimeToolResult(
-                    invocation.OriginalCall.InvocationId,
-                    text,
-                    true,
-                    Details: new RuntimeToolResultDetails(
-                        RuntimeToolOutcome.Succeeded,
-                        StandardOutput: text,
-                        Truncated: truncated));
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                return new RuntimeToolResult(
-                    invocation.OriginalCall.InvocationId,
-                    null,
-                    false,
-                    new RuntimeError(
-                        RuntimeErrorCategory.ToolFailed,
-                        "compatibility_tool_failed",
-                        ex.Message),
-                    Details: new RuntimeToolResultDetails(
-                        RuntimeToolOutcome.Failed,
-                        StandardError: ex.Message));
-            }
         }
     }
 
@@ -420,29 +372,6 @@ public static class ExperimentalV2ToolComposition
                 result.DurationMs);
         }
     }
-
-    private static Dictionary<string, object?> ToObjectDictionary(JsonElement arguments)
-        => arguments.EnumerateObject().ToDictionary(
-            static property => property.Name,
-            static property => ToObject(property.Value),
-            StringComparer.Ordinal);
-
-    private static object? ToObject(JsonElement value)
-        => value.ValueKind switch
-        {
-            JsonValueKind.Null => null,
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            JsonValueKind.String => value.GetString(),
-            JsonValueKind.Number when value.TryGetInt64(out var integer) => integer,
-            JsonValueKind.Number => value.GetDouble(),
-            JsonValueKind.Array => value.EnumerateArray().Select(ToObject).ToArray(),
-            JsonValueKind.Object => value.EnumerateObject().ToDictionary(
-                static property => property.Name,
-                static property => ToObject(property.Value),
-                StringComparer.Ordinal),
-            _ => JsonNode.Parse(value.GetRawText())
-        };
 }
 
 public sealed record ExperimentalV2RuntimeComposition(

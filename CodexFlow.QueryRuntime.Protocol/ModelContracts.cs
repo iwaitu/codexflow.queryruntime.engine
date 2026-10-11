@@ -55,12 +55,100 @@ public sealed record RuntimeModelRequest(
     RuntimeModelParameters Parameters,
     long HistoryVersion);
 
+/// <param name="RequireJsonObject">
+/// Legacy JSON-object switch interpreted by the host options factory. Prefer
+/// <see cref="RuntimeModelParameters.ResponseFormat"/> with
+/// <see cref="RuntimeResponseFormatKind.JsonObject"/>; the two cannot be combined.
+/// </param>
 public sealed record RuntimeModelParameters(
     string? Model = null,
     double? Temperature = null,
     int? MaxOutputTokens = null,
     bool RequireJsonObject = false,
-    string? RequiredToolName = null);
+    string? RequiredToolName = null)
+{
+    /// <summary>
+    /// Provider-free structured output declaration. Null keeps the legacy
+    /// behavior where the host options factory owns the provider format. It
+    /// cannot be combined with <see cref="RequireJsonObject"/>; on a Step
+    /// request it is the format actually in effect for that Step.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RuntimeResponseFormat? ResponseFormat { get; init; }
+}
+
+public enum RuntimeResponseFormatKind
+{
+    Text = 0,
+    JsonObject = 1,
+    JsonSchema = 2
+}
+
+public enum RuntimeResponseFormatScope
+{
+    /// <summary>The format applies to every Step.</summary>
+    AllSteps = 0,
+
+    /// <summary>The format applies only to Steps that expose no tools.</summary>
+    ToolFreeStepsOnly = 1
+}
+
+/// <summary>
+/// Requested model output format. Equality compares <see cref="Schema"/>
+/// structurally, so two formats with the same schema document are equal.
+/// </summary>
+public sealed record RuntimeResponseFormat(
+    RuntimeResponseFormatKind Kind,
+    string? SchemaName = null,
+    string? SchemaDescription = null,
+    JsonElement? Schema = null,
+    RuntimeResponseFormatScope Scope = RuntimeResponseFormatScope.AllSteps)
+{
+    public static RuntimeResponseFormat JsonObject(
+        RuntimeResponseFormatScope scope = RuntimeResponseFormatScope.AllSteps)
+        => new(RuntimeResponseFormatKind.JsonObject, Scope: scope);
+
+    public static RuntimeResponseFormat ForJsonSchema(
+        JsonElement schema,
+        string? schemaName = null,
+        string? schemaDescription = null,
+        RuntimeResponseFormatScope scope = RuntimeResponseFormatScope.AllSteps)
+        => new(RuntimeResponseFormatKind.JsonSchema, schemaName, schemaDescription, schema.Clone(), scope);
+
+    /// <summary>
+    /// Lowercase hex SHA-256 of the schema's compact UTF-8 JSON (property order
+    /// preserved, no insignificant whitespace), or null when no schema is set.
+    /// </summary>
+    public string? ComputeSchemaSha256()
+    {
+        if (Schema is not { } schema || schema.ValueKind == JsonValueKind.Undefined)
+        {
+            return null;
+        }
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            schema.WriteTo(writer);
+        }
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan)).ToLowerInvariant();
+    }
+
+    public bool Equals(RuntimeResponseFormat? other)
+        => other is not null &&
+           Kind == other.Kind &&
+           Scope == other.Scope &&
+           string.Equals(SchemaName, other.SchemaName, StringComparison.Ordinal) &&
+           string.Equals(SchemaDescription, other.SchemaDescription, StringComparison.Ordinal) &&
+           (Schema, other.Schema) switch
+           {
+               (null, null) => true,
+               ({ } left, { } right) => JsonElement.DeepEquals(left, right),
+               _ => false
+           };
+
+    public override int GetHashCode()
+        => HashCode.Combine(Kind, Scope, SchemaName, SchemaDescription, ComputeSchemaSha256());
+}
 
 public sealed record RuntimeToolDescriptor(
     string CanonicalName,
@@ -166,7 +254,12 @@ public sealed record RuntimeError(
     RuntimeErrorCategory Category,
     string Code,
     string Message,
-    bool Retryable = false);
+    bool Retryable = false)
+{
+    /// <summary>Provider-requested wait before retrying, when the response carried one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? RetryAfter { get; init; }
+}
 
 public sealed class RuntimeModelClientException(RuntimeError error, Exception? innerException = null)
     : Exception(error.Message, innerException)

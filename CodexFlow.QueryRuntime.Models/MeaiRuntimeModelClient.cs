@@ -19,7 +19,8 @@ namespace CodexFlow.QueryRuntime.Models;
 /// With diagnostics absent or <c>Off</c>, behavior is unchanged. The options
 /// factory should return a new <see cref="ChatOptions"/> per call: the adapter
 /// assigns Tools and ToolMode in place, and diagnostics cannot make a shared
-/// instance race-free.
+/// instance race-free. A non-null <see cref="RuntimeModelParameters.ResponseFormat"/>
+/// on the Step request replaces the factory's <see cref="ChatOptions.ResponseFormat"/>.
 /// </remarks>
 public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDisposable
 {
@@ -27,6 +28,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
     private readonly Func<RuntimeModelRequest, ChatOptions> _optionsFactory;
     private readonly QreOutboundDiagnostics? _diagnostics;
     private readonly QreOutboundDiagnosticsTarget _target;
+    private readonly MeaiRuntimeModelClientOptions _options;
 
     public MeaiRuntimeModelClient(
         IChatClient chatClient,
@@ -40,9 +42,20 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         Func<RuntimeModelRequest, ChatOptions> optionsFactory,
         QreOutboundDiagnostics? diagnostics,
         QreOutboundDiagnosticsTarget? target = null)
+        : this(chatClient, optionsFactory, MeaiRuntimeModelClientOptions.Default, diagnostics, target)
+    {
+    }
+
+    public MeaiRuntimeModelClient(
+        IChatClient chatClient,
+        Func<RuntimeModelRequest, ChatOptions> optionsFactory,
+        MeaiRuntimeModelClientOptions options,
+        QreOutboundDiagnostics? diagnostics = null,
+        QreOutboundDiagnosticsTarget? target = null)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         _optionsFactory = optionsFactory ?? throw new ArgumentNullException(nameof(optionsFactory));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
         _diagnostics = diagnostics is { IsEnabled: true } ? diagnostics : null;
         _target = target ?? QreOutboundDiagnosticsTarget.Unknown;
     }
@@ -54,9 +67,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
     public IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
         RuntimeModelRequest request,
         CancellationToken ct = default)
-        => _diagnostics == null
-            ? StreamCoreAsync(request, ct)
-            : StreamObservedAsync(request, attempt: null, ct);
+        => Dispatch(request, attempt: null, ct);
 
     public IAsyncEnumerable<RuntimeModelStreamEvent> StreamAsync(
         RuntimeModelRequest request,
@@ -64,44 +75,151 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return _diagnostics == null
-            ? StreamCoreAsync(request, ct)
-            : StreamObservedAsync(request, context, ct);
+        return Dispatch(request, context, ct);
     }
+
+    private IAsyncEnumerable<RuntimeModelStreamEvent> Dispatch(
+        RuntimeModelRequest request,
+        RuntimeModelAttemptContext? attempt,
+        CancellationToken ct)
+    {
+        IAsyncEnumerable<RuntimeModelStreamEvent> Run(bool streaming)
+            => _diagnostics == null
+                ? StreamCoreAsync(request, streaming, ct)
+                : StreamObservedAsync(request, attempt, streaming, ct);
+        return _options.StreamingMode switch
+        {
+            MeaiStreamingMode.NonStreaming => Run(streaming: false),
+            MeaiStreamingMode.StreamingWithNonStreamingFallbackOnEmpty => WithEmptyStreamFallbackAsync(Run, ct),
+            _ => Run(streaming: true)
+        };
+    }
+
+    /// <summary>
+    /// Buffers content-free events (usage, warnings, completion) until the first
+    /// text, reasoning or tool call. A stream that ends without one is discarded
+    /// and the request is sent once more without streaming.
+    /// </summary>
+    private static async IAsyncEnumerable<RuntimeModelStreamEvent> WithEmptyStreamFallbackAsync(
+        Func<bool, IAsyncEnumerable<RuntimeModelStreamEvent>> run,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var buffered = new List<RuntimeModelStreamEvent>();
+        var substantive = false;
+        await foreach (var runtimeEvent in run(true).WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (!substantive && IsSubstantive(runtimeEvent))
+            {
+                substantive = true;
+                foreach (var pending in buffered)
+                {
+                    yield return pending;
+                }
+                buffered.Clear();
+            }
+            if (substantive)
+            {
+                yield return runtimeEvent;
+            }
+            else
+            {
+                buffered.Add(runtimeEvent);
+            }
+        }
+        if (substantive)
+        {
+            yield break;
+        }
+        yield return new RuntimeWarningEvent(new RuntimeWarning(
+            "empty_stream_fallback",
+            "The provider stream ended without content; the request was resent without streaming."));
+        await foreach (var runtimeEvent in run(false).WithCancellation(ct).ConfigureAwait(false))
+        {
+            yield return runtimeEvent;
+        }
+    }
+
+    private static bool IsSubstantive(RuntimeModelStreamEvent runtimeEvent)
+        => runtimeEvent switch
+        {
+            RuntimeTextDeltaEvent text => !string.IsNullOrEmpty(text.Text),
+            RuntimeReasoningDeltaEvent reasoning => !string.IsNullOrEmpty(reasoning.Text) ||
+                                                   !string.IsNullOrEmpty(reasoning.ProtectedData),
+            RuntimeToolCallEvent => true,
+            _ => false
+        };
+
+    private IChatClient ChatClientFor(bool streaming)
+        => streaming ? _chatClient : new NonStreamingChatClientView(_chatClient);
 
     public void Dispose() => _chatClient.Dispose();
 
     private async IAsyncEnumerable<RuntimeModelStreamEvent> StreamCoreAsync(
         RuntimeModelRequest request,
+        bool streaming,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
         var (messages, options) = Prepare(request);
         RuntimeModelCompletedEvent? pendingCompletion = null;
+        var capture = _options.ClassifyProviderErrors ? new QreModelHttpErrorCapture() : null;
 
-        await foreach (var update in _chatClient
-                           .GetStreamingResponseAsync(messages, options, ct)
-                           .ConfigureAwait(false))
+        IAsyncEnumerator<ChatResponseUpdate> enumerator;
+        try
         {
-            foreach (var runtimeEvent in MeaiRuntimeProtocolAdapter.ToProtocolEvents(update))
+            using (QreModelHttpErrorScope.Enter(capture))
             {
-                ct.ThrowIfCancellationRequested();
-                if (runtimeEvent is RuntimeModelCompletedEvent completion)
-                {
-                    if (pendingCompletion != null && pendingCompletion.StopReason != completion.StopReason)
-                    {
-                        throw ConflictingFinishReason();
-                    }
-                    pendingCompletion = completion;
-                    continue;
-                }
-                if (pendingCompletion != null && runtimeEvent is not (RuntimeUsageEvent or RuntimeWarningEvent))
-                {
-                    throw ContentAfterFinish();
-                }
-                yield return runtimeEvent;
+                enumerator = ChatClientFor(streaming).GetStreamingResponseAsync(messages, options, ct).GetAsyncEnumerator(ct);
             }
+        }
+        catch (Exception ex) when (Classified(ex, capture, ct) is { } classified)
+        {
+            throw classified;
+        }
+        try
+        {
+            while (true)
+            {
+                bool moved;
+                try
+                {
+                    using (QreModelHttpErrorScope.Enter(capture))
+                    {
+                        moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex) when (Classified(ex, capture, ct) is { } classified)
+                {
+                    throw classified;
+                }
+                if (!moved)
+                {
+                    break;
+                }
+                foreach (var runtimeEvent in MeaiRuntimeProtocolAdapter.ToProtocolEvents(enumerator.Current))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (runtimeEvent is RuntimeModelCompletedEvent completion)
+                    {
+                        if (pendingCompletion != null && pendingCompletion.StopReason != completion.StopReason)
+                        {
+                            throw ConflictingFinishReason();
+                        }
+                        pendingCompletion = completion;
+                        continue;
+                    }
+                    if (pendingCompletion != null && runtimeEvent is not (RuntimeUsageEvent or RuntimeWarningEvent))
+                    {
+                        throw ContentAfterFinish();
+                    }
+                    yield return runtimeEvent;
+                }
+            }
+        }
+        finally
+        {
+            await enumerator.DisposeAsync().ConfigureAwait(false);
         }
 
         if (pendingCompletion == null)
@@ -119,6 +237,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
     private async IAsyncEnumerable<RuntimeModelStreamEvent> StreamObservedAsync(
         RuntimeModelRequest request,
         RuntimeModelAttemptContext? attempt,
+        bool streaming,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -139,15 +258,43 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         observer.AdapterPrepared(
             messages,
             options,
-            _chatClient.GetService<ChatClientMetadata>()?.DefaultModelId);
+            _chatClient.GetService<ChatClientMetadata>()?.DefaultModelId,
+            streaming);
 
         IAsyncEnumerator<ChatResponseUpdate>? enumerator = null;
+        var capture = _options.ClassifyProviderErrors ? new QreModelHttpErrorCapture() : null;
         try
         {
-            enumerator = observer.Start(_chatClient, messages, options, ct);
-            RuntimeModelCompletedEvent? pendingCompletion = null;
-            while (await observer.MoveNextAsync(enumerator).ConfigureAwait(false))
+            try
             {
+                using (QreModelHttpErrorScope.Enter(capture))
+                {
+                    enumerator = observer.Start(ChatClientFor(streaming), messages, options, ct);
+                }
+            }
+            catch (Exception ex) when (Classified(ex, capture, ct) is { } classified)
+            {
+                throw classified;
+            }
+            RuntimeModelCompletedEvent? pendingCompletion = null;
+            while (true)
+            {
+                bool moved;
+                try
+                {
+                    using (QreModelHttpErrorScope.Enter(capture))
+                    {
+                        moved = await observer.MoveNextAsync(enumerator).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex) when (Classified(ex, capture, ct) is { } classified)
+                {
+                    throw classified;
+                }
+                if (!moved)
+                {
+                    break;
+                }
                 IReadOnlyList<RuntimeModelStreamEvent> events;
                 try
                 {
@@ -221,7 +368,43 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
             : string.IsNullOrWhiteSpace(request.Parameters.RequiredToolName)
                 ? options.ToolMode
                 : ChatToolMode.RequireSpecific(request.Parameters.RequiredToolName);
+        if (request.Parameters.ResponseFormat is { } responseFormat)
+        {
+            // The Runtime format is the Step's effective decision and overrides the
+            // factory; without one the factory value is kept for existing hosts.
+            options.ResponseFormat = ToChatResponseFormat(responseFormat);
+        }
         return (messages, options);
+    }
+
+    internal static ChatResponseFormat ToChatResponseFormat(RuntimeResponseFormat format)
+        => format.Kind switch
+        {
+            RuntimeResponseFormatKind.Text => ChatResponseFormat.Text,
+            RuntimeResponseFormatKind.JsonObject => ChatResponseFormat.Json,
+            RuntimeResponseFormatKind.JsonSchema when format.Schema is { } schema => ChatResponseFormat.ForJsonSchema(
+                schema,
+                format.SchemaName,
+                format.SchemaDescription),
+            _ => throw new RuntimeProtocolAdapterException(
+                $"Response format '{format.Kind}' cannot be mapped to an MEAI response format.")
+        };
+
+    /// <summary>
+    /// The typed replacement for an SDK exception, or null to rethrow it unchanged
+    /// (classification disabled, caller cancellation, or already typed).
+    /// </summary>
+    private static RuntimeModelClientException? Classified(
+        Exception exception,
+        QreModelHttpErrorCapture? capture,
+        CancellationToken ct)
+    {
+        if (capture == null)
+        {
+            return null;
+        }
+        var classified = QreModelErrorClassifier.Classify(exception, ct, capture.StatusCode, capture.RetryAfter);
+        return ReferenceEquals(classified, exception) ? null : classified;
     }
 
     private static RuntimeModelClientException ConflictingFinishReason()
@@ -240,6 +423,39 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         => new(new RuntimeWarning(
             "missing_provider_finish_reason",
             "The provider stream ended without a finish reason; completion is Unknown."));
+
+    /// <summary>
+    /// Presents <see cref="IChatClient.GetResponseAsync"/> as a single-shot update
+    /// sequence so the non-streaming path reuses the streaming event mapping.
+    /// </summary>
+    private sealed class NonStreamingChatClientView(IChatClient inner) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => inner.GetResponseAsync(messages, options, cancellationToken);
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var response = await inner.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            foreach (var update in response.ToChatResponseUpdates())
+            {
+                yield return update;
+            }
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null)
+            => inner.GetService(serviceType, serviceKey);
+
+        public void Dispose()
+        {
+            // The adapter owns and disposes the inner client.
+        }
+    }
 
     private sealed class RuntimeToolDeclarationAIFunction(
         RuntimeToolDescriptor descriptor) : AIFunction

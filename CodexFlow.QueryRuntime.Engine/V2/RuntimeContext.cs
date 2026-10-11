@@ -76,9 +76,53 @@ public sealed record PreparedRuntimeContext(
     bool Compacted,
     IReadOnlyList<RuntimeContextEvent> Events);
 
+/// <summary>How the Runtime treats context truncation that the model would observe.</summary>
+public enum RuntimeContextTruncationPolicy
+{
+    /// <summary>Truncate, replace and compact as needed (legacy behavior).</summary>
+    Allow = 0,
+
+    /// <summary>Fail closed when an item of the Turn's initial messages is truncated or compacted away.</summary>
+    FailClosedOnInitialMessages = 1,
+
+    /// <summary>Fail closed on any budget-driven truncation, replacement or compaction.</summary>
+    FailClosedOnAny = 2
+}
+
+/// <summary>
+/// Token budgets (estimated with <see cref="RuntimeTokenEstimator"/>) for the
+/// canonical history and the per-Step model projection. See
+/// docs/queryruntime-technical-guide.zh-CN.md §5.11 for guidance.
+/// </summary>
 public sealed record RuntimeContextOptions
 {
     public static RuntimeContextOptions Default { get; } = new();
+
+    /// <summary>
+    /// Scales the per-item budgets with the default ratios for a model projection
+    /// of <paramref name="maxContextTokens"/>: MaxItemTokens = 1/4,
+    /// MaxToolResultTokens = 1/8, LargeToolResultTokens = 1/16 and SummaryTokens
+    /// = 1/16 of the window. <c>ForModelWindow(32_000)</c> equals <see cref="Default"/>.
+    /// Pass the model window minus the output-token reservation and a safety
+    /// margin, not the raw window.
+    /// </summary>
+    public static RuntimeContextOptions ForModelWindow(int maxContextTokens)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxContextTokens, 1_024);
+        var options = new RuntimeContextOptions
+        {
+            MaxContextTokens = maxContextTokens,
+            MaxItemTokens = maxContextTokens / 4,
+            MaxToolResultTokens = maxContextTokens / 8,
+            LargeToolResultTokens = maxContextTokens / 16,
+            SummaryTokens = maxContextTokens / 16
+        };
+        options.Validate();
+        return options;
+    }
+
+    /// <summary>Opt-in fail-closed handling of truncated context; defaults to <see cref="RuntimeContextTruncationPolicy.Allow"/>.</summary>
+    public RuntimeContextTruncationPolicy TruncationPolicy { get; init; }
 
     public int MaxContextTokens { get; init; } = 32_000;
 
@@ -115,6 +159,66 @@ public sealed record RuntimeContextOptions
         {
             throw new ArgumentException("A single C5 history blob cannot exceed the total blob budget.", nameof(RuntimeContextOptions));
         }
+        if (!Enum.IsDefined(TruncationPolicy))
+        {
+            throw new ArgumentOutOfRangeException(nameof(TruncationPolicy));
+        }
+    }
+}
+
+/// <summary>Identifies context events that mean model-visible evidence was cut.</summary>
+internal static class RuntimeContextTruncation
+{
+    public const string RejectedCode = "context_truncation_rejected";
+
+    private static readonly HashSet<string> TruncationCodes = new(StringComparer.Ordinal)
+    {
+        "text_fragment_hard_cap",
+        "reasoning_fragment_hard_cap",
+        "tool_arguments_hard_cap",
+        "tool_result_hard_cap",
+        "large_tool_result_replaced",
+        "large_tool_result_blob_budget_exhausted"
+    };
+
+    /// <summary>
+    /// Returns the rejection for the first event the policy forbids, or null.
+    /// Initial-message items are those committed at <paramref name="initialHistoryVersion"/>.
+    /// </summary>
+    public static RuntimeError? Check(
+        IEnumerable<RuntimeContextEvent> events,
+        RuntimeContextTruncationPolicy policy,
+        long initialHistoryVersion)
+    {
+        if (policy == RuntimeContextTruncationPolicy.Allow)
+        {
+            return null;
+        }
+        var initialPrefix = $"h{initialHistoryVersion}:m";
+        foreach (var contextEvent in events)
+        {
+            var truncation = contextEvent.Kind == RuntimeContextEventKind.ContextCompacted ||
+                             TruncationCodes.Contains(contextEvent.Code);
+            if (!truncation)
+            {
+                continue;
+            }
+            var affected = policy == RuntimeContextTruncationPolicy.FailClosedOnAny
+                ? contextEvent.ItemIds
+                : contextEvent.ItemIds
+                    .Where(id => id.Value.StartsWith(initialPrefix, StringComparison.Ordinal))
+                    .ToArray();
+            if (affected.Count == 0)
+            {
+                continue;
+            }
+            return new RuntimeError(
+                RuntimeErrorCategory.ContextOverflow,
+                RejectedCode,
+                $"Context truncation '{contextEvent.Code}' affected {affected.Count} item(s) " +
+                $"({string.Join(", ", affected.Take(8).Select(static id => id.Value))}) under policy {policy}.");
+        }
+        return null;
     }
 }
 

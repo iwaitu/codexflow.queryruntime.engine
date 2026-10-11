@@ -104,6 +104,7 @@ public sealed class RuntimeAgentLoop
                 token).ConfigureAwait(false);
         }
         var finalText = checkpoint?.FinalText ?? string.Empty;
+        var checkedContextEvents = 0;
 
         try
         {
@@ -136,6 +137,7 @@ public sealed class RuntimeAgentLoop
                     request,
                     handle,
                     contextEvents,
+                    audit,
                     token).ConfigureAwait(false);
                 session = postStep.Session;
                 if (postStep.Complete)
@@ -174,7 +176,9 @@ public sealed class RuntimeAgentLoop
 
                 var turn = session.ActiveTurn!;
                 var stepId = new RuntimeStepId($"{request.TurnId.Value}:step:{stepIndex}");
-                var requiredToolName = turn.Progress.RequiredToolSatisfied
+                // Finalization and ContinueWithoutTools force a Step that exposes no tools.
+                var forcedToolFree = turn.Progress.ToolFreeStepRequired;
+                var requiredToolName = forcedToolFree || turn.Progress.RequiredToolSatisfied
                     ? null
                     : turn.Progress.RequiredToolName;
                 var historySnapshot = history.Snapshot();
@@ -182,7 +186,11 @@ public sealed class RuntimeAgentLoop
                 IReadOnlyList<RuntimeToolDescriptor> stepTools;
                 try
                 {
-                    if (request.ToolCatalogSelector == null)
+                    if (forcedToolFree)
+                    {
+                        stepTools = [];
+                    }
+                    else if (request.ToolCatalogSelector == null)
                     {
                         stepTools = request.Tools;
                     }
@@ -249,6 +257,13 @@ public sealed class RuntimeAgentLoop
                         await request.ContextEventSink.OnEventAsync(runtimeEvent, token).ConfigureAwait(false);
                     }
                 }
+                // The model sees truncated evidence only through a prepared Step, so the
+                // opt-in policy is enforced here over every event since the last Step.
+                var truncationRejection = RuntimeContextTruncation.Check(
+                    contextEvents.Skip(checkedContextEvents),
+                    contextManager.Options.TruncationPolicy,
+                    request.HistoryVersion);
+                checkedContextEvents = contextEvents.Count;
                 await audit.EmitAsync(
                     RuntimeAuditEventKind.ContextPrepared,
                     RuntimeAuditSensitivity.Internal,
@@ -263,13 +278,23 @@ public sealed class RuntimeAgentLoop
                         preparedContext.Events),
                     token,
                     stepId).ConfigureAwait(false);
+                if (truncationRejection != null)
+                {
+                    throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.FailClosed, truncationRejection);
+                }
                 var modelRequest = new RuntimeModelRequest(
                     request.SessionId,
                     request.TurnId,
                     stepId,
                     preparedContext.Messages,
                     stepTools.ToArray(),
-                    request.ModelParameters with { RequiredToolName = requiredToolName },
+                    request.ModelParameters with
+                    {
+                        RequiredToolName = requiredToolName,
+                        ResponseFormat = RuntimeResponseFormats.ResolveForStep(
+                            request.ModelParameters.ResponseFormat,
+                            stepTools.Count)
+                    },
                     session.HistoryVersion);
                 var stepContext = RuntimeStepContext.Create(
                     stepId,
@@ -290,7 +315,7 @@ public sealed class RuntimeAgentLoop
                 await audit.EmitAsync(
                     RuntimeAuditEventKind.ModelRequestPrepared,
                     RuntimeAuditSensitivity.Sensitive,
-                    new RuntimeModelRequestAuditPayload(modelRequest),
+                    RuntimeModelRequestAuditPayload.Create(modelRequest),
                     token,
                     stepId).ConfigureAwait(false);
 
@@ -305,7 +330,16 @@ public sealed class RuntimeAgentLoop
                     session,
                     stepContext,
                     attempt.AttemptId.Value,
+                    request.ModelRetryPolicy,
                     token).ConfigureAwait(false);
+                RuntimeError? toolFreeViolation = null;
+                if (forcedToolFree)
+                {
+                    (output, toolFreeViolation) = ApplyToolFreeStepToolCallHandling(
+                        output,
+                        request.ToolFinalization,
+                        finalization: turn.Progress.FinalizationReason != null);
+                }
                 session = RuntimeStateReducer.CommitModelOutput(session, stepId, output);
                 finalText = output.Text;
                 await audit.EmitAsync(
@@ -314,6 +348,10 @@ public sealed class RuntimeAgentLoop
                     new RuntimeModelResponseAuditPayload(stepId, output),
                     token,
                     stepId).ConfigureAwait(false);
+                if (toolFreeViolation != null)
+                {
+                    throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.FailClosed, toolFreeViolation);
+                }
 
                 if (ExceedsTokenBudget(session.ActiveTurn!.Progress.Usage, request.Budget))
                 {
@@ -410,6 +448,44 @@ public sealed class RuntimeAgentLoop
                                 "step_budget_exhausted",
                                 "The Turn ended after tool observations because no Step budget remained."));
                     }
+                    if (request.ToolFinalization is { } finalization &&
+                        session.ActiveTurn!.Progress.FinalizationReason == null)
+                    {
+                        var elapsed = _timeProvider.GetUtcNow() - session.ActiveTurn.Context.CreatedAt;
+                        if (elapsed < TimeSpan.Zero)
+                        {
+                            elapsed = TimeSpan.Zero;
+                        }
+                        var reason = EvaluateToolFinalization(
+                            finalization,
+                            session.ActiveTurn.Progress.ToolCallCount,
+                            elapsed,
+                            nextStepIndex: stepIndex + 1,
+                            request.Budget.MaxSteps);
+                        if (reason is { } finalizationReason)
+                        {
+                            // The decision is persisted in reducer state (and the
+                            // checkpoint below) so recovery never re-reads the clock.
+                            session = CommitHistoryBatch(
+                                session,
+                                history,
+                                [new RuntimeMessage(
+                                    RuntimeMessageRole.User,
+                                    [new RuntimeTextItem(finalization.Instruction)])]);
+                            await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
+                            session = RuntimeStateReducer.RecordToolFinalization(session, finalizationReason);
+                            await audit.EmitAsync(
+                                RuntimeAuditEventKind.ToolFinalizationTriggered,
+                                RuntimeAuditSensitivity.Internal,
+                                new RuntimeToolFinalizationAuditPayload(
+                                    FinalizationReasonName(finalizationReason),
+                                    session.ActiveTurn!.Progress.ToolCallCount,
+                                    (long)elapsed.TotalMilliseconds,
+                                    stepId),
+                                token,
+                                stepId).ConfigureAwait(false);
+                        }
+                    }
                     await checkpointEmitter.SaveAsync(
                         RuntimeCheckpointKind.ToolBatchCommitted,
                         session,
@@ -446,6 +522,7 @@ public sealed class RuntimeAgentLoop
                     request,
                     handle,
                     contextEvents,
+                    audit,
                     token).ConfigureAwait(false);
                 session = postStep.Session;
                 if (postStep.Complete)
@@ -518,8 +595,11 @@ public sealed class RuntimeAgentLoop
         RuntimeSessionState session,
         RuntimeStepContext step,
         string runAttemptId,
+        RuntimeRetryPolicy? retryPolicy,
         CancellationToken ct)
     {
+        // Only populated with a retry policy, so legacy outputs are unchanged.
+        List<RuntimeWarning>? retryWarnings = null;
         while (true)
         {
             session = RuntimeStateReducer.RecordModelAttempt(session, step.StepId);
@@ -565,6 +645,10 @@ public sealed class RuntimeAgentLoop
                     }
                 }
                 validator.Complete();
+                if (retryWarnings != null)
+                {
+                    warnings.InsertRange(0, retryWarnings);
+                }
                 return (session, new RuntimeModelOutput(
                     items,
                     usage,
@@ -576,6 +660,27 @@ public sealed class RuntimeAgentLoop
                 validator.EventCount == 0 &&
                 session.ActiveTurn!.Steps[^1].ModelAttempts <= step.Budget.MaxModelRetries)
             {
+                if (retryPolicy == null)
+                {
+                    continue;
+                }
+                var failedAttempt = session.ActiveTurn!.Steps[^1].ModelAttempts;
+                var delay = retryPolicy.ComputeDelay(failedAttempt, ex.Error.RetryAfter);
+                (retryWarnings ??= []).Add(new RuntimeWarning(
+                    "model_retry",
+                    $"Model attempt {failedAttempt} failed with {ex.Error.Code} ({ex.Error.Category}); " +
+                    $"retrying after {(long)delay.TotalMilliseconds} ms."));
+                if (delay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, _timeProvider, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw new RuntimeAgentLoopCancelled(session);
+                    }
+                }
                 continue;
             }
             catch (RuntimeModelStreamValidationException ex)
@@ -1242,6 +1347,7 @@ public sealed class RuntimeAgentLoop
         RuntimeAgentLoopRequest request,
         RuntimeTurnHandle? handle,
         ICollection<RuntimeContextEvent> contextEvents,
+        RuntimeAuditEmitter audit,
         CancellationToken ct)
     {
         var step = session.ActiveTurn?.Steps.LastOrDefault() ??
@@ -1286,6 +1392,7 @@ public sealed class RuntimeAgentLoop
                         "termination_policy_failed_closed",
                         "The termination policy failed closed."));
             case RuntimeTerminationDecisionKind.Continue:
+            case RuntimeTerminationDecisionKind.ContinueWithoutTools:
             case RuntimeTerminationDecisionKind.RequireTool:
                 if (!canContinue)
                 {
@@ -1317,11 +1424,25 @@ public sealed class RuntimeAgentLoop
                         contextEvents,
                         ct).ConfigureAwait(false);
                 }
+                var withoutTools = decision.Kind == RuntimeTerminationDecisionKind.ContinueWithoutTools;
                 session = RuntimeStateReducer.RecordContinuation(
                     session,
                     decision.Kind == RuntimeTerminationDecisionKind.RequireTool
                         ? decision.RequiredToolName
-                        : null);
+                        : null,
+                    withoutTools);
+                if (withoutTools)
+                {
+                    await audit.EmitAsync(
+                        RuntimeAuditEventKind.TerminationDecided,
+                        RuntimeAuditSensitivity.Sensitive,
+                        new RuntimeTerminationDecisionAuditPayload(
+                            step.Context.StepId,
+                            "continue_without_tools",
+                            decision.Feedback),
+                        ct,
+                        step.Context.StepId).ConfigureAwait(false);
+                }
                 return new PostStepDecision(session, Complete: false);
             default:
                 throw new RuntimeAgentLoopFailure(
@@ -1331,6 +1452,81 @@ public sealed class RuntimeAgentLoop
                         "unknown_termination_decision",
                         "The termination policy returned an unknown decision."));
         }
+    }
+
+    internal static RuntimeToolFinalizationReason? EvaluateToolFinalization(
+        RuntimeToolFinalizationPolicy policy,
+        int toolCallCount,
+        TimeSpan elapsed,
+        int nextStepIndex,
+        int maxSteps)
+    {
+        if (policy.AfterToolCalls is { } afterToolCalls && toolCallCount >= afterToolCalls)
+        {
+            return RuntimeToolFinalizationReason.ToolCallBudget;
+        }
+        if (policy.Deadline is { } deadline && elapsed >= deadline * policy.DeadlineFraction)
+        {
+            return RuntimeToolFinalizationReason.Deadline;
+        }
+        if (policy.ReserveFinalStep && nextStepIndex == maxSteps - 1)
+        {
+            return RuntimeToolFinalizationReason.StepReserve;
+        }
+        return null;
+    }
+
+    private static string FinalizationReasonName(RuntimeToolFinalizationReason reason)
+        => reason switch
+        {
+            RuntimeToolFinalizationReason.ToolCallBudget => "tool_call_budget",
+            RuntimeToolFinalizationReason.Deadline => "deadline",
+            RuntimeToolFinalizationReason.StepReserve => "step_reserve",
+            _ => throw new ArgumentOutOfRangeException(nameof(reason))
+        };
+
+    /// <summary>
+    /// A Step that exposes no tools never executes tool calls. They are either
+    /// dropped (keeping the text answer, with a warning) or rejected, per policy.
+    /// The returned error, if any, fails the Turn after the output is committed.
+    /// </summary>
+    private static (RuntimeModelOutput Output, RuntimeError? Violation) ApplyToolFreeStepToolCallHandling(
+        RuntimeModelOutput output,
+        RuntimeToolFinalizationPolicy? policy,
+        bool finalization)
+    {
+        var calls = output.ToolCalls;
+        if (calls.Count == 0 || output.StopReason == RuntimeModelStopReason.Cancelled)
+        {
+            return (output, null);
+        }
+        var prefix = finalization ? "finalization" : "tool_free_step";
+        var handling = policy?.ToolCallHandling ?? RuntimeFinalizationToolCallHandling.IgnoreAndUseText;
+        if (handling == RuntimeFinalizationToolCallHandling.FailClosed)
+        {
+            return (output, new RuntimeError(
+                RuntimeErrorCategory.ProviderProtocol,
+                $"{prefix}_tool_calls_rejected",
+                $"The model requested {calls.Count} tool call(s) on a Step that exposes no tools."));
+        }
+        var filtered = output with
+        {
+            Items = Array.AsReadOnly(output.Items.Where(static item => item is not RuntimeToolCallItem).ToArray()),
+            Warnings = Array.AsReadOnly(output.Warnings.Append(new RuntimeWarning(
+                $"{prefix}_tool_calls_ignored",
+                $"Ignored {calls.Count} tool call(s) ({string.Join(", ", calls.Select(static call => call.Name).Distinct(StringComparer.Ordinal))}) on a Step that exposes no tools.")).ToArray()),
+            StopReason = output.StopReason == RuntimeModelStopReason.ToolCall
+                ? RuntimeModelStopReason.EndTurn
+                : output.StopReason
+        };
+        if (string.IsNullOrEmpty(filtered.Text))
+        {
+            return (output, new RuntimeError(
+                RuntimeErrorCategory.ProviderProtocol,
+                $"{prefix}_empty",
+                "The model answered a tool-free Step with tool calls only and no text."));
+        }
+        return (filtered, null);
     }
 
     private static RuntimeSessionState ObserveOutstandingTools(
@@ -1682,6 +1878,9 @@ public sealed class RuntimeAgentLoop
         ArgumentNullException.ThrowIfNull(request.Policy);
         ArgumentNullException.ThrowIfNull(request.Environment);
         ArgumentNullException.ThrowIfNull(request.Budget);
+        RuntimeResponseFormats.Validate(request.ModelParameters, nameof(request));
+        request.ToolFinalization?.Validate();
+        request.ModelRetryPolicy?.Validate();
         if (request.HistoryVersion < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(request.HistoryVersion));
@@ -1901,7 +2100,10 @@ public sealed class RuntimeAgentLoop
                 request.InitialMessages.Select(SnapshotMessage).ToArray()),
             Tools = Array.AsReadOnly(request.Tools
                 .Select(static tool => tool with { InputSchema = tool.InputSchema.Clone() })
-                .ToArray())
+                .ToArray()),
+            ModelParameters = request.ModelParameters.ResponseFormat is { } responseFormat
+                ? request.ModelParameters with { ResponseFormat = RuntimeResponseFormats.Snapshot(responseFormat) }
+                : request.ModelParameters
         };
 
     private sealed record ToolBatchExecution(

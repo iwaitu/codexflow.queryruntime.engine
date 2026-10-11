@@ -957,6 +957,71 @@ run 结束时会写入：
 如果在其他仓库 dogfood QRE，应同步添加该忽略规则。CI 上传 `.qre/` artifact
 前需要脱敏或限制访问，不要把原始 trace 当作公开 issue 附件。
 
+### 5.11 上下文预算（`RuntimeContextOptions`）
+
+**Today**：V2 `RuntimeAgentLoop` 通过 `RuntimeAgentLoopRequest.ContextManager`
+（默认 `new RuntimeContextManager()`，即 `RuntimeContextOptions.Default`）控制两件事：
+追加历史时对单个条目的硬上限（canonical history 归一化），以及每个 Step 发给模型的
+投影是否需要压缩。所有预算都是 `RuntimeTokenEstimator` 的**估算 token**，不是 provider
+tokenizer 的计数。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `MaxContextTokens` | 32 000 | 每个 Step 发给模型的消息投影上限（含当 Step 暴露的工具 schema 估算）。超出时做确定性本地压缩：保留最新 user、system、未完成的工具调用与最近轨迹，其余替换为一条摘要。 |
+| `MaxItemTokens` | 8 000 | 追加历史时单个 text / reasoning / 工具参数的硬上限，超出部分被截断（`text_fragment_hard_cap` 等）。 |
+| `MaxToolResultTokens` | 4 000 | 单个工具结果文本的硬上限（`tool_result_hard_cap`）。 |
+| `LargeToolResultTokens` | 2 000 | 工具结果超过该值时，原文存为 history blob（`runtime-history://sha256/...` artifact），模型只看到前 `LargeToolResultTokens` 的内容加替换标记（`large_tool_result_replaced`）。这是**模型实际可见的工具结果上限**。 |
+| `SummaryTokens` | 2 000 | 压缩时摘要的上限。 |
+| `RecentTrajectoryMessages` | 12 | 压缩时优先保留的最近消息数。 |
+| `MaxArtifactsPerResult` / `MaxBlobBytes` / `MaxTotalBlobBytes` | 16 / 1 MiB / 8 MiB | 工具结果 artifact 与 history blob 的数量与字节上限。 |
+| `TruncationPolicy` | `Allow` | 截断时的处理策略，见下文。 |
+
+默认值面向 32k 窗口的代码分析场景：工具结果多为文件片段、命令输出，截断后模型
+可以再调用工具读取更小的范围。对于“首条 user 消息就是大块证据、单次工具返回数万字”
+的嵌入场景（例如材料包审查），默认值会静默裁剪证据，需要放宽。
+
+**与模型上下文窗口的关系**：`MaxContextTokens` 应小于
+`模型窗口 − MaxOutputTokens − 安全余量`。安全余量用于吸收估算误差（见下文）和
+provider 侧的模板开销，建议至少 10%。
+
+**预设**：`RuntimeContextOptions.ForModelWindow(maxContextTokens)` 按默认比例放大：
+
+| 字段 | 比例 | `ForModelWindow(128_000)` |
+|---|---|---|
+| `MaxItemTokens` | 1/4 | 32 000 |
+| `MaxToolResultTokens` | 1/8 | 16 000 |
+| `LargeToolResultTokens` | 1/16 | 8 000 |
+| `SummaryTokens` | 1/16 | 8 000 |
+
+`ForModelWindow(32_000)` 与 `Default` 完全相同；其他字段保持默认值。比例沿用默认
+配置的比例，使各上限之间、以及它们与压缩时的摘要预留（`min(SummaryTokens, 预算/4)`）
+之间的相对关系在放大后保持不变。如果单次工具结果需要整体可见，可在预设基础上单独调整，例如
+`RuntimeContextOptions.ForModelWindow(200_000) with { MaxToolResultTokens = 40_000, LargeToolResultTokens = 40_000 }`
+（`LargeToolResultTokens` 不得大于 `MaxToolResultTokens`）。
+
+**截断策略**（`TruncationPolicy`，opt-in）：
+
+- `Allow`（默认）：保持原有行为，截断、替换、压缩都允许。
+- `FailClosedOnInitialMessages`：首批消息（`InitialMessages`，即 history 版本等于请求
+  `HistoryVersion` 的条目）任何条目被硬截断或在压缩中被摘要替换时，Turn 以
+  `FailClosed` / `ContextOverflow` / `context_truncation_rejected` 结束。
+- `FailClosedOnAny`：任意条目因预算被截断、替换（包括大工具结果替换为 artifact）或
+  压缩时都 fail-closed。
+
+检查发生在每个 Step 准备好模型投影之后、调用模型之前，覆盖上一个 Step 以来的
+全部上下文事件，所以被截断的证据不会到达模型。无论哪种策略，截断都会发出带条目 id
+的 `RuntimeContextEvent`：历史硬上限为 `HistoryNormalized`（`ItemIds` 为
+`h<版本>:m<序号>:source:<下标>`），大工具结果替换为 `ItemReplaced`（带
+`ReplacementId`），压缩为 `ContextCompacted`（`ItemIds` 为被替换的条目）。错误消息
+列出受影响的条目 id。空文本、重复 system 片段、孤立工具结果等协议归一化不视为截断。
+
+**估算偏差**：`RuntimeTokenEstimator.Estimate` 是 `ceil(UTF-8 字节数 / 4)`
+（版本 `utf8-bytes-div4-v2`）。中文一个字 3 字节，约 0.75 token/字；常见中文
+tokenizer 实际约 0.6–1.5 token/字，因此中文内容可能被**低估**（模型实际 token 数
+比估算多）。估算值参与回放与 checkpoint，默认估算不会改变；中文为主的宿主应在
+`MaxContextTokens` 上留出更大的安全余量（例如按 1.5 倍估算偏差预留），而不是依赖
+provider 截断。
+
 ## 6. 跨平台开发应用示例
 
 **Today**：早期集成建议把 `qre` CLI 当作子进程调用，并解析 `--json` 的最后

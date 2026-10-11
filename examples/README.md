@@ -11,6 +11,7 @@ All examples adhere to the **0.23.0 stable, v2-only** runtime architecture.
 | Example | Technology / Language | Primary Concepts Demonstrated | Execution Mode |
 |---|---|---|---|
 | **[EmbeddedV2](EmbeddedV2)** | C# / .NET 10 | Direct in-process `IAgentRuntime` embedding, typed Turn requests, and real-time event streaming (`TextDelta`, `ReasoningDelta`, `ToolCallRequested`). | Offline static model (no network needed) |
+| **[EmbeddedStructuredExtraction](EmbeddedStructuredExtraction)** | C# / .NET 10 | Host `AIFunction` tools via `RuntimeAIFunctionTool`, tool-free-only JSON Schema output, budget-driven finalization, `ContinueWithoutTools` JSON repair, classified retries with backoff, empty-stream fallback, host-directory audit and data-only replay. | Offline scripted provider / Live provider |
 | **[RepoDoctor](RepoDoctor)** | C# / .NET 10 CLI | Cross-platform CLI host calling `qre` CLI subprocess, custom C# stdio tool registration, live streaming, and strict offline replay. | Offline smoke / Live provider |
 | **[PythonToolDoctor](PythonToolDoctor)** | Python 3.9+ | Python subprocess host driving `qre`, enforcing required built-in tools (`qre_list_files`), and validating via strict replay. | Offline smoke / Live provider |
 | **[ExternalTools](ExternalTools)** | Python / Stdio | External tool manifest definition (`.qre/tools/*.json`), process isolation, and plan-bound approval (`--approve-risk`). | Model-invoked tool |

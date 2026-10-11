@@ -233,6 +233,21 @@ internal static class QreDiagnosticsAnalyzer
                 findings.Add(Finding("responseFormat", "json_object", adapter.ResponseFormat.Value ?? "none", QreFindingClass.UnexpectedChange, "explicit_constraint_mapped"));
             }
         }
+        else if (runtime.ResponseFormat.Value == "json_schema")
+        {
+            // A schema constraint is lost when it degrades to plain JSON or disappears.
+            if (adapter.ResponseFormat.Value != "json_schema")
+            {
+                findings.Add(Finding("responseFormat", "json_schema", adapter.ResponseFormat.Value ?? "none", QreFindingClass.UnexpectedChange, "explicit_constraint_mapped"));
+            }
+        }
+        else if (runtime.ResponseFormat.Value == "text")
+        {
+            if (adapter.ResponseFormat.Value is "json_object" or "json_schema")
+            {
+                findings.Add(Finding("responseFormat", "text", adapter.ResponseFormat.Value, QreFindingClass.UnexpectedChange, "explicit_constraint_mapped"));
+            }
+        }
         else if (adapter.ResponseFormat.State == QreDiagnosticFieldStates.Present)
         {
             findings.Add(Finding("responseFormat", "none", adapter.ResponseFormat.Value, QreFindingClass.ExpectedTransform, "unspecified_value_from_host"));
@@ -383,6 +398,10 @@ internal static class QreDiagnosticsAnalyzer
                 if (http.ResponseFormat.SourcePath != "response_format" && http.ResponseFormat.SourcePath != "text.format")
                 {
                     notes.Add("json_format_non_standard_path");
+                }
+                if (adapter.ResponseFormat.Value == "json_schema" && http.ResponseFormat.Value == "json_object")
+                {
+                    findings.Add(Finding("responseFormat", "json_schema", "json_object", QreFindingClass.UnexpectedChange, "explicit_constraint_transmitted", Limitation(QreTransportCapabilityMatrix.ResponseFormatDropped)));
                 }
             }
             else if (http.ResponseFormat.Value == "alternative_json_only")

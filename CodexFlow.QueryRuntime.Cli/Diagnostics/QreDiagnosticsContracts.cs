@@ -398,6 +398,9 @@ internal sealed record QreFixtureRequest
 
     public bool RequireJsonObject { get; init; }
 
+    /// <summary>Runtime structured output schema (Kind=JsonSchema); mutually exclusive with RequireJsonObject.</summary>
+    public string? ResponseSchemaJson { get; init; }
+
     public string? RequiredToolName { get; init; }
 }
 

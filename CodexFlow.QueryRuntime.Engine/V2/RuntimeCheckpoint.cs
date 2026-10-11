@@ -101,6 +101,9 @@ public sealed record RuntimeCheckpointRequestSnapshot(
     DateTimeOffset? CreatedAt,
     string? RecoveryCompatibilityId)
 {
+    /// <summary>Frozen finalization policy; part of the request fingerprint when set.</summary>
+    public RuntimeToolFinalizationPolicy? ToolFinalization { get; init; }
+
     public static RuntimeCheckpointRequestSnapshot Capture(RuntimeAgentLoopRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -117,7 +120,10 @@ public sealed record RuntimeCheckpointRequestSnapshot(
             request.Budget,
             request.HistoryVersion,
             request.CreatedAt,
-            request.RecoveryCompatibilityId);
+            request.RecoveryCompatibilityId)
+        {
+            ToolFinalization = request.ToolFinalization
+        };
     }
 
     public RuntimeAgentLoopRequest ToLoopRequest()
@@ -135,7 +141,8 @@ public sealed record RuntimeCheckpointRequestSnapshot(
             HistoryVersion,
             CreatedAt)
         {
-            RecoveryCompatibilityId = RecoveryCompatibilityId
+            RecoveryCompatibilityId = RecoveryCompatibilityId,
+            ToolFinalization = ToolFinalization
         };
 
     internal static IReadOnlyList<RuntimeMessage> SnapshotMessages(

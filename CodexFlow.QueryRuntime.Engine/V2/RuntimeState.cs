@@ -88,6 +88,17 @@ public sealed record RuntimeTurnProgress(
     int ToolCallCount,
     RuntimeModelStopReason? LastModelStopReason)
 {
+    /// <summary>Why tool finalization triggered; null while it has not.</summary>
+    public RuntimeToolFinalizationReason? FinalizationReason { get; init; }
+
+    /// <summary>The next Step exposes no tools (set by ContinueWithoutTools).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool NextStepWithoutTools { get; init; }
+
+    /// <summary>Whether the next Step is forced to expose no tools.</summary>
+    [JsonIgnore]
+    public bool ToolFreeStepRequired => FinalizationReason != null || NextStepWithoutTools;
+
     public static RuntimeTurnProgress Create(string? requiredToolName)
         => new(
             RuntimeUsageTotals.Empty,

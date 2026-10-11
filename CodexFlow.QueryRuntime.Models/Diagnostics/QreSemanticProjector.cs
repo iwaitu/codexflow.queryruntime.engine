@@ -97,12 +97,25 @@ internal static class QreSemanticProjector
             Temperature = Number(parameters.Temperature, "parameters.temperature"),
             MaxOutputTokens = Number(parameters.MaxOutputTokens, "parameters.maxOutputTokens"),
             // RequireJsonObject is a non-nullable bool: false and "unspecified" are equivalent.
-            ResponseFormat = new QreSemanticValue
-            {
-                State = QreDiagnosticFieldStates.Present,
-                Value = parameters.RequireJsonObject ? "json_object" : "none",
-                SourcePath = "parameters.requireJsonObject"
-            },
+            ResponseFormat = parameters.ResponseFormat is { } responseFormat
+                ? new QreSemanticValue
+                {
+                    State = QreDiagnosticFieldStates.Present,
+                    Value = responseFormat.Kind switch
+                    {
+                        RuntimeResponseFormatKind.Text => "text",
+                        RuntimeResponseFormatKind.JsonObject => "json_object",
+                        RuntimeResponseFormatKind.JsonSchema => "json_schema",
+                        _ => "other"
+                    },
+                    SourcePath = "parameters.responseFormat"
+                }
+                : new QreSemanticValue
+                {
+                    State = QreDiagnosticFieldStates.Present,
+                    Value = parameters.RequireJsonObject ? "json_object" : "none",
+                    SourcePath = "parameters.requireJsonObject"
+                },
             Stream = Unobserved(),
             Model = string.IsNullOrWhiteSpace(parameters.Model)
                 ? new QreSemanticModel { State = QreDiagnosticFieldStates.Absent, Source = "unknown" }
@@ -120,7 +133,8 @@ internal static class QreSemanticProjector
         IReadOnlyList<ChatMessage> messages,
         ChatOptions options,
         string? descriptorDefaultModel,
-        QreOutboundDiagnostics diagnostics)
+        QreOutboundDiagnostics diagnostics,
+        bool streaming = true)
     {
         var functions = options.Tools?.OfType<AIFunction>().Select(static tool => tool.Name).ToArray() ?? [];
         var nonFunctionTools = (options.Tools?.Count ?? 0) - functions.Length;
@@ -211,7 +225,9 @@ internal static class QreSemanticProjector
                 ChatResponseFormatText => Value("text", "ChatOptions.ResponseFormat"),
                 _ => Value("other", "ChatOptions.ResponseFormat")
             },
-            Stream = Value("true", "GetStreamingResponseAsync"),
+            Stream = streaming
+                ? Value("true", "GetStreamingResponseAsync")
+                : Value("false", "GetResponseAsync"),
             Model = model,
             // AdditionalProperties and RawRepresentationFactory are never serialized
             // or stringified; only their presence is counted.

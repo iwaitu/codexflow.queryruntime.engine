@@ -21,7 +21,17 @@ public enum RuntimeAuditEventKind
     ModelRequestPrepared = 2,
     ModelResponseCommitted = 3,
     ToolObservationCommitted = 4,
-    TurnTerminal = 5
+    TurnTerminal = 5,
+
+    /// <summary>Budget-driven tool finalization triggered (opt-in; absent from legacy recordings).</summary>
+    ToolFinalizationTriggered = 6,
+
+    /// <summary>
+    /// A termination decision that changes the next Step's shape. Only decisions
+    /// introduced after audit v1 (continue_without_tools) are recorded, so
+    /// recordings of legacy decisions stay unchanged.
+    /// </summary>
+    TerminationDecided = 7
 }
 
 public enum RuntimeAuditSensitivity
@@ -57,6 +67,8 @@ public enum RuntimeAuditFailureMode
 [JsonDerivedType(typeof(RuntimeModelResponseAuditPayload), "model_response")]
 [JsonDerivedType(typeof(RuntimeToolObservationAuditPayload), "tool_observation")]
 [JsonDerivedType(typeof(RuntimeTurnTerminalAuditPayload), "turn_terminal")]
+[JsonDerivedType(typeof(RuntimeToolFinalizationAuditPayload), "tool_finalization")]
+[JsonDerivedType(typeof(RuntimeTerminationDecisionAuditPayload), "termination_decision")]
 [JsonDerivedType(typeof(RuntimePublicAuditPayload), "public_summary")]
 public abstract record RuntimeAuditPayload;
 
@@ -78,7 +90,25 @@ public sealed record RuntimeContextPreparedAuditPayload(
     IReadOnlyList<RuntimeHistoryItemId> ReplacedItemIds,
     IReadOnlyList<RuntimeContextEvent> Events) : RuntimeAuditPayload;
 
-public sealed record RuntimeModelRequestAuditPayload(RuntimeModelRequest Request) : RuntimeAuditPayload;
+public sealed record RuntimeModelRequestAuditPayload(RuntimeModelRequest Request) : RuntimeAuditPayload
+{
+    /// <summary>Effective response format kind for this Step; null when none is in effect.</summary>
+    public string? ResponseFormatKind { get; init; }
+
+    /// <summary>SHA-256 of the effective response schema; null when no schema is in effect.</summary>
+    public string? ResponseFormatSchemaSha256 { get; init; }
+
+    public static RuntimeModelRequestAuditPayload Create(RuntimeModelRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var format = request.Parameters.ResponseFormat;
+        return new RuntimeModelRequestAuditPayload(request)
+        {
+            ResponseFormatKind = format == null ? null : RuntimeResponseFormats.KindName(format.Kind),
+            ResponseFormatSchemaSha256 = format?.ComputeSchemaSha256()
+        };
+    }
+}
 
 public sealed record RuntimeModelResponseAuditPayload(
     RuntimeStepId StepId,
@@ -100,6 +130,21 @@ public sealed record RuntimeTurnTerminalAuditPayload(
     int ContinuationCount,
     long HistoryVersion,
     IReadOnlyList<RuntimeMessage> CanonicalHistory) : RuntimeAuditPayload;
+
+/// <param name="Reason">tool_call_budget, deadline, or step_reserve.</param>
+/// <param name="ElapsedMs">Turn time elapsed at the decision, from the Runtime TimeProvider.</param>
+/// <param name="AfterStepId">The tool Step after whose batch finalization triggered.</param>
+public sealed record RuntimeToolFinalizationAuditPayload(
+    string Reason,
+    int ToolCallCount,
+    long ElapsedMs,
+    RuntimeStepId AfterStepId) : RuntimeAuditPayload;
+
+/// <param name="Decision">Currently always continue_without_tools.</param>
+public sealed record RuntimeTerminationDecisionAuditPayload(
+    RuntimeStepId AfterStepId,
+    string Decision,
+    string? Feedback) : RuntimeAuditPayload;
 
 /// <summary>
 /// Explicit allow-list projection used by public durable audit. It contains
@@ -129,7 +174,16 @@ public sealed record RuntimePublicAuditPayload(
     long TotalTokens = 0,
     int TotalSteps = 0,
     int ContinuationCount = 0,
-    long HistoryVersion = 0) : RuntimeAuditPayload;
+    long HistoryVersion = 0) : RuntimeAuditPayload
+{
+    /// <summary>Effective response format kind of a model request; never the schema text.</summary>
+    public string? ResponseFormatKind { get; init; }
+
+    /// <summary>Tool finalization reason or termination decision name.</summary>
+    public string? Decision { get; init; }
+
+    public long? ElapsedMs { get; init; }
+}
 
 public sealed record RuntimeAuditEnvelope(
     int SchemaVersion,
@@ -301,6 +355,8 @@ public static class RuntimeRecordedReplay
         var executedObservationCount = 0;
         var committedUsage = RuntimeUsageTotals.Empty;
         string? lastCommittedText = null;
+        var finalized = false;
+        var toolFreeNext = false;
         RuntimeTurnTerminalAuditPayload? terminal = null;
 
         for (var index = 0; index < recording.Events.Count; index++)
@@ -348,6 +404,23 @@ public static class RuntimeRecordedReplay
                     {
                         throw Corrupt("audit_duplicate_model_request", "A Step contains more than one committed model request.");
                     }
+                    if ((finalized || toolFreeNext) && request.Request.Tools.Count != 0)
+                    {
+                        throw Corrupt("audit_tool_free_step_exposed_tools", "A Step after finalization or continue_without_tools exposed tools.");
+                    }
+                    toolFreeNext = false;
+                    var expectedFormat = request.Request.Parameters.ResponseFormat;
+                    if (!string.Equals(
+                            request.ResponseFormatKind,
+                            expectedFormat == null ? null : RuntimeResponseFormats.KindName(expectedFormat.Kind),
+                            StringComparison.Ordinal) ||
+                        !string.Equals(
+                            request.ResponseFormatSchemaSha256,
+                            expectedFormat?.ComputeSchemaSha256(),
+                            StringComparison.Ordinal))
+                    {
+                        throw Corrupt("audit_response_format_mismatch", "The audited response format does not match the recorded model request.");
+                    }
                     break;
                 case RuntimeModelResponseAuditPayload response:
                     if (!requests.Contains(response.StepId.Value) || !responses.Add(response.StepId.Value))
@@ -382,6 +455,23 @@ public static class RuntimeRecordedReplay
                     {
                         executedObservationCount++;
                     }
+                    break;
+                case RuntimeToolFinalizationAuditPayload value:
+                    if (finalized || observations.Count == 0 ||
+                        value.Reason is not ("tool_call_budget" or "deadline" or "step_reserve") ||
+                        value.ToolCallCount < 0 || value.ElapsedMs < 0 ||
+                        !responses.Contains(value.AfterStepId.Value))
+                    {
+                        throw Corrupt("audit_tool_finalization_invalid", "Tool finalization must follow a committed tool batch and occur at most once.");
+                    }
+                    finalized = true;
+                    break;
+                case RuntimeTerminationDecisionAuditPayload value:
+                    if (value.Decision != "continue_without_tools" || !responses.Contains(value.AfterStepId.Value))
+                    {
+                        throw Corrupt("audit_termination_decision_invalid", "The recorded termination decision is unknown or orphaned.");
+                    }
+                    toolFreeNext = true;
                     break;
                 case RuntimeTurnTerminalAuditPayload value:
                     if (index != recording.Events.Count - 1 || terminal != null)
@@ -477,6 +567,12 @@ public static class RuntimeRecordedReplay
                 observation.Result.InvocationId == observation.Call.InvocationId,
             RuntimeAuditEventKind.TurnTerminal =>
                 value.Payload is RuntimeTurnTerminalAuditPayload && value.StepId == null && value.InvocationId == null,
+            RuntimeAuditEventKind.ToolFinalizationTriggered =>
+                value.Payload is RuntimeToolFinalizationAuditPayload finalization &&
+                value.StepId == finalization.AfterStepId && value.InvocationId == null,
+            RuntimeAuditEventKind.TerminationDecided =>
+                value.Payload is RuntimeTerminationDecisionAuditPayload decision &&
+                value.StepId == decision.AfterStepId && value.InvocationId == null,
             _ => false
         };
         if (!valid)
@@ -523,4 +619,6 @@ public sealed class RuntimeAuditReplayException(RuntimeError error, Exception? i
 [JsonSerializable(typeof(RuntimeToolObservationAuditPayload))]
 [JsonSerializable(typeof(RuntimeTurnTerminalAuditPayload))]
 [JsonSerializable(typeof(RuntimePublicAuditPayload))]
+[JsonSerializable(typeof(RuntimeToolFinalizationAuditPayload))]
+[JsonSerializable(typeof(RuntimeTerminationDecisionAuditPayload))]
 public partial class RuntimeAuditJsonContext : JsonSerializerContext;
