@@ -13,6 +13,11 @@
 1. **强约束 vs 弱提示**：
    - 传统 `ChatResponseFormat.Json` (`json_object`)：模型被告知输出合法 JSON，但无字段模式保障，可能出现字段缺失或类型错误；
    - `ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)：请求服务端按 schema 输出，客户端仍需验证。HTTP 200 和 `strict=true` 不等于后端实际强制执行了 schema。
+   - 本例通过 Runtime 一等参数 `RuntimeModelParameters.ResponseFormat = RuntimeResponseFormat.ForJsonSchema(...)` 声明 schema，
+     而不是在 options factory 里设置 `ChatResponseFormat`。Engine 在构造每个 Step 请求时决定实际生效的格式
+     （`Scope = ToolFreeStepsOnly` 时，暴露了工具的 Step 不带格式），审计 `model_request` 记录 `responseFormatKind`
+     与 schema 的 SHA-256；`MeaiRuntimeModelClient` 再把它映射为 `ChatResponseFormat.ForJsonSchema`，覆盖 factory 的值。
+     `ResponseFormat` 与旧的 `RequireJsonObject` 不能同时设置。
 2. **出站诊断语义追踪**：
    - 本例通过 HTTP handler 检查最终出站请求的 `response_format.type`、`strict` 与完整 schema。QRE 多边界诊断用法另见 `SdkOutboundDiagnostics`；诊断只能观察，不能阻止远端忽略字段。
 3. **强类型 POCO 反序列化**：

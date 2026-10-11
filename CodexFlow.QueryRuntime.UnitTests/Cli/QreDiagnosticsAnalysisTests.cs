@@ -121,6 +121,50 @@ public sealed class QreDiagnosticsAnalysisTests : IDisposable
     }
 
     [Fact]
+    public async Task RuntimeJsonSchemaFormat_IsProjectedAndCarriedToTheWire()
+    {
+        using var schema = JsonDocument.Parse("{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"]}");
+        var (sink, analysis) = await AnalyzeDirectAsync(Request(parameters: new RuntimeModelParameters(Model: ChatModel)
+        {
+            ResponseFormat = RuntimeResponseFormat.ForJsonSchema(schema.RootElement, "result")
+        }));
+
+        var runtime = sink.OfType(QreDiagnosticEventTypes.ModelCallStarted)[0].Request!;
+        Assert.Equal("json_schema", runtime.ResponseFormat.Value);
+        Assert.Equal("parameters.responseFormat", runtime.ResponseFormat.SourcePath);
+        var adapter = sink.OfType(QreDiagnosticEventTypes.AdapterPrepared)[0].Request!;
+        Assert.Equal("json_schema", adapter.ResponseFormat.Value);
+        Assert.DoesNotContain(analysis.Findings, static f => f.FieldPath == "responseFormat" &&
+                                                            f.Classification == QreFindingClass.UnexpectedChange);
+    }
+
+    [Fact]
+    public async Task RuntimeJsonSchemaFormat_DowngradeToJsonObjectIsAFinding()
+    {
+        using var schema = JsonDocument.Parse("{\"type\":\"object\"}");
+        var (sink, _) = await AnalyzeDirectAsync(Request(parameters: new RuntimeModelParameters(Model: ChatModel)
+        {
+            ResponseFormat = RuntimeResponseFormat.ForJsonSchema(schema.RootElement)
+        }));
+        var records = sink.Records.Select(static record => record.EventType == QreDiagnosticEventTypes.AdapterPrepared
+            ? record with
+            {
+                Request = record.Request! with
+                {
+                    ResponseFormat = new QreSemanticValue { State = QreDiagnosticFieldStates.Present, Value = "json_object", SourcePath = "ChatOptions.ResponseFormat" }
+                }
+            }
+            : record).ToArray();
+
+        var analysis = QreDiagnosticsAnalyzer.AnalyzeCall(records[0].ModelCallId!, records, versionsSupported: true);
+
+        Assert.Contains(analysis.Findings, static f => f.FieldPath == "responseFormat" &&
+                                                       f.Before == "json_schema" &&
+                                                       f.After == "json_object" &&
+                                                       f.Classification == QreFindingClass.UnexpectedChange);
+    }
+
+    [Fact]
     public async Task NoToolsAndNoRequiredTool_IsExpectedTransform()
     {
         var (_, analysis) = await AnalyzeDirectAsync(Request());

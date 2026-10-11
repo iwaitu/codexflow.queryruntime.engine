@@ -10,7 +10,7 @@ CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and ligh
 
 QRE can be embedded directly into .NET host applications via official NuGet packages or published as a standalone, zero-dependency `qre` Native AOT binary, operating independently of the CodexFlow web platform.
 
-This repository is on the **0.23.2 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
+This repository is on the **0.24.0 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
 
 ---
 
@@ -692,12 +692,12 @@ Model Studio recommends omitting `max_tokens` for structured output to avoid tru
 Embed the QRE V2 engine and model providers directly into any C# / .NET 10 host application:
 
 ### 1. Package References
-Add the official NuGet packages (`0.23.2`):
+Add the official NuGet packages (`0.24.0`):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.2" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.2" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.24.0" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.24.0" />
 </ItemGroup>
 ```
 
@@ -756,15 +756,64 @@ Console.WriteLine($"\nStatus: {result.Status}, Steps: {result.Turn.Steps.Count}"
 
 See [`examples/EmbeddedV2`](examples/EmbeddedV2) for a complete working host.
 
+### 3. Host Tools, Structured Extraction and Finalization
+
+*(Available from `0.24.0`; see [CHANGELOG](CHANGELOG.md).)*
+
+For "read-only tools + one structured answer" conversations (for example, extracting and scoring one review rule), the Runtime provides opt-in building blocks; leaving them unset keeps the default behavior unchanged:
+
+```csharp
+using CodexFlow.QueryRuntime.Models.Tools;
+
+// Host AIFunctions become V2 tools (read-only, idempotent, parallel-safe by default).
+var pipeline = new RuntimeToolExecutionPipeline(
+    new RuntimeToolRegistry(RuntimeAIFunctionTool.FromFunctions(hostFunctions)),
+    new RuntimeAllowToolPolicy());
+
+var request = new RuntimeAgentLoopRequest(/* ... */ pipeline.Descriptors,
+    new RuntimeModelParameters(Model: model)
+    {
+        // JSON Schema output, applied only to Steps that expose no tools.
+        ResponseFormat = RuntimeResponseFormat.ForJsonSchema(
+            schema, "rule_result", scope: RuntimeResponseFormatScope.ToolFreeStepsOnly)
+    }, /* policy, environment, budget */)
+{
+    ToolPipeline = pipeline,
+    // After 12 tool calls or 85% of the deadline, run one tool-free final-answer Step.
+    ToolFinalization = new RuntimeToolFinalizationPolicy
+    {
+        AfterToolCalls = 12,
+        Deadline = TimeSpan.FromMinutes(3),
+        Instruction = "Stop calling tools and return the final JSON now."
+    },
+    // A termination policy can return RuntimeTerminationDecision.ContinueWithoutTools(feedback)
+    // to ask for a tool-free, format-constrained repair of invalid JSON.
+    TerminationPolicy = jsonRepairPolicy,
+    ModelRetryPolicy = new RuntimeRetryPolicy(), // exponential backoff with jitter
+    ContextManager = new RuntimeContextManager(RuntimeContextOptions.ForModelWindow(128_000))
+};
+
+var modelClient = new MeaiRuntimeModelClient(chatClient, optionsFactory, new MeaiRuntimeModelClientOptions
+{
+    ClassifyProviderErrors = true, // 429/5xx/timeouts retryable, 401/403 terminal
+    StreamingMode = MeaiStreamingMode.StreamingWithNonStreamingFallbackOnEmpty
+});
+// Add QreModelHttpErrorCaptureHandler to the provider HttpClient so SDKs that drop
+// HTTP status codes (VllmChatClient) are still classified precisely.
+```
+
+Every decision (effective response format, finalization trigger, `continue_without_tools`, retries) is recorded in the audit and validated by data-only replay. See [`examples/EmbeddedStructuredExtraction`](examples/EmbeddedStructuredExtraction) for the complete, offline-runnable host.
+
 ---
 
 ## Runnable Examples Showcase
 
-The [`examples/`](examples/README.md) directory contains 10 fully working integration examples:
+The [`examples/`](examples/README.md) directory contains 11 fully working integration examples:
 
 | Example | Integration Highlights | Source |
 |---|---|---|
 | **EmbeddedV2** | Minimal .NET `IAgentRuntime` embedding with deterministic offline client. | [Explore](examples/EmbeddedV2) |
+| **EmbeddedStructuredExtraction** | Host `AIFunction` tools, tool-free JSON Schema output, budget-driven finalization, JSON repair, classified retries, empty-stream fallback and durable audit. | [Explore](examples/EmbeddedStructuredExtraction) |
 | **RepoDoctor** | Production .NET CLI host with custom tools, streaming, and strict replay. | [Explore](examples/RepoDoctor) |
 | **PythonToolDoctor** | Python CLI host invoking built-in QRE tools with strict trace replay. | [Explore](examples/PythonToolDoctor) |
 | **ExternalTools** | Minimal stdio tool manifest and approved model execution. | [Explore](examples/ExternalTools) |

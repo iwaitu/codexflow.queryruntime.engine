@@ -263,6 +263,9 @@ internal static class QreDiagnosticsRebuilder
                 Temperature = runtime.Temperature.Value,
                 MaxOutputTokens = runtime.MaxOutputTokens.Value is { } max ? (int)max : null,
                 RequireJsonObject = runtime.ResponseFormat.Value == "json_object",
+                ResponseSchemaJson = runtime.ResponseFormat.Value == "json_schema"
+                    ? $"{FillMarker}: synthetic response JSON schema (type=object)>>"
+                    : null,
                 RequiredToolName = required
             },
             Assertions = assertions.DistinctBy(static a => (a.Kind, a.Field)).ToArray()
@@ -286,6 +289,7 @@ internal static class QreDiagnosticsRebuilder
         Check(fixture.ApiMode, "apiMode");
         Check(fixture.Model, "model");
         Check(fixture.Request.RequiredToolName, "request.requiredToolName");
+        Check(fixture.Request.ResponseSchemaJson, "request.responseSchemaJson");
         for (var m = 0; m < fixture.Request.Messages.Count; m++)
         {
             for (var i = 0; i < fixture.Request.Messages[m].Items.Count; i++)
@@ -348,7 +352,12 @@ internal static class QreDiagnosticsRebuilder
                 fixture.Request.Temperature,
                 fixture.Request.MaxOutputTokens,
                 fixture.Request.RequireJsonObject,
-                fixture.Request.RequiredToolName),
+                fixture.Request.RequiredToolName)
+            {
+                ResponseFormat = fixture.Request.ResponseSchemaJson is { } schema
+                    ? RuntimeResponseFormat.ForJsonSchema(ParseObject(schema), "qre_rebuild")
+                    : null
+            },
             0);
     }
 
@@ -380,6 +389,10 @@ internal static class QreDiagnosticsRebuilder
             case "json_output_mapped":
             {
                 var actual = http?.ResponseFormat.Value ?? "unobserved";
+                if (runtime?.ResponseFormat.Value == "json_schema")
+                {
+                    return new(assertion.Kind, "http.responseFormat", "json_schema", actual, actual == "json_schema");
+                }
                 return new(assertion.Kind, "http.responseFormat", "json_object|json_schema", actual, actual is "json_object" or "json_schema");
             }
             case "tool_result_links_preserved":

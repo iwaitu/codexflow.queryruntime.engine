@@ -69,14 +69,18 @@ internal sealed class QreModelCallObserver
         return observer;
     }
 
-    public void AdapterPrepared(IReadOnlyList<ChatMessage> messages, ChatOptions options, string? descriptorDefaultModel)
+    public void AdapterPrepared(
+        IReadOnlyList<ChatMessage> messages,
+        ChatOptions options,
+        string? descriptorDefaultModel,
+        bool streaming = true)
     {
         QreSemanticRequest? semantic = null;
         string status = QreDiagnosticCaptureStatus.Complete;
         string? reason = null;
         try
         {
-            semantic = QreSemanticProjector.FromAdapter(messages, options, descriptorDefaultModel, _diagnostics);
+            semantic = QreSemanticProjector.FromAdapter(messages, options, descriptorDefaultModel, _diagnostics, streaming);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

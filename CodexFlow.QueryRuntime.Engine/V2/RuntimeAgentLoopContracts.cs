@@ -56,6 +56,144 @@ public sealed record RuntimeAgentLoopRequest(
     public IRuntimeToolAuthorization? ToolAuthorization { get; init; }
 
     public IRuntimeTerminationPolicy? TerminationPolicy { get; init; }
+
+    /// <summary>
+    /// Opt-in budget-driven finalization. Null keeps the legacy behavior where
+    /// the Turn fails with <c>step_budget_exhausted</c> when tools consume the
+    /// last Step.
+    /// </summary>
+    public RuntimeToolFinalizationPolicy? ToolFinalization { get; init; }
+
+    /// <summary>
+    /// Backoff between model retries. Null keeps the legacy behavior: a retryable
+    /// failure is retried immediately within <see cref="RuntimeBudgetSnapshot.MaxModelRetries"/>.
+    /// </summary>
+    public RuntimeRetryPolicy? ModelRetryPolicy { get; init; }
+}
+
+/// <summary>
+/// Exponential backoff with jitter for retryable model failures. Retries still
+/// happen only while the failed attempt has produced no stream events and the
+/// Step's MaxModelRetries budget allows another attempt. Waits use the
+/// Runtime's <see cref="TimeProvider"/> and honor cancellation.
+/// </summary>
+public sealed record RuntimeRetryPolicy
+{
+    public TimeSpan BaseDelay { get; init; } = TimeSpan.FromSeconds(2);
+
+    public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Symmetric jitter as a fraction of the computed delay, in [0, 1].</summary>
+    public double JitterRatio { get; init; } = 0.2;
+
+    /// <summary>Wait at least the provider's Retry-After (still capped at <see cref="MaxDelay"/>).</summary>
+    public bool RespectRetryAfter { get; init; } = true;
+
+    /// <summary>Uniform random source in [0, 1) for jitter; defaults to <see cref="Random.Shared"/>.</summary>
+    public Func<double>? RandomSource { get; init; }
+
+    /// <summary>
+    /// Delay before the retry that follows failed attempt <paramref name="failedAttempt"/> (1-based):
+    /// <c>min(BaseDelay * 2^(n-1), MaxDelay)</c> with jitter, raised to Retry-After when respected.
+    /// </summary>
+    public TimeSpan ComputeDelay(int failedAttempt, TimeSpan? retryAfter = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(failedAttempt, 1);
+        var maxMs = MaxDelay.TotalMilliseconds;
+        var exponent = Math.Min(failedAttempt - 1, 62);
+        var delayMs = Math.Min(BaseDelay.TotalMilliseconds * Math.Pow(2, exponent), maxMs);
+        if (JitterRatio > 0 && delayMs > 0)
+        {
+            var sample = RandomSource?.Invoke() ?? Random.Shared.NextDouble();
+            delayMs += delayMs * JitterRatio * (2 * Math.Clamp(sample, 0, 1) - 1);
+        }
+        if (RespectRetryAfter && retryAfter is { } requested && requested.TotalMilliseconds > delayMs)
+        {
+            delayMs = requested.TotalMilliseconds;
+        }
+        return TimeSpan.FromMilliseconds(Math.Clamp(delayMs, 0, maxMs));
+    }
+
+    internal void Validate()
+    {
+        if (BaseDelay < TimeSpan.Zero || MaxDelay < BaseDelay)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxDelay), "Retry delays must satisfy 0 <= BaseDelay <= MaxDelay.");
+        }
+        if (!(JitterRatio >= 0 && JitterRatio <= 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(JitterRatio), "JitterRatio must be in [0, 1].");
+        }
+    }
+}
+
+public enum RuntimeFinalizationToolCallHandling
+{
+    /// <summary>Discard tool calls, record a warning, and keep the text answer.</summary>
+    IgnoreAndUseText = 0,
+
+    /// <summary>Fail the Turn closed when the model still calls tools.</summary>
+    FailClosed = 1
+}
+
+public enum RuntimeToolFinalizationReason
+{
+    ToolCallBudget = 0,
+    Deadline = 1,
+    StepReserve = 2
+}
+
+/// <summary>
+/// Moves a Turn into a tool-free finalization Step once a tool budget is nearly
+/// spent. The check runs after each committed tool batch; when it triggers, the
+/// instruction is appended as a user message and every later Step of the Turn
+/// exposes no tools. It triggers at most once per Turn and the decision is
+/// recorded in reducer state, checkpoints and audit rather than re-read from
+/// the clock.
+/// </summary>
+public sealed record RuntimeToolFinalizationPolicy
+{
+    /// <summary>Trigger once the Turn's tool-call count reaches this value.</summary>
+    public int? AfterToolCalls { get; init; }
+
+    /// <summary>Turn deadline, relative to the Turn's <c>CreatedAt</c>.</summary>
+    public TimeSpan? Deadline { get; init; }
+
+    /// <summary>Fraction of <see cref="Deadline"/> after which finalization triggers.</summary>
+    public double DeadlineFraction { get; init; } = 0.85;
+
+    /// <summary>Trigger when only the final Step of the Step budget remains.</summary>
+    public bool ReserveFinalStep { get; init; } = true;
+
+    /// <summary>User message appended when finalization triggers.</summary>
+    public required string Instruction { get; init; }
+
+    public RuntimeFinalizationToolCallHandling ToolCallHandling { get; init; }
+        = RuntimeFinalizationToolCallHandling.IgnoreAndUseText;
+
+    internal void Validate()
+    {
+        if (AfterToolCalls is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(AfterToolCalls), "AfterToolCalls must be positive.");
+        }
+        if (Deadline is { } deadline && deadline <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Deadline), "Deadline must be positive.");
+        }
+        if (!(DeadlineFraction > 0 && DeadlineFraction <= 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(DeadlineFraction), "DeadlineFraction must be in (0, 1].");
+        }
+        if (string.IsNullOrWhiteSpace(Instruction))
+        {
+            throw new ArgumentException("A finalization instruction is required.", nameof(Instruction));
+        }
+        if (!Enum.IsDefined(ToolCallHandling))
+        {
+            throw new ArgumentOutOfRangeException(nameof(ToolCallHandling));
+        }
+    }
 }
 
 public sealed record RuntimeAgentLoopResult(
@@ -175,7 +313,10 @@ public enum RuntimeTerminationDecisionKind
     Accept = 0,
     Continue = 1,
     RequireTool = 2,
-    FailClosed = 3
+    FailClosed = 3,
+
+    /// <summary>Continue, but expose no tools on the next Step only.</summary>
+    ContinueWithoutTools = 4
 }
 
 public sealed record RuntimeTerminationDecision(
@@ -188,6 +329,14 @@ public sealed record RuntimeTerminationDecision(
 
     public static RuntimeTerminationDecision Continue(string feedback)
         => new(RuntimeTerminationDecisionKind.Continue, feedback);
+
+    /// <summary>
+    /// Like <see cref="Continue"/>, but the next Step exposes no tools, so a
+    /// ToolFreeStepsOnly response format applies to it. Counts against the
+    /// continuation and Step budgets.
+    /// </summary>
+    public static RuntimeTerminationDecision ContinueWithoutTools(string feedback)
+        => new(RuntimeTerminationDecisionKind.ContinueWithoutTools, feedback);
 
     public static RuntimeTerminationDecision RequireTool(string toolName, string? feedback = null)
         => new(RuntimeTerminationDecisionKind.RequireTool, feedback, toolName);

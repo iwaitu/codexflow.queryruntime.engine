@@ -35,33 +35,32 @@ var schemaJson = """
 """;
 
 using var schemaDoc = JsonDocument.Parse(schemaJson);
-var jsonSchemaFormat = ChatResponseFormat.ForJsonSchema(
+// The schema is a provider-free Runtime parameter: the Engine records the format
+// in effect for each Step and MeaiRuntimeModelClient maps it to
+// ChatResponseFormat.ForJsonSchema. ToolFreeStepsOnly would withhold it from
+// Steps that expose tools; this turn exposes none, so AllSteps is equivalent.
+var responseFormat = RuntimeResponseFormat.ForJsonSchema(
     schemaDoc.RootElement,
     schemaName: "code_review_report",
-    schemaDescription: "Enforces strict structural compliance for automated code review results.");
+    schemaDescription: "Enforces strict structural compliance for automated code review results.",
+    scope: RuntimeResponseFormatScope.ToolFreeStepsOnly);
 
-Console.WriteLine("[1] JSON Schema ResponseFormat created:");
-Console.WriteLine($"    Schema Name: code_review_report");
-Console.WriteLine($"    Format Type: {jsonSchemaFormat.GetType().Name}");
+Console.WriteLine("[1] Runtime JSON Schema ResponseFormat created:");
+Console.WriteLine($"    Schema Name: {responseFormat.SchemaName}");
+Console.WriteLine($"    Kind: {responseFormat.Kind}, Scope: {responseFormat.Scope}");
+Console.WriteLine($"    Schema SHA-256: {responseFormat.ComputeSchemaSha256()}");
 
-if (jsonSchemaFormat is ChatResponseFormatJson jsonFormat && jsonFormat.Schema.HasValue)
+// 2. Provider-specific options stay in the host options factory; the response
+// format is no longer set here because the Runtime parameter overrides it.
+VllmChatOptions CreateChatOptions(RuntimeModelRequest step) => new()
 {
-    Console.WriteLine($"    Schema Root Element Type: {jsonFormat.Schema.Value.ValueKind}");
-}
-
-// 2. Configure VllmChatOptions with the strict Schema
-var chatOptions = new VllmChatOptions
-{
-    ResponseFormat = jsonSchemaFormat,
     Temperature = 0.1f,
-    MaxOutputTokens = 1024,
-    ThinkingEnabled = false // Structured outputs pair with direct guided sampling
+    MaxOutputTokens = step.Parameters.MaxOutputTokens,
+    ThinkingEnabled = false, // Structured outputs pair with direct guided sampling
+    EnableSkills = false
 };
 
-Console.WriteLine($"\n[2] VllmChatOptions configured:");
-Console.WriteLine($"    ResponseFormat is JSON Schema: {chatOptions.ResponseFormat is ChatResponseFormatJson j && j.Schema.HasValue}");
-Console.WriteLine($"    Temperature: {chatOptions.Temperature}");
-Console.WriteLine($"    MaxOutputTokens: {chatOptions.MaxOutputTokens}");
+Console.WriteLine($"\n[2] VllmChatOptions factory configured (Temperature 0.1, thinking disabled).");
 
 // 3. Mock simulated model response strictly conforming to schema
 var simulatedJsonResponse = """
@@ -78,11 +77,7 @@ using var evidence = new LiveEvidenceHandler(evidenceDirectory);
 using var http = new HttpClient(evidence);
 using var liveModel = endpoint == null ? null : new MeaiRuntimeModelClient(
     QreModelProviderSelector.CreateDefault().CreateClient(endpoint, apiKey, model, httpClient: http),
-    _ => new VllmChatOptions
-    {
-        ResponseFormat = jsonSchemaFormat, Temperature = 0.1f, MaxOutputTokens = 1024,
-        ThinkingEnabled = false, EnableSkills = false
-    });
+    CreateChatOptions);
 IAgentRuntime runtime = new AgentRuntime(liveModel is null ? new StaticRuntimeModelClient(simulatedJsonResponse) : liveModel);
 
 var request = new RuntimeAgentLoopRequest(
@@ -94,7 +89,7 @@ var request = new RuntimeAgentLoopRequest(
         "client.GetStringAsync(\"https://example.invalid\").Result; Blocking on an asynchronous task is a violation. " +
         "Set approved=false and include at least one violation. Do not claim to have compiled the code.")])],
     [],
-    new RuntimeModelParameters(Model: model, MaxOutputTokens: 1024, RequireJsonObject: true),
+    new RuntimeModelParameters(Model: model, MaxOutputTokens: 1024) { ResponseFormat = responseFormat },
     new RuntimePolicySnapshot("schema-demo", "none"),
     new RuntimeEnvironmentSnapshot("local", Path.GetFullPath("."), "schema-demo"),
     new RuntimeBudgetSnapshot(maxSteps: 2, maxToolCalls: 0));

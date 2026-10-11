@@ -511,7 +511,10 @@ public sealed class RuntimeJsonlAuditStore : IRuntimeAuditSink, IAsyncDisposable
                 MessageCount: value.Request.Messages.Count,
                 ItemCount: value.Request.Messages.Sum(static message => message.Items.Count),
                 ToolCount: value.Request.Tools.Count,
-                HistoryVersion: value.Request.HistoryVersion),
+                HistoryVersion: value.Request.HistoryVersion)
+            {
+                ResponseFormatKind = value.ResponseFormatKind
+            },
             RuntimeModelResponseAuditPayload value => new RuntimePublicAuditPayload(
                 ItemCount: value.Output.Items.Count,
                 ToolCallCount: value.Output.ToolCalls.Count,
@@ -539,6 +542,16 @@ public sealed class RuntimeJsonlAuditStore : IRuntimeAuditSink, IAsyncDisposable
                 TotalSteps: value.TotalSteps,
                 ContinuationCount: value.ContinuationCount,
                 HistoryVersion: value.HistoryVersion),
+            RuntimeToolFinalizationAuditPayload value => new RuntimePublicAuditPayload(
+                ToolCallCount: value.ToolCallCount)
+            {
+                Decision = value.Reason,
+                ElapsedMs = value.ElapsedMs
+            },
+            RuntimeTerminationDecisionAuditPayload value => new RuntimePublicAuditPayload
+            {
+                Decision = value.Decision
+            },
             RuntimePublicAuditPayload value => value,
             _ => throw new InvalidOperationException("Unsupported C6 audit payload projection.")
         };

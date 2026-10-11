@@ -200,6 +200,14 @@ class Examples(unittest.TestCase):
         self.assertIn('Skills workflow completed successfully.', output)
         self.assertIn('code-reviewer', output)
 
+    def test_embedded_structured_extraction(self):
+        with tempfile.TemporaryDirectory() as audit_dir:
+            output = self.run_command(['dotnet', 'run', '--project', ROOT / 'examples/EmbeddedStructuredExtraction',
+                                       '--', '--audit-dir', audit_dir])
+        self.assertIn('Embedded structured extraction completed.', output)
+        self.assertIn('Tool budget triggered tool-free finalization', output)
+        self.assertIn('Strict data-only replay reproduces the result', output)
+
     def test_structured_outputs_json_schema(self):
         output = self.run_command(['dotnet', 'run', '--project', ROOT / 'examples/StructuredOutputsJsonSchema'])
         self.assertIn('JSON Schema structured output demo completed successfully.', output)

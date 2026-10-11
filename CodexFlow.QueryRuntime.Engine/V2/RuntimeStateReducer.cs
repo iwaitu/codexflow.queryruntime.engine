@@ -153,7 +153,9 @@ public static class RuntimeStateReducer
             Progress = turn.Progress with
             {
                 Usage = usage,
-                LastModelStopReason = snapshot.StopReason
+                LastModelStopReason = snapshot.StopReason,
+                // A one-shot tool-free request is consumed once its Step commits output.
+                NextStepWithoutTools = false
             }
         };
         return ReplaceActiveStep(session, updatedTurn, updatedStep);
@@ -249,6 +251,16 @@ public static class RuntimeStateReducer
     public static RuntimeSessionState RecordContinuation(
         RuntimeSessionState session,
         string? requiredToolName = null)
+        => RecordContinuation(session, requiredToolName, withoutTools: false);
+
+    /// <summary>
+    /// Records a semantic continuation. With <paramref name="withoutTools"/>, the
+    /// next Step exposes no tools.
+    /// </summary>
+    public static RuntimeSessionState RecordContinuation(
+        RuntimeSessionState session,
+        string? requiredToolName,
+        bool withoutTools)
     {
         var turn = RequireRunningTurn(session);
         var step = turn.Steps.LastOrDefault();
@@ -270,9 +282,37 @@ public static class RuntimeStateReducer
                 {
                     ContinuationCount = turn.Progress.ContinuationCount + 1,
                     RequiredToolName = normalized ?? turn.Progress.RequiredToolName,
-                    RequiredToolSatisfied = normalized == null && turn.Progress.RequiredToolSatisfied
+                    RequiredToolSatisfied = normalized == null && turn.Progress.RequiredToolSatisfied,
+                    NextStepWithoutTools = withoutTools || turn.Progress.NextStepWithoutTools
                 }
             });
+    }
+
+    /// <summary>
+    /// Records that budget-driven tool finalization triggered after a committed
+    /// tool batch. Every later Step of the Turn exposes no tools.
+    /// </summary>
+    public static RuntimeSessionState RecordToolFinalization(
+        RuntimeSessionState session,
+        RuntimeToolFinalizationReason reason)
+    {
+        var turn = RequireRunningTurn(session);
+        if (!Enum.IsDefined(reason))
+        {
+            ThrowInvariant("invalid_finalization_reason", "The tool finalization reason is not defined.");
+        }
+        var step = turn.Steps.LastOrDefault();
+        if (step == null || step.Phase != RuntimeStepPhase.Completed || step.ToolInvocations is not { Count: > 0 })
+        {
+            ThrowInvariant("finalization_before_tool_batch", "Tool finalization requires a completed tool Step.");
+        }
+        if (turn.Progress.FinalizationReason != null)
+        {
+            ThrowInvariant("finalization_already_triggered", "Tool finalization can trigger only once per Turn.");
+        }
+        return ReplaceActiveTurn(
+            session,
+            turn with { Progress = turn.Progress with { FinalizationReason = reason } });
     }
 
     public static RuntimeSessionState AdvanceHistory(RuntimeSessionState session, int committedBatches = 1)
