@@ -77,7 +77,8 @@ public sealed class RuntimeAgentLoop
                 checkpoint.Session.HistoryVersion,
                 checkpoint.NextHistoryMessageSequence,
                 contextManager.Options,
-                checkpoint.HistoryBlobs);
+                checkpoint.HistoryBlobs,
+                checkpoint.HistoryNormalizationEvents);
         var preparedContexts = new List<PreparedRuntimeContext>();
         var contextEvents = new List<RuntimeContextEvent>();
         await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
@@ -2004,6 +2005,15 @@ public sealed class RuntimeAgentLoop
                 RuntimeErrorCategory.RuntimeInvariantViolation,
                 "checkpoint_request_mismatch",
                 "The recovery request does not match the frozen checkpoint request."));
+        }
+        if (request.ContextManager?.Options.TruncationPolicy is
+            RuntimeContextTruncationPolicy.FailClosedOnInitialMessages or RuntimeContextTruncationPolicy.FailClosedOnAny &&
+            checkpoint.HistoryNormalizationEvents == null)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.SchemaIncompatible,
+                "checkpoint_context_history_missing",
+                "A fail-closed context policy requires durable history normalization evidence."));
         }
         if (attempt.AttemptId == checkpoint.Attempt.AttemptId ||
             attempt.ParentAttemptId != checkpoint.Attempt.AttemptId ||

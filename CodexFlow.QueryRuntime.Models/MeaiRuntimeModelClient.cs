@@ -130,12 +130,24 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         {
             yield break;
         }
-        yield return new RuntimeWarningEvent(new RuntimeWarning(
+        var fallbackWarning = new RuntimeWarningEvent(new RuntimeWarning(
             "empty_stream_fallback",
             "The provider stream ended without content; the request was resent without streaming."));
+        // Do not expose an event before the resend starts returning results:
+        // a content-free provider failure must remain eligible for loop retry.
+        var warningEmitted = false;
         await foreach (var runtimeEvent in run(false).WithCancellation(ct).ConfigureAwait(false))
         {
+            if (!warningEmitted)
+            {
+                yield return fallbackWarning;
+                warningEmitted = true;
+            }
             yield return runtimeEvent;
+        }
+        if (!warningEmitted)
+        {
+            yield return fallbackWarning;
         }
     }
 

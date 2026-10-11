@@ -74,7 +74,11 @@ var chatClient = offline
         endpoint!, apiKey, model, httpClient: QreModelHttpErrorCaptureHandler.CreateHttpClient());
 using var modelClient = new MeaiRuntimeModelClient(
     chatClient,
-    _ => new ChatOptions { Temperature = 0.1f, MaxOutputTokens = 1024 },
+    _ => new VllmChatOptions
+    {
+        Temperature = 0.1f, MaxOutputTokens = 1024,
+        ThinkingEnabled = false, EnableSkills = false
+    },
     new MeaiRuntimeModelClientOptions
     {
         ClassifyProviderErrors = true,

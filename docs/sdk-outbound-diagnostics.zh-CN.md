@@ -55,9 +55,9 @@ qre diagnose rebuild fixture.json [--json]
 
 `RequireJsonObject = false` 等同于未指定。工具与模型名是包内、区分大小写的别名；跨包别名需显式 `--alias-map` 才能比较。跨运行的“最早差异”不是已证明的根因。
 
-## 能力矩阵（VllmChatClient 2.0.25）
+## 能力矩阵（VllmChatClient 2.0.26）
 
-所有被接受的组合：使用注入的传输；每次流式调用一次 Handler 可见发送；流式路径无重试；请求为延迟序列化的 `JsonContent` 且长度未知；SDK 会在释放 chat client 时释放注入的 `HttpClient`，并向其写入默认 Header；流式只上报工具调用的结束原因。
+所有被接受的组合：使用注入的传输；每次流式调用一次 Handler 可见发送；流式路径无重试；请求为延迟序列化的 `JsonContent` 且长度未知；SDK 会在释放 chat client 时释放注入的 `HttpClient`，并向其写入默认 Header。使用共享基类的客户端在内容和用量之后单独发出 provider 的结束更新；Gemini 专用客户端的 OpenAI 兼容文本流仍不报告常规 Stop，其既有能力仍为 `tool_calls_only`。
 
 | Provider | chat_completions | responses | anthropic_messages |
 | --- | --- | --- | --- |

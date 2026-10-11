@@ -89,14 +89,18 @@ public sealed class SdkTransportCapabilityTests
 
         var client = QreModelProviderSelector.CreateDefault().CreateClient(descriptor);
         var finishReasons = new List<ChatFinishReason>();
+        var sawCompletion = false;
         await foreach (var update in client.GetStreamingResponseAsync(
                            [new ChatMessage(ChatRole.User, "hi")],
                            new ChatOptions { MaxOutputTokens = 12, Temperature = 0.25f, ResponseFormat = ChatResponseFormat.Json },
                            TestContext.Current.CancellationToken))
         {
+            Assert.False(sawCompletion, "The SDK emitted another update after its completion.");
             if (update.FinishReason is { } reason)
             {
                 finishReasons.Add(reason);
+                sawCompletion = true;
+                Assert.Empty(update.Contents);
             }
         }
 
@@ -105,8 +109,17 @@ public sealed class SdkTransportCapabilityTests
         Assert.Equal(cell.RouteTemplate!.Replace("{endpoint}", "/v1", StringComparison.Ordinal), send.Path);
         Assert.Equal("JsonContent", send.Content!.GetType().Name);
         Assert.Null(Assert.Single(transport.ContentLengthsBeforeSend));
-        Assert.Equal("tool_calls_only", cell.StreamingFinishReason);
-        Assert.Empty(finishReasons);
+        if (providerId == "gemini")
+        {
+            // The dedicated client's OpenAI-compatible text stream still omits Stop.
+            Assert.Equal("tool_calls_only", cell.StreamingFinishReason);
+            Assert.Empty(finishReasons);
+        }
+        else
+        {
+            Assert.Equal("provider_finish_reasons", cell.StreamingFinishReason);
+            Assert.Equal(ChatFinishReason.Stop, Assert.Single(finishReasons));
+        }
         Assert.True(cell.MutatesInjectedDefaultHeaders);
         Assert.True(http.DefaultRequestHeaders.Authorization != null || http.DefaultRequestHeaders.Contains("x-api-key"));
 

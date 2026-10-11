@@ -194,6 +194,10 @@ public sealed record RuntimeCheckpointDocument(
     string FinalText,
     string? ReconciliationReason = null)
 {
+    /// <summary>Durable normalization evidence for opt-in fail-closed context policies.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<RuntimeContextEvent>? HistoryNormalizationEvents { get; init; }
+
     public static RuntimeCheckpointDocument Capture(
         long sequence,
         RuntimeRunAttempt attempt,
@@ -245,7 +249,14 @@ public sealed record RuntimeCheckpointDocument(
                 .Select(static blob => blob with { Data = blob.Data.ToArray() })
                 .ToArray()),
             finalText ?? string.Empty,
-            reason);
+            reason)
+        {
+            HistoryNormalizationEvents = request.ContextManager?.Options.TruncationPolicy is
+                RuntimeContextTruncationPolicy.FailClosedOnInitialMessages or RuntimeContextTruncationPolicy.FailClosedOnAny
+                ? Array.AsReadOnly(canonicalHistory.NormalizationEvents.Select(static value =>
+                    value with { ItemIds = Array.AsReadOnly(value.ItemIds.ToArray()) }).ToArray())
+                : null
+        };
     }
 
     private static RuntimeSessionState SnapshotSession(RuntimeSessionState session)
@@ -652,7 +663,8 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
         ValidateCanonicalHistory(
             checkpoint.CanonicalHistory,
             checkpoint.Session.HistoryVersion,
-            checkpoint.NextHistoryMessageSequence);
+            checkpoint.NextHistoryMessageSequence,
+            checkpoint.HistoryNormalizationEvents);
         ValidateHistoryBlobs(checkpoint.HistoryBlobs);
         ValidateHistoryBlobReferences(checkpoint.CanonicalHistory, checkpoint.HistoryBlobs);
         ValidateStableBoundary(checkpoint, turn);
@@ -661,11 +673,13 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
     private static void ValidateCanonicalHistory(
         IReadOnlyList<RuntimeHistoryMessage> history,
         long historyVersion,
-        long nextMessageSequence)
+        long nextMessageSequence,
+        IReadOnlyList<RuntimeContextEvent>? normalizationEvents)
     {
         try
         {
-            _ = RuntimeHistory.RestoreCanonical(history, historyVersion, nextMessageSequence);
+            _ = RuntimeHistory.RestoreCanonical(history, historyVersion, nextMessageSequence,
+                options: null, blobs: null, normalizationEvents: normalizationEvents);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException or OverflowException)
         {

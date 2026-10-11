@@ -147,7 +147,10 @@ public sealed record RuntimeResponseFormat(
            };
 
     public override int GetHashCode()
-        => HashCode.Combine(Kind, Scope, SchemaName, SchemaDescription, ComputeSchemaSha256());
+        // DeepEquals ignores object property order and numeric spelling. The
+        // diagnostic schema digest intentionally preserves both, so it cannot
+        // participate in an equality-compatible hash.
+        => HashCode.Combine(Kind, Scope, SchemaName, SchemaDescription);
 }
 
 public sealed record RuntimeToolDescriptor(

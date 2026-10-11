@@ -52,7 +52,7 @@ public sealed record QreTransportCapability
     public bool MutatesInjectedDefaultHeaders { get; init; }
 
     /// <summary>Which finish reasons the streaming path surfaces to MEAI.</summary>
-    public string StreamingFinishReason { get; init; } = "tool_calls_only";
+    public string StreamingFinishReason { get; init; } = "provider_finish_reasons";
 
     /// <summary>Registered SDK request rewrites; used as comparison rules with this evidence.</summary>
     public IReadOnlyList<string> RegisteredTransforms { get; init; } = [];
@@ -70,7 +70,7 @@ public sealed record QreTransportCapability
 /// </summary>
 public static class QreTransportCapabilityMatrix
 {
-    public const string VerifiedSdkVersion = "2.0.25";
+    public const string VerifiedSdkVersion = "2.0.26";
 
     public const string SharedHostHttpClientScenario = QreCapabilityStatus.Unsupported;
 
@@ -191,6 +191,7 @@ public static class QreTransportCapabilityMatrix
                     },
                     InjectedTransportUsed = true,
                     VisibleSendsPerStreamingCall = 1,
+                    StreamingFinishReason = provider == "gemini" ? "tool_calls_only" : "provider_finish_reasons",
                     DisposesInjectedHttpClient = true,
                     MutatesInjectedDefaultHeaders = true,
                     RegisteredTransforms = transforms,

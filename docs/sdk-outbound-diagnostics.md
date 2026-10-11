@@ -76,12 +76,14 @@ both sides were completely observed and a rule supports the combination.
 package-local, case-sensitive aliases; cross-package alias comparison needs an
 explicit `--alias-map`. The earliest cross-run difference is not a proven root cause.
 
-## Capability matrix (VllmChatClient 2.0.25)
+## Capability matrix (VllmChatClient 2.0.26)
 
 All accepted cells: injected transport used, one handler-visible send per
 streaming call, no streaming retry, deferred `JsonContent` with unknown length,
 the SDK disposes the injected `HttpClient` and writes default headers onto it,
-and only tool-call finish reasons are surfaced.
+and clients using the shared base emit a content-free provider completion
+after all content and usage. Gemini's dedicated OpenAI-compatible text stream
+still omits the normal Stop reason; its legacy capability remains `tool_calls_only`.
 
 | Provider | chat_completions | responses | anthropic_messages |
 | --- | --- | --- | --- |

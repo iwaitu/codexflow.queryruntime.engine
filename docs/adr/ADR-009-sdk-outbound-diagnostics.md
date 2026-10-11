@@ -86,10 +86,11 @@ upgrade that changes them fails CI instead of silently overstating coverage.
   accounting for its successful return on a dropped item.
 
 - The capability matrix (`QreTransportCapabilityMatrix`) marks accepted cells
-  `verified` only for SDK 2.0.25; any other SDK version reports `unverified`
+  `verified` only for the locked SDK (2.0.26 in QRE 0.24.0, previously 2.0.25); any other SDK version reports `unverified`
   and adapter→HTTP rules become `not_comparable`.
-- E6 means text-only fixtures cannot demonstrate a provider-surfaced `Stop`
-  through this SDK, even though the offline transport sends one.
+- The original E6 missing-`Stop` limitation is resolved for the shared-base
+  clients in SDK 2.0.26. Gemini's dedicated OpenAI-compatible text stream
+  retains that limitation, as asserted by the capability tests.
 - Out-of-scope follow-ups: Runtime raw exception message governance (E5),
   shared `ChatOptions` ownership, resolving an accepted `RequiredToolName` to the
   declared canonical name, an SDK ownership switch for injected clients (E3),

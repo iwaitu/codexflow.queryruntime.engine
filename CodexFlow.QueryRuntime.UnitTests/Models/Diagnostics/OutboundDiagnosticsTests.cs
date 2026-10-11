@@ -81,8 +81,8 @@ public sealed class OutboundDiagnosticsTests
         Assert.False(started.HttpRequest.ContentLengthKnown);
         var ended = sink.OfType(QreDiagnosticEventTypes.ModelCallEnded).Single().ModelOutcome!;
         Assert.Equal("completed", ended.Outcome);
-        Assert.False(ended.FinishReasonObserved);
-        Assert.Equal(QreDiagnosticClassifications.MissingFinishReason, ended.Classification);
+        Assert.True(ended.FinishReasonObserved);
+        Assert.Equal(QreDiagnosticClassifications.None, ended.Classification);
         Assert.Equal(1, ended.HttpAttemptCount);
         Assert.False(diagnostics.GetCounters().EvidenceIncomplete);
     }

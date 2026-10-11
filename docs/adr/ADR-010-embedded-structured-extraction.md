@@ -4,7 +4,7 @@
 - Date: 2026-10-11
 - Owners: QueryRuntime maintainers
 - Plan: [ia-engine integration work plan](../ia-engine-integration-work-plan.zh-CN.md)
-- Verified dependency: `VllmChatClient` 2.0.25, `Microsoft.Extensions.AI` 10.10.0
+- Verified dependency: `VllmChatClient` 2.0.26, `Microsoft.Extensions.AI` 10.10.0
 
 ## Context
 

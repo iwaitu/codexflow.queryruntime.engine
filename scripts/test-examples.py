@@ -78,7 +78,7 @@ class Examples(unittest.TestCase):
     def run_command(self, args, *, expected=0, request=None):
         result = subprocess.run([str(x) for x in args], cwd=ROOT, env=self.env,
                                 input=json.dumps(request) if request else None,
-                                capture_output=True, text=True, timeout=300)
+                                capture_output=True, text=True, encoding='utf-8', timeout=300)
         out = (result.stdout or "") + (result.stderr or "")
         self.assertEqual(result.returncode, expected, out)
         return result.stdout or ""

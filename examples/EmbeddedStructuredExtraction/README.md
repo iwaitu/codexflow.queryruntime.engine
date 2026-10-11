@@ -46,6 +46,8 @@ dotnet run --project examples/EmbeddedStructuredExtraction -- --live --trace-dat
 错误统一抛成不带状态码的 `InvalidOperationException`，该 handler 记录本次调用的状态码与 `Retry-After`，
 分类器据此区分 429/5xx/401。
 
+本例通过 `VllmChatOptions` 显式关闭 thinking 和自动 skill 注入，使用宿主声明的工具与 1024-token 输出预算。
+
 ## 目录结构
 
 ```text

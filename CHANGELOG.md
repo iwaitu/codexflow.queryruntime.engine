@@ -74,6 +74,19 @@ calls, retries, context projection, checkpoints and audit records are unchanged.
 
 ### Compatibility and migration
 
+- `VllmChatClient` is upgraded to **2.0.26** across the runtime and examples.
+  Array-valued tool results remain strings on the wire, and streaming tool
+  calls finish only after all content and usage have been emitted.
+- Fail-closed context policies retain history normalization evidence in
+  checkpoints, so resuming cannot bypass an earlier evidence truncation.
+  Legacy checkpoints remain resumable under `Allow`; strict policies reject
+  checkpoints without the required evidence with `checkpoint_context_history_missing`.
+- A content-free transient failure during empty-stream fallback remains
+  retryable. The fallback warning is emitted once the resend returns events.
+- Structurally equal response-format schemas now have equal hash codes even
+  when object properties or numeric spellings differ. The diagnostic SHA-256
+  retains its existing property-order-sensitive definition.
+
 - **Schema versions are unchanged** (`RuntimeAuditSchema`, `RuntimeCheckpointSchema`
   and `QueryRuntimeProtocolSchema` remain `1`). New fields are optional and
   omitted when unset, so data written without the new features is

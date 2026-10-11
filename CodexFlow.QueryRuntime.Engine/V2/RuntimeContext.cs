@@ -22,7 +22,10 @@ public sealed record RuntimeHistorySnapshot(
     long Version,
     IReadOnlyList<RuntimeHistoryMessage> Messages,
     IReadOnlyDictionary<string, RuntimeHistoryBlob> Blobs,
-    long NextMessageSequence);
+    long NextMessageSequence)
+{
+    public IReadOnlyList<RuntimeContextEvent> NormalizationEvents { get; init; } = [];
+}
 
 public sealed record RuntimeHistoryBlob(
     string Digest,
@@ -262,6 +265,7 @@ public sealed class RuntimeHistory
     private readonly RuntimeContextOptions _options;
     private readonly List<RuntimeHistoryMessage> _messages = [];
     private readonly List<RuntimeContextEvent> _pendingEvents = [];
+    private readonly List<RuntimeContextEvent> _normalizationEvents = [];
     private readonly HashSet<string> _systemFragments = new(StringComparer.Ordinal);
     private readonly HashSet<string> _toolCalls = new(StringComparer.Ordinal);
     private readonly HashSet<string> _toolResults = new(StringComparer.Ordinal);
@@ -300,6 +304,15 @@ public sealed class RuntimeHistory
         long nextMessageSequence,
         RuntimeContextOptions? options = null,
         IReadOnlyList<RuntimeHistoryBlob>? blobs = null)
+        => RestoreCanonical(canonicalMessages, version, nextMessageSequence, options, blobs, null);
+
+    internal static RuntimeHistory RestoreCanonical(
+        IReadOnlyList<RuntimeHistoryMessage> canonicalMessages,
+        long version,
+        long nextMessageSequence,
+        RuntimeContextOptions? options,
+        IReadOnlyList<RuntimeHistoryBlob>? blobs,
+        IReadOnlyList<RuntimeContextEvent>? normalizationEvents)
     {
         ArgumentNullException.ThrowIfNull(canonicalMessages);
         if (version < 0)
@@ -375,6 +388,20 @@ public sealed class RuntimeHistory
             }
             history._blobBytes = checked(history._blobBytes + data.Length);
         }
+        foreach (var contextEvent in normalizationEvents ?? [])
+        {
+            if (contextEvent == null || contextEvent.ItemIds == null ||
+                contextEvent.HistoryVersion < 0 || contextEvent.HistoryVersion > version ||
+                contextEvent.Kind is not (RuntimeContextEventKind.HistoryNormalized or RuntimeContextEventKind.ItemReplaced) ||
+                string.IsNullOrWhiteSpace(contextEvent.Code) ||
+                contextEvent.ItemIds.Any(static id => string.IsNullOrWhiteSpace(id.Value)))
+            {
+                throw new InvalidDataException("Canonical Runtime history normalization event is invalid.");
+            }
+            var restoredEvent = contextEvent with { ItemIds = Array.AsReadOnly(contextEvent.ItemIds.ToArray()) };
+            history._normalizationEvents.Add(restoredEvent);
+            history._pendingEvents.Add(restoredEvent);
+        }
         return history;
     }
 
@@ -394,7 +421,12 @@ public sealed class RuntimeHistory
                 static pair => pair.Key,
                 static pair => pair.Value with { Data = pair.Value.Data.ToArray() },
                 StringComparer.Ordinal)),
-            _messageSequence);
+            _messageSequence)
+        {
+            NormalizationEvents = _normalizationEvents.Count == 0 ? [] :
+                Array.AsReadOnly(_normalizationEvents.Select(static value =>
+                    value with { ItemIds = Array.AsReadOnly(value.ItemIds.ToArray()) }).ToArray())
+        };
 
     public IReadOnlyList<RuntimeMessage> ToMessages()
         => Array.AsReadOnly(_messages.Select(static entry => Snapshot(entry.Message)).ToArray());
@@ -641,13 +673,20 @@ public sealed class RuntimeHistory
         RuntimeHistoryItemId itemId,
         string? replacementId = null,
         string? detail = null)
-        => _pendingEvents.Add(new RuntimeContextEvent(
+    {
+        var contextEvent = new RuntimeContextEvent(
             replacementId == null ? RuntimeContextEventKind.HistoryNormalized : RuntimeContextEventKind.ItemReplaced,
             version,
             code,
             Array.AsReadOnly([itemId]),
             replacementId,
-            detail));
+            detail);
+        _pendingEvents.Add(contextEvent);
+        if (_options.TruncationPolicy != RuntimeContextTruncationPolicy.Allow)
+        {
+            _normalizationEvents.Add(contextEvent);
+        }
+    }
 
     private static RuntimeHistoryMessage SnapshotMessage(RuntimeHistoryMessage entry)
         => entry with
