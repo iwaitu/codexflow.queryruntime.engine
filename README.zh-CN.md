@@ -10,7 +10,7 @@ CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发�
 
 QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中，也可以编译为零外部依赖的独立 `qre` Native AOT 命令行工具直接运行，完全解耦于 CodexFlow Web 平台。
 
-当前仓库处于 **0.23.2 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
+当前仓库处于 **0.24.0 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
 
 ---
 
@@ -700,12 +700,12 @@ var options = new VllmChatOptions
 你可以直接将 QRE 核心与模型库作为 NuGet 包集成到任意 C# / .NET 10 应用中（Web API、后台服务或桌面客户端）。
 
 ### 1. 引用核心包
-在你的 `.csproj` 中引入官方 NuGet 包（`0.23.2`）：
+在你的 `.csproj` 中引入官方 NuGet 包（`0.24.0`）：
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.23.2" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.23.2" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.24.0" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.24.0" />
 </ItemGroup>
 ```
 
@@ -768,7 +768,7 @@ Console.WriteLine($"\n任务状态: {result.Status}，总步数: {result.Turn.St
 
 ### 3. 宿主工具、结构化抽取与收尾
 
-*（自 `0.24.0-preview.1` 起提供，见 [CHANGELOG](CHANGELOG.md)。）*
+*（自 `0.24.0` 起提供，见 [CHANGELOG](CHANGELOG.md)。）*
 
 对于“只读工具 + 一份结构化结论”的会话（例如抽取并评分一条审查规则），Runtime 提供以下 opt-in 能力；不设置时默认行为完全不变：
 

@@ -5,7 +5,7 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
-## [0.24.0-preview.1] - Unreleased
+## [0.24.0]
 
 Embedded structured-extraction support for hosts that run a read-only tool
 conversation and need one schema-shaped answer (driven by the ia-engine bundle

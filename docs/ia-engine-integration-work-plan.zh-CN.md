@@ -2,7 +2,7 @@
 
 日期：2026-10-11
 目标版本：`0.24.0`（开发期间发布 `0.24.0-preview.N`）
-状态：Q1–Q5、Q7、Q8 已完成；Q9 已完成发布准备（`0.24.0-preview.1`，未推送、未发布到 nuget.org）；Q6 推迟到 0.24.x
+状态：Q1–Q5、Q7、Q8 已完成；Q9 版本定为 `0.24.0`，PR 合并后由 `release.yml` 自动发布；Q6 推迟到 0.24.x
 
 > 本文档是一份**可直接执行的工作计划**。执行会话请从“0. 执行须知”开始，
 > 按“5. 执行顺序”逐项完成，并在“7. 状态跟踪”中更新进度。
@@ -398,4 +398,4 @@ Q1、Q2、Q3 完成后即可先打一个本地 preview 包，ia-engine 可以开
 | Q6 畸形工具调用修复 | P2 | 推迟到 0.24.x | — | 本轮未实现。Q4 分类器已把 `empty function.name` / `function name is empty` 归类为 `ProviderProtocol / malformed_tool_call`（不可重试），可作为后续修复流程的触发点；ia-engine 可先按计划在 `IChatClient` 层用 `DelegatingChatClient` 过渡 |
 | Q7 上下文预算预设与截断策略 | P0 | 已完成 | 否 | `RuntimeContextOptions.ForModelWindow(W)` 沿用默认比例（item 1/4、tool result 1/8、large tool result 1/16、summary 1/16，`ForModelWindow(32000) == Default`）；`TruncationPolicy`（默认 `Allow`）在每个 Step 投影准备后、调用模型前检查上一 Step 以来的上下文事件，`context_truncation_rejected`（`ContextOverflow`，FailClosed）；计入截断的是预算驱动的硬上限、大结果替换与压缩，不含空文本/重复/孤立项等协议归一化；未改变既有事件 kind（硬上限仍为 `HistoryNormalized`，均已带条目 id），以保持默认输出不变；文档见技术指南 §5.11（含中文估算偏差说明）；未实现估算系数注入（计划中为可选项，避免影响回放） |
 | Q8 嵌入式结构化抽取示例 | P1 | 已完成 | 否 | `examples/EmbeddedStructuredExtraction`：离线模式用挂在真实 `MeaiRuntimeModelClient` 后的脚本化 `IChatClient`，覆盖 503 分类重试、空流降级、预算收尾、schema 仅在无工具 Step、`ContinueWithoutTools` JSON 修复、宿主目录审计（`--trace-data public/sanitized/private`）与纯数据回放；已纳入 `scripts/test-examples.py`（11 项全部通过）；更新 `examples/README.md`、README 中英文“嵌入 .NET 应用”章节与示例列表 |
-| Q9 发布 0.24.0 | P0 | 发布准备完成（preview.1 已本地打包） | 否（三个 schema 版本均仍为 1） | `Directory.Build.props` 的 `VersionPrefix` 设为 `0.24.0-preview.1` 而非 `0.24.0`：`release.yml` 会在 main 的 CI 成功后自动发布 `VersionPrefix` 对应版本（若 tag 不存在），直接写 `0.24.0` 会在合并时把正式版发布到 nuget.org；preview 稳定后再改为 `0.24.0`。已打包到 `~/local-nuget`（Engine/Models `0.24.0-preview.1`，AssemblyVersion `0.24.0.0`）。门禁：`queryruntime-baseline-gate.sh --full`（652 单测、AOT publish + native smoke）、`qre-dependency-gate.sh`、`qre-package-smoke.sh ~/local-nuget`、`scripts/test-examples.py`（11 项）全部通过；集成测试 15 项均为环境门控跳过（Docker / 真实 provider 未启用）。新增 `CHANGELOG.md`（含迁移说明）与 `docs/adr/ADR-010-embedded-structured-extraction.md`；`QreCliSmokeTests` 的版本断言随版本更新。未提交、未推送、未发布 |
+| Q9 发布 0.24.0 | P0 | 发布准备完成，合并后自动发布 | 否（三个 schema 版本均仍为 1） | 按维护者决定，`Directory.Build.props` 的 `VersionPrefix` 直接设为 `0.24.0`（跳过 nuget.org 预览版）：`release.yml` 会在 main 的 CI 成功后自动发布该版本。开发期间曾以 `0.24.0-preview.1` 打包到 `~/local-nuget` 供 ia-engine 先行集成。门禁：`queryruntime-baseline-gate.sh --full`（652 单测、AOT publish + native smoke）、`qre-dependency-gate.sh`、`qre-package-smoke.sh`、`scripts/test-examples.py`（11 项）全部通过；集成测试 15 项均为环境门控跳过（Docker / 真实 provider 未启用）。新增 `CHANGELOG.md`（含迁移说明）与 ADR-010；README 包版本与 `QreCliSmokeTests` 版本断言更新为 `0.24.0` |
