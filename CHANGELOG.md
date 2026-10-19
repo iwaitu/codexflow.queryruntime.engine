@@ -5,6 +5,17 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.24.1-ia.20261019.4] (local prerelease, not published)
+
+- With an explicit AfterToolCalls finalization policy, a fully accounted hard-cap
+  denial can hand over to the existing tool-free final step. The cap, denied
+  results, call/result pairs, remaining-step and deadline guards stay in force.
+  Without the policy or with another fatal error, failure behavior is unchanged.
+- Persist and resume that finalized tool-batch boundary only with a matching
+  explicit policy, recorded ToolCallBudget reason, exact hard cap, a remaining
+  step and valid denied/error pairs. Durable write/read/resume performs no tool
+  replay; malformed or forged boundaries remain rejected. No API/schema change.
+
 ## [0.24.1-ia.20261019.3] (local prerelease, not published)
 
 - Fix ToolPipeline budget admission counting a prepared invocation twice. The

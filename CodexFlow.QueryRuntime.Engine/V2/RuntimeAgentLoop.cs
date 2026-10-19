@@ -457,7 +457,8 @@ public sealed class RuntimeAgentLoop
                     {
                         throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.FailClosed, policyFailure);
                     }
-                    if (execution.FatalError != null)
+                    if (execution.FatalError != null &&
+                        !IsFinalizableToolBudgetDenial(execution.FatalError, request, session, stepIndex))
                     {
                         throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.Error, execution.FatalError);
                     }
@@ -2094,6 +2095,22 @@ public sealed class RuntimeAgentLoop
             checked(current.TotalTokens + added.TotalTokens.GetValueOrDefault()),
             additional);
     }
+
+    // With opt-in finalization, the accounted denial at the hard cap hands over to the
+    // tool-free final Step that EvaluateToolFinalization triggers right after; any other
+    // fatal error, a missing threshold or no remaining Step keeps the original failure.
+    private static bool IsFinalizableToolBudgetDenial(
+        RuntimeError error,
+        RuntimeAgentLoopRequest request,
+        RuntimeSessionState session,
+        int stepIndex)
+        => error.Category == RuntimeErrorCategory.ResourceExhausted &&
+           error.Code == "tool_call_budget_exhausted" &&
+           request.ToolFinalization?.AfterToolCalls is { } afterToolCalls &&
+           session.ActiveTurn!.Progress.FinalizationReason == null &&
+           session.ActiveTurn.Progress.ToolCallCount >= afterToolCalls &&
+           session.ActiveTurn.Progress.ToolCallCount >= request.Budget.MaxToolCalls &&
+           stepIndex + 1 < request.Budget.MaxSteps;
 
     private static bool IsTerminalPolicyFailure(RuntimeError? error)
         => error is

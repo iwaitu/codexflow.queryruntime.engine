@@ -857,7 +857,7 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
             {
                 Phase: RuntimeStepPhase.Completed,
                 Output.ToolCalls.Count: > 0
-            } && HasCompleteToolBatch(last),
+            } && HasCompleteToolBatch(last, checkpoint.Request, turn),
             RuntimeCheckpointKind.StepCommitted => active && last is
             {
                 Phase: RuntimeStepPhase.Completed,
@@ -904,7 +904,10 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
         }
     }
 
-    private static bool HasCompleteToolBatch(RuntimeStepState step)
+    private static bool HasCompleteToolBatch(
+        RuntimeStepState step,
+        RuntimeCheckpointRequestSnapshot request,
+        RuntimeTurnState turn)
     {
         var calls = step.Output?.ToolCalls;
         var invocations = step.ToolInvocations;
@@ -926,13 +929,36 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
                     Retryable: false,
                     Category: RuntimeErrorCategory.ApprovalDeclined or RuntimeErrorCategory.ApprovalTimeout
                 } ||
-                invocation.Result.Error?.Code is "tool_call_budget_exhausted" or "tool_preparation_failed")
+                invocation.Result.Error?.Code is "tool_preparation_failed" ||
+                invocation.Result.Error?.Code is "tool_call_budget_exhausted" &&
+                !IsFinalizedToolBudgetDenial(invocation, request, turn))
             {
                 return false;
             }
         }
         return true;
     }
+
+    // A hard-cap denial that the loop accounted and handed to the tool-free final Step is a
+    // complete observation only when the persisted state proves that hand-over: explicit
+    // AfterToolCalls, recorded ToolCallBudget finalization, the cap reached exactly and a Step left.
+    private static bool IsFinalizedToolBudgetDenial(
+        RuntimeToolInvocationState invocation,
+        RuntimeCheckpointRequestSnapshot request,
+        RuntimeTurnState turn)
+        => invocation.Status == RuntimeToolInvocationStatus.Denied &&
+           invocation.Result!.Success == false &&
+           invocation.Result!.Error is
+           {
+               Category: RuntimeErrorCategory.ResourceExhausted,
+               Code: "tool_call_budget_exhausted",
+               Retryable: false
+           } &&
+           request.ToolFinalization?.AfterToolCalls is { } afterToolCalls &&
+           turn.Progress.FinalizationReason == RuntimeToolFinalizationReason.ToolCallBudget &&
+           turn.Progress.ToolCallCount == request.Budget.MaxToolCalls &&
+           turn.Progress.ToolCallCount >= afterToolCalls &&
+           turn.Steps.Count < request.Budget.MaxSteps;
 
     private static StringComparison PathComparison()
         => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
