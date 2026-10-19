@@ -69,6 +69,81 @@ public sealed record RuntimeAgentLoopRequest(
     /// failure is retried immediately within <see cref="RuntimeBudgetSnapshot.MaxModelRetries"/>.
     /// </summary>
     public RuntimeRetryPolicy? ModelRetryPolicy { get; init; }
+
+    /// <summary>
+    /// Opt-in bounded repair of a malformed tool-call response. Null keeps the
+    /// legacy behavior where <c>malformed_tool_call</c> and
+    /// <c>invalid_tool_call_identity</c> end the Turn; setting it switches the
+    /// audit and checkpoint schema to <see cref="RuntimeAuditSchema.EnhancedVersion"/>.
+    /// </summary>
+    public RuntimeToolCallRepairPolicy? ToolCallRepair { get; init; }
+}
+
+/// <summary>
+/// Bounded tool-call repair (Q6). A Step whose sample failed with a tool-protocol
+/// error, and which accepted no tool call, may send one tool-free JSON repair
+/// request. Repairs and <c>continue_without_tools</c> continuations share
+/// <see cref="MaxPerTurn"/>. The reservation is durable before the request is sent.
+/// </summary>
+public sealed record RuntimeToolCallRepairPolicy
+{
+    public const int MaxPerStep = 1;
+
+    public const int MaxAllowedPerTurn = 2;
+
+    /// <summary>Host instruction placed before the exposed tool definitions.</summary>
+    public required string Instruction { get; init; }
+
+    /// <summary>Repairs plus continuations allowed per Turn; 1 or 2.</summary>
+    public int MaxPerTurn { get; init; } = MaxAllowedPerTurn;
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Instruction))
+        {
+            throw new ArgumentException("A tool-call repair instruction is required.", nameof(Instruction));
+        }
+        if (MaxPerTurn is < 1 or > MaxAllowedPerTurn)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxPerTurn), "MaxPerTurn must be 1 or 2.");
+        }
+    }
+}
+
+/// <summary>Stable identifiers of the Q6 repair contract.</summary>
+public static class RuntimeToolCallRepairCodes
+{
+    public const string TriggerMalformedToolCall = "malformed_tool_call";
+    public const string TriggerInvalidToolCallIdentity = "invalid_tool_call_identity";
+
+    public const string PhaseReservation = "reservation";
+    public const string PhaseOutcome = "outcome";
+
+    public const string OutcomeToolCallRecovered = "tool_call_recovered";
+    public const string OutcomeFinalPayloadReturned = "final_payload_returned";
+    public const string OutcomeInvalidJson = "invalid_json";
+    public const string OutcomeInvalidShape = "invalid_shape";
+    public const string OutcomeMultipleToolCalls = "multiple_tool_calls";
+    public const string OutcomeUnknownTool = "unknown_tool";
+    public const string OutcomeSideEffectNotReadOnly = "side_effect_not_read_only";
+    public const string OutcomeInvalidArguments = "invalid_arguments";
+    public const string OutcomeRequestFailed = "repair_request_failed";
+    public const string OutcomeRequestCancelled = "repair_request_cancelled";
+
+    public const string RejectedErrorCode = "tool_call_repair_rejected";
+    public const string ContextBudgetExceededErrorCode = "context_budget_exceeded";
+
+    internal static bool IsSuccess(string? outcome)
+        => outcome is OutcomeToolCallRecovered or OutcomeFinalPayloadReturned;
+
+    internal static bool IsKnownOutcome(string? outcome)
+        => outcome is OutcomeToolCallRecovered or OutcomeFinalPayloadReturned or OutcomeInvalidJson or
+            OutcomeInvalidShape or OutcomeMultipleToolCalls or OutcomeUnknownTool or
+            OutcomeSideEffectNotReadOnly or OutcomeInvalidArguments or OutcomeRequestFailed or
+            OutcomeRequestCancelled;
+
+    internal static bool IsTrigger(string? code)
+        => code is TriggerMalformedToolCall or TriggerInvalidToolCallIdentity;
 }
 
 /// <summary>

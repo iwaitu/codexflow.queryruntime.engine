@@ -9,9 +9,19 @@ namespace CodexFlow.QueryRuntime.Engine.V2;
 
 public static class RuntimeCheckpointSchema
 {
+    /// <summary>Legacy schema, written whenever no enhanced feature is enabled.</summary>
     public const int CurrentVersion = 1;
 
+    /// <summary>Written only when the request enables Q6 tool-call repair.</summary>
+    public const int EnhancedVersion = 2;
+
     public const string RuntimeContractVersion = "qre-v2-h1-4";
+
+    public static bool IsSupported(int version)
+        => version is CurrentVersion or EnhancedVersion;
+
+    internal static int ForRequest(RuntimeToolCallRepairPolicy? toolCallRepair)
+        => toolCallRepair == null ? CurrentVersion : EnhancedVersion;
 }
 
 public readonly record struct RuntimeRunAttemptId
@@ -104,6 +114,9 @@ public sealed record RuntimeCheckpointRequestSnapshot(
     /// <summary>Frozen finalization policy; part of the request fingerprint when set.</summary>
     public RuntimeToolFinalizationPolicy? ToolFinalization { get; init; }
 
+    /// <summary>Frozen Q6 repair policy; omitted (legacy bytes) when null, fingerprinted when set.</summary>
+    public RuntimeToolCallRepairPolicy? ToolCallRepair { get; init; }
+
     public static RuntimeCheckpointRequestSnapshot Capture(RuntimeAgentLoopRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -122,7 +135,8 @@ public sealed record RuntimeCheckpointRequestSnapshot(
             request.CreatedAt,
             request.RecoveryCompatibilityId)
         {
-            ToolFinalization = request.ToolFinalization
+            ToolFinalization = request.ToolFinalization,
+            ToolCallRepair = request.ToolCallRepair
         };
     }
 
@@ -142,7 +156,8 @@ public sealed record RuntimeCheckpointRequestSnapshot(
             CreatedAt)
         {
             RecoveryCompatibilityId = RecoveryCompatibilityId,
-            ToolFinalization = ToolFinalization
+            ToolFinalization = ToolFinalization,
+            ToolCallRepair = ToolCallRepair
         };
 
     internal static IReadOnlyList<RuntimeMessage> SnapshotMessages(
@@ -228,7 +243,7 @@ public sealed record RuntimeCheckpointDocument(
             : null;
         var requestSnapshot = RuntimeCheckpointRequestSnapshot.Capture(request);
         return new RuntimeCheckpointDocument(
-            RuntimeCheckpointSchema.CurrentVersion,
+            RuntimeCheckpointSchema.ForRequest(request.ToolCallRepair),
             RuntimeCheckpointSchema.RuntimeContractVersion,
             sequence,
             attempt,
@@ -251,8 +266,8 @@ public sealed record RuntimeCheckpointDocument(
             finalText ?? string.Empty,
             reason)
         {
-            HistoryNormalizationEvents = request.ContextManager?.Options.TruncationPolicy is
-                RuntimeContextTruncationPolicy.FailClosedOnInitialMessages or RuntimeContextTruncationPolicy.FailClosedOnAny
+            HistoryNormalizationEvents = request.ContextManager?.Options.TruncationPolicy is { } truncationPolicy &&
+                truncationPolicy != RuntimeContextTruncationPolicy.Allow
                 ? Array.AsReadOnly(canonicalHistory.NormalizationEvents.Select(static value =>
                     value with { ItemIds = Array.AsReadOnly(value.ItemIds.ToArray()) }).ToArray())
                 : null
@@ -385,7 +400,7 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
                 $"Checkpoint payload exceeds the {_options.MaxFileBytes} byte quota.");
         }
         var envelope = new RuntimeCheckpointFileEnvelope(
-            RuntimeCheckpointSchema.CurrentVersion,
+            checkpoint.SchemaVersion,
             EnvelopeType,
             payload.LongLength,
             Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
@@ -527,7 +542,9 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
                 "checkpoint_json_invalid",
                 "Checkpoint JSON is invalid or exceeds the configured depth."), ex);
         }
-        if (envelope.SchemaVersion != RuntimeCheckpointSchema.CurrentVersion ||
+        if (!RuntimeCheckpointSchema.IsSupported(envelope.SchemaVersion) ||
+            envelope.Payload == null ||
+            envelope.SchemaVersion != envelope.Payload.SchemaVersion ||
             !string.Equals(envelope.Type, EnvelopeType, StringComparison.Ordinal))
         {
             throw new RuntimeResumeException(new RuntimeError(
@@ -622,7 +639,8 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
                 "checkpoint_shape_invalid",
                 "Checkpoint contains a missing required object or collection."));
         }
-        if (checkpoint.SchemaVersion != RuntimeCheckpointSchema.CurrentVersion ||
+        if (!RuntimeCheckpointSchema.IsSupported(checkpoint.SchemaVersion) ||
+            checkpoint.SchemaVersion != RuntimeCheckpointSchema.ForRequest(checkpoint.Request.ToolCallRepair) ||
             !string.Equals(
                 checkpoint.RuntimeContractVersion,
                 RuntimeCheckpointSchema.RuntimeContractVersion,
@@ -668,6 +686,49 @@ public sealed class RuntimeJsonCheckpointStore : IRuntimeCheckpointSink
         ValidateHistoryBlobs(checkpoint.HistoryBlobs);
         ValidateHistoryBlobReferences(checkpoint.CanonicalHistory, checkpoint.HistoryBlobs);
         ValidateStableBoundary(checkpoint, turn);
+        ValidateToolCallRepair(checkpoint, turn);
+    }
+
+    private static void ValidateToolCallRepair(
+        RuntimeCheckpointDocument checkpoint,
+        RuntimeTurnState turn)
+    {
+        var policy = checkpoint.Request.ToolCallRepair;
+        var progress = turn.Progress.ToolCallRepair;
+        // A StepPrepared recovery removes the reserving Step and rebuilds it under the
+        // same ID, so the next Step ID is also a valid reservation owner.
+        var nextStepId = $"{checkpoint.Request.TurnId.Value}:step:{turn.Steps.Count}";
+        var valid = policy == null
+            ? progress == null
+            : IsValidPolicy(policy) &&
+              (progress == null ||
+               progress.AttemptedStepIds != null &&
+               progress.AttemptedStepIds.Count <= policy.MaxPerTurn &&
+               progress.AttemptedStepIds.All(static id => !string.IsNullOrWhiteSpace(id)) &&
+               progress.AttemptedStepIds.Distinct(StringComparer.Ordinal).Count() == progress.AttemptedStepIds.Count &&
+               progress.AttemptedStepIds.All(id =>
+                   string.Equals(id, nextStepId, StringComparison.Ordinal) ||
+                   turn.Steps.Any(step => string.Equals(step.Context.StepId.Value, id, StringComparison.Ordinal))));
+        if (!valid)
+        {
+            throw new RuntimeResumeException(new RuntimeError(
+                RuntimeErrorCategory.TraceCorrupt,
+                "checkpoint_tool_call_repair_invalid",
+                "Checkpoint tool-call repair policy or reservations are inconsistent."));
+        }
+
+        static bool IsValidPolicy(RuntimeToolCallRepairPolicy value)
+        {
+            try
+            {
+                value.Validate();
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
     }
 
     private static void ValidateCanonicalHistory(

@@ -315,6 +315,45 @@ public static class RuntimeStateReducer
             turn with { Progress = turn.Progress with { FinalizationReason = reason } });
     }
 
+    /// <summary>
+    /// Reserves the single Q6 repair of the active sampling Step before the repair
+    /// request is sent. Repairs and continuations share <paramref name="maxPerTurn"/>.
+    /// </summary>
+    public static RuntimeSessionState RecordToolCallRepairReservation(
+        RuntimeSessionState session,
+        RuntimeStepId stepId,
+        int maxPerTurn)
+    {
+        var (turn, step) = RequireActiveStep(session, stepId, RuntimeStepPhase.Sampling);
+        if (maxPerTurn is < 1 or > RuntimeToolCallRepairPolicy.MaxAllowedPerTurn)
+        {
+            ThrowInvariant("invalid_tool_call_repair_budget", "The tool-call repair budget must be 1 or 2.");
+        }
+        if (step.Output != null || step.ModelAttempts == 0)
+        {
+            ThrowInvariant("tool_call_repair_outside_sampling", "A repair requires a sampled Step without committed output.");
+        }
+        var progress = turn.Progress.ToolCallRepair;
+        if (progress?.Contains(stepId) == true)
+        {
+            ThrowInvariant("tool_call_repair_already_reserved", "A Step can reserve at most one tool-call repair.");
+        }
+        if ((progress?.Count ?? 0) + turn.Progress.ContinuationCount >= maxPerTurn)
+        {
+            ThrowInvariant("tool_call_repair_budget_exhausted", "The Turn exhausted its shared repair budget.");
+        }
+        var reserved = (progress?.AttemptedStepIds ?? []).Append(stepId.Value).ToArray();
+        return ReplaceActiveTurn(
+            session,
+            turn with
+            {
+                Progress = turn.Progress with
+                {
+                    ToolCallRepair = new RuntimeToolCallRepairProgress(Array.AsReadOnly(reserved))
+                }
+            });
+    }
+
     public static RuntimeSessionState AdvanceHistory(RuntimeSessionState session, int committedBatches = 1)
     {
         ArgumentNullException.ThrowIfNull(session);

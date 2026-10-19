@@ -60,7 +60,8 @@ public sealed class RuntimeAgentLoop
             request.AuditFailureMode,
             request.SessionId,
             request.TurnId,
-            _timeProvider);
+            _timeProvider,
+            RuntimeAuditSchema.ForRequest(request.ToolCallRepair));
         var checkpointEmitter = new RuntimeCheckpointEmitter(
             request.CheckpointSink,
             request.CheckpointFailureMode,
@@ -327,12 +328,32 @@ public sealed class RuntimeAgentLoop
                     finalText,
                     token).ConfigureAwait(false);
 
-                (session, var output) = await SampleAsync(
-                    session,
-                    stepContext,
-                    attempt.AttemptId.Value,
-                    request.ModelRetryPolicy,
-                    token).ConfigureAwait(false);
+                RuntimeModelOutput output;
+                try
+                {
+                    (session, output) = await SampleAsync(
+                        session,
+                        stepContext,
+                        attempt.AttemptId.Value,
+                        request.ModelRetryPolicy,
+                        token,
+                        repairEligible: request.ToolCallRepair != null && !forcedToolFree && stepTools.Count > 0)
+                        .ConfigureAwait(false);
+                }
+                catch (ToolCallRepairCandidate candidate)
+                {
+                    (session, output) = await RepairToolCallAsync(
+                        candidate,
+                        request,
+                        stepContext,
+                        stepTools,
+                        contextManager.Options,
+                        history,
+                        finalText,
+                        audit,
+                        checkpointEmitter,
+                        token).ConfigureAwait(false);
+                }
                 RuntimeError? toolFreeViolation = null;
                 if (forcedToolFree)
                 {
@@ -597,7 +618,8 @@ public sealed class RuntimeAgentLoop
         RuntimeStepContext step,
         string runAttemptId,
         RuntimeRetryPolicy? retryPolicy,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool repairEligible = false)
     {
         // Only populated with a retry policy, so legacy outputs are unchanged.
         List<RuntimeWarning>? retryWarnings = null;
@@ -684,9 +706,25 @@ public sealed class RuntimeAgentLoop
                 }
                 continue;
             }
+            catch (RuntimeModelStreamValidationException ex) when (
+                repairEligible &&
+                ex.Error.Code == RuntimeToolCallRepairCodes.TriggerInvalidToolCallIdentity &&
+                !items.OfType<RuntimeToolCallItem>().Any())
+            {
+                throw new ToolCallRepairCandidate(
+                    session, ex.Error, RuntimeTerminationReason.FailClosed, usage, retryWarnings ?? [], warnings);
+            }
             catch (RuntimeModelStreamValidationException ex)
             {
                 throw new RuntimeAgentLoopFailure(RuntimeTerminationReason.FailClosed, ex.Error, session);
+            }
+            catch (RuntimeModelClientException ex) when (
+                repairEligible &&
+                ex.Error.Code == RuntimeToolCallRepairCodes.TriggerMalformedToolCall &&
+                !items.OfType<RuntimeToolCallItem>().Any())
+            {
+                throw new ToolCallRepairCandidate(
+                    session, ex.Error, RuntimeTerminationReason.Error, usage, retryWarnings ?? [], warnings);
             }
             catch (RuntimeModelClientException ex)
             {
@@ -708,6 +746,252 @@ public sealed class RuntimeAgentLoop
                     session);
             }
         }
+    }
+
+    /// <summary>
+    /// Q6 bounded repair. The reservation is recorded in Turn progress, audited and
+    /// durably checkpointed before the repair request is sent, so a recovery never
+    /// re-opens the quota. A failed, rejected or cancelled repair ends the Turn; it
+    /// is never retried and never repeats the original sampling.
+    /// </summary>
+    private async Task<(RuntimeSessionState Session, RuntimeModelOutput Output)> RepairToolCallAsync(
+        ToolCallRepairCandidate candidate,
+        RuntimeAgentLoopRequest request,
+        RuntimeStepContext step,
+        IReadOnlyList<RuntimeToolDescriptor> stepTools,
+        RuntimeContextOptions contextOptions,
+        RuntimeHistory history,
+        string finalText,
+        RuntimeAuditEmitter audit,
+        RuntimeCheckpointEmitter checkpointEmitter,
+        CancellationToken ct)
+    {
+        var policy = request.ToolCallRepair!;
+        var session = candidate.Session;
+        var stepId = step.StepId;
+        var progress = session.ActiveTurn!.Progress;
+        if (progress.ToolCallRepair?.Contains(stepId) == true ||
+            progress.ToolCallRepairCount + progress.ContinuationCount >= policy.MaxPerTurn)
+        {
+            // Already reserved (including before a crash) or the shared quota is spent.
+            throw new RuntimeAgentLoopFailure(candidate.TerminationReason, candidate.Error, session);
+        }
+        var repairRequest = RuntimeToolCallRepair.BuildRequest(step.ModelRequest, stepTools, policy);
+        var estimated = RuntimeToolCallRepair.Estimate(repairRequest);
+        if (estimated > contextOptions.MaxContextTokens)
+        {
+            throw new RuntimeAgentLoopFailure(
+                RuntimeTerminationReason.FailClosed,
+                new RuntimeError(
+                    RuntimeErrorCategory.ContextOverflow,
+                    RuntimeToolCallRepairCodes.ContextBudgetExceededErrorCode,
+                    $"The tool-call repair request needs {estimated} estimated tokens, above the {contextOptions.MaxContextTokens} token context budget."),
+                session);
+        }
+
+        session = RuntimeStateReducer.RecordToolCallRepairReservation(session, stepId, policy.MaxPerTurn);
+        var reservationIndex = session.ActiveTurn!.Progress.ToolCallRepairCount;
+        var trigger = candidate.Error.Code;
+        await audit.EmitAsync(
+            RuntimeAuditEventKind.ToolCallRepairAttempted,
+            RuntimeAuditSensitivity.Sensitive,
+            new RuntimeToolCallRepairAuditPayload(
+                stepId,
+                RuntimeToolCallRepairCodes.PhaseReservation,
+                trigger,
+                reservationIndex,
+                policy.MaxPerTurn)
+            {
+                RepairRequest = repairRequest
+            },
+            ct,
+            stepId).ConfigureAwait(false);
+        // Durable before the request: a recovery from this StepPrepared sees the reservation.
+        await checkpointEmitter.SaveAsync(
+            RuntimeCheckpointKind.StepPrepared,
+            session,
+            history,
+            finalText,
+            ct).ConfigureAwait(false);
+
+        var text = new System.Text.StringBuilder();
+        var repairUsage = RuntimeUsageTotals.Empty;
+        var repairWarnings = new List<RuntimeWarning>();
+        var returnedToolCall = false;
+        RuntimeError? requestError = null;
+        try
+        {
+            var validator = new RuntimeModelStreamValidator();
+            await foreach (var runtimeEvent in _modelClient.StreamAsync(repairRequest, ct).ConfigureAwait(false))
+            {
+                validator.Apply(runtimeEvent);
+                switch (runtimeEvent)
+                {
+                    case RuntimeTextDeltaEvent delta:
+                        text.Append(delta.Text);
+                        break;
+                    case RuntimeToolCallEvent:
+                        returnedToolCall = true;
+                        break;
+                    case RuntimeUsageEvent usageEvent:
+                        repairUsage = AddUsage(repairUsage, usageEvent.Usage);
+                        break;
+                    case RuntimeWarningEvent warning:
+                        repairWarnings.Add(warning.Warning);
+                        break;
+                }
+            }
+            validator.Complete();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await TryEmitRepairOutcomeAsync(
+                audit,
+                new RuntimeToolCallRepairAuditPayload(
+                    stepId,
+                    RuntimeToolCallRepairCodes.PhaseOutcome,
+                    trigger,
+                    reservationIndex,
+                    policy.MaxPerTurn)
+                {
+                    Outcome = RuntimeToolCallRepairCodes.OutcomeRequestCancelled
+                },
+                stepId).ConfigureAwait(false);
+            throw new RuntimeAgentLoopCancelled(session);
+        }
+        catch (RuntimeModelClientException ex)
+        {
+            requestError = ex.Error;
+        }
+        catch (RuntimeModelStreamValidationException ex)
+        {
+            requestError = ex.Error;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            requestError = new RuntimeError(
+                RuntimeErrorCategory.ProviderTransport,
+                "model_stream_failed",
+                ex.Message,
+                Retryable: false);
+        }
+
+        if (requestError != null)
+        {
+            await audit.EmitAsync(
+                RuntimeAuditEventKind.ToolCallRepairAttempted,
+                RuntimeAuditSensitivity.Sensitive,
+                new RuntimeToolCallRepairAuditPayload(
+                    stepId,
+                    RuntimeToolCallRepairCodes.PhaseOutcome,
+                    trigger,
+                    reservationIndex,
+                    policy.MaxPerTurn)
+                {
+                    Outcome = RuntimeToolCallRepairCodes.OutcomeRequestFailed,
+                    ErrorCode = requestError.Code,
+                    Usage = repairUsage
+                },
+                ct,
+                stepId).ConfigureAwait(false);
+            throw new RuntimeAgentLoopFailure(
+                RuntimeTerminationReason.Error,
+                requestError with { Retryable = false },
+                session);
+        }
+
+        var responseText = text.ToString();
+        var parsed = returnedToolCall
+            ? RepairParseResult.Rejected(RuntimeToolCallRepairCodes.OutcomeInvalidShape)
+            : RuntimeToolCallRepair.Parse(responseText, stepTools, stepId);
+        await audit.EmitAsync(
+            RuntimeAuditEventKind.ToolCallRepairAttempted,
+            RuntimeAuditSensitivity.Sensitive,
+            new RuntimeToolCallRepairAuditPayload(
+                stepId,
+                RuntimeToolCallRepairCodes.PhaseOutcome,
+                trigger,
+                reservationIndex,
+                policy.MaxPerTurn)
+            {
+                Outcome = parsed.Outcome,
+                ResponseText = responseText,
+                ResponseSha256 = parsed.ResponseSha256 ?? RuntimeToolCallRepair.TextDigest(responseText),
+                RecoveredToolName = parsed.Call?.Name,
+                ArgumentsSha256 = parsed.ArgumentsSha256,
+                Usage = repairUsage,
+                ErrorCode = parsed.Success ? null : RuntimeToolCallRepairCodes.RejectedErrorCode
+            },
+            ct,
+            stepId).ConfigureAwait(false);
+        if (!parsed.Success)
+        {
+            throw new RuntimeAgentLoopFailure(
+                RuntimeTerminationReason.FailClosed,
+                new RuntimeError(
+                    RuntimeErrorCategory.ProviderProtocol,
+                    RuntimeToolCallRepairCodes.RejectedErrorCode,
+                    $"The tool-call repair response was rejected ({parsed.Outcome}) after {trigger}."),
+                session);
+        }
+
+        var usage = candidate.Usage;
+        usage = new RuntimeUsageTotals(
+            checked(usage.InputTokens + repairUsage.InputTokens),
+            checked(usage.OutputTokens + repairUsage.OutputTokens),
+            checked(usage.TotalTokens + repairUsage.TotalTokens),
+            MergeAdditional(usage.Additional, repairUsage.Additional));
+        var warnings = candidate.RetryWarnings
+            .Concat(candidate.Warnings)
+            .Concat(repairWarnings)
+            .Append(new RuntimeWarning(
+                "tool_call_repaired",
+                $"Recovered from {trigger} with one tool-free repair request ({parsed.Outcome})."))
+            .ToArray();
+        RuntimeModelOutput output = parsed.Call is { } call
+            ? new RuntimeModelOutput(
+                [new RuntimeToolCallItem(call)],
+                usage,
+                warnings,
+                RuntimeModelStopReason.ToolCall)
+            : new RuntimeModelOutput(
+                [new RuntimeTextItem(responseText)],
+                usage,
+                warnings,
+                RuntimeModelStopReason.EndTurn);
+        return (session, output);
+    }
+
+    private static async ValueTask TryEmitRepairOutcomeAsync(
+        RuntimeAuditEmitter audit,
+        RuntimeToolCallRepairAuditPayload payload,
+        RuntimeStepId stepId)
+    {
+        try
+        {
+            await audit.EmitAsync(
+                RuntimeAuditEventKind.ToolCallRepairAttempted,
+                RuntimeAuditSensitivity.Sensitive,
+                payload,
+                CancellationToken.None,
+                stepId).ConfigureAwait(false);
+        }
+        catch (RuntimeAuditWriteFailure)
+        {
+            // Cancellation remains authoritative; the reservation already recorded the attempt.
+        }
+    }
+
+    private static IReadOnlyDictionary<string, long> MergeAdditional(
+        IReadOnlyDictionary<string, long> left,
+        IReadOnlyDictionary<string, long> right)
+    {
+        var merged = new Dictionary<string, long>(left, StringComparer.Ordinal);
+        foreach (var pair in right)
+        {
+            merged[pair.Key] = checked(merged.GetValueOrDefault(pair.Key) + pair.Value);
+        }
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(merged);
     }
 
     private static async Task<ToolBatchExecution> ExecuteToolsAsync(
@@ -1376,6 +1660,14 @@ public sealed class RuntimeAgentLoop
             handle,
             canContinue,
             ct).ConfigureAwait(false);
+        if (decision.Kind == RuntimeTerminationDecisionKind.ContinueWithoutTools &&
+            request.ToolCallRepair is { } repairPolicy &&
+            session.ActiveTurn!.Progress.ToolCallRepairCount + session.ActiveTurn.Progress.ContinuationCount >=
+            repairPolicy.MaxPerTurn)
+        {
+            // JSON-repair continuations share the Q6 repair budget.
+            canContinue = false;
+        }
         switch (decision.Kind)
         {
             case RuntimeTerminationDecisionKind.Accept:
@@ -1882,6 +2174,14 @@ public sealed class RuntimeAgentLoop
         RuntimeResponseFormats.Validate(request.ModelParameters, nameof(request));
         request.ToolFinalization?.Validate();
         request.ModelRetryPolicy?.Validate();
+        request.ToolCallRepair?.Validate();
+        if (request.ToolCallRepair != null && request.Tools.Count > 0 && request.Budget.MaxSteps < 2)
+        {
+            // A recovered tool call consumes its Step; one more model Step must remain to answer.
+            throw new ArgumentException(
+                "Tool-call repair requires a Step budget of at least two so a model Step remains after a recovered call.",
+                nameof(request));
+        }
         if (request.HistoryVersion < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(request.HistoryVersion));
@@ -2006,8 +2306,8 @@ public sealed class RuntimeAgentLoop
                 "checkpoint_request_mismatch",
                 "The recovery request does not match the frozen checkpoint request."));
         }
-        if (request.ContextManager?.Options.TruncationPolicy is
-            RuntimeContextTruncationPolicy.FailClosedOnInitialMessages or RuntimeContextTruncationPolicy.FailClosedOnAny &&
+        if (request.ContextManager?.Options.TruncationPolicy is { } truncationPolicy &&
+            truncationPolicy != RuntimeContextTruncationPolicy.Allow &&
             checkpoint.HistoryNormalizationEvents == null)
         {
             throw new RuntimeResumeException(new RuntimeError(
@@ -2221,7 +2521,8 @@ public sealed class RuntimeAgentLoop
         RuntimeAuditFailureMode failureMode,
         RuntimeSessionId sessionId,
         RuntimeTurnId turnId,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        int schemaVersion)
     {
         private readonly List<RuntimeAuditEnvelope> _events = [];
         private readonly List<RuntimeWarning> _warnings = [];
@@ -2265,7 +2566,7 @@ public sealed class RuntimeAgentLoop
             var sequence = checked(++_sequence);
             var eventId = new RuntimeAuditEventId($"{turnId.Value}:audit:{sequence}");
             var envelope = new RuntimeAuditEnvelope(
-                RuntimeAuditSchema.CurrentVersion,
+                schemaVersion,
                 sequence,
                 eventId,
                 timeProvider.GetUtcNow(),
@@ -2319,6 +2620,28 @@ public sealed class RuntimeAgentLoop
         public RuntimeError Error { get; } = error;
 
         public RuntimeSessionState? Session { get; } = session;
+    }
+
+    /// <summary>A repair-eligible sampling failure handed from SampleAsync to the Turn loop.</summary>
+    private sealed class ToolCallRepairCandidate(
+        RuntimeSessionState session,
+        RuntimeError error,
+        RuntimeTerminationReason terminationReason,
+        RuntimeUsageTotals usage,
+        IReadOnlyList<RuntimeWarning> retryWarnings,
+        IReadOnlyList<RuntimeWarning> warnings) : Exception(error.Message)
+    {
+        public RuntimeSessionState Session { get; } = session;
+
+        public RuntimeError Error { get; } = error;
+
+        public RuntimeTerminationReason TerminationReason { get; } = terminationReason;
+
+        public RuntimeUsageTotals Usage { get; } = usage;
+
+        public IReadOnlyList<RuntimeWarning> RetryWarnings { get; } = retryWarnings.ToArray();
+
+        public IReadOnlyList<RuntimeWarning> Warnings { get; } = warnings.ToArray();
     }
 
     private sealed class RuntimeAgentLoopCancelled(RuntimeSessionState? session = null)

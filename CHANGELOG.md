@@ -5,6 +5,40 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.24.1-ia.20261019.2] (local prerelease, not published)
+
+Opt-in additions for the ia-engine bundle integration. With none of them enabled,
+requests, audit envelopes and checkpoints serialize byte-for-byte as in 0.24.0.
+
+- **`RuntimeContextTruncationPolicy.FailClosedOnHardCaps`** (E1): any hard cap
+  or large-result replacement of any item fails closed with
+  `context_truncation_rejected` before the next model request; projection
+  compaction that leaves the initial messages intact stays allowed.
+  Normalization still happens at append time; the guarantee is that truncated
+  evidence is never sent. Every non-`Allow` policy now persists and requires
+  durable history normalization events.
+- **`RuntimeToolCallRepairPolicy`** (E2 / Q6) via
+  `RuntimeAgentLoopRequest.ToolCallRepair`: after `malformed_tool_call` or
+  `invalid_tool_call_identity`, and only when the sample accepted no tool call,
+  one tool-free JSON repair request per Step (repairs plus continuations at
+  most `MaxPerTurn`, 1 or 2). The reservation is recorded in
+  `RuntimeTurnProgress.ToolCallRepair`, audited and checkpointed (a repeated
+  `StepPrepared`) before the request, so recovery never re-opens the quota.
+  Only an exact registered `ReadOnly` tool with schema-valid arguments, or a
+  tool-free final JSON object, is accepted; the call then runs through the
+  normal tool pipeline. Enabling it writes audit and checkpoint schema 2
+  (`RuntimeAuditSchema.EnhancedVersion`, `RuntimeCheckpointSchema.EnhancedVersion`);
+  readers accept 1 and 2, 0.24.0 readers reject 2. New audit kind
+  `ToolCallRepairAttempted` (reservation and outcome phases).
+- **`RuntimeToolRegistry(tools, allowMixedCaseNames)`**: the one-argument
+  constructor keeps lower-case names; `true` also accepts ASCII upper case and
+  keeps the original name everywhere (no lower-casing; case-only collisions
+  still rejected).
+- **Nullable unions in tool schemas**: a `type` of exactly two distinct members,
+  `null` plus one of object/array/string/integer/number/boolean, in either
+  order. `null` matches the union (enum still applies); non-null values are
+  validated recursively as before. Other unions are rejected at registration.
+
 ## [0.24.0]
 
 Embedded structured-extraction support for hosts that run a read-only tool
@@ -123,3 +157,4 @@ calls, retries, context projection, checkpoints and audit records are unchanged.
 
 Log management and NuGet trusted publishing. See the git history for earlier
 releases.
+

@@ -99,6 +99,12 @@ public sealed record RuntimeTurnProgress(
     [JsonIgnore]
     public bool ToolFreeStepRequired => FinalizationReason != null || NextStepWithoutTools;
 
+    /// <summary>Q6 tool-call repair reservations; null until the first reservation.</summary>
+    public RuntimeToolCallRepairProgress? ToolCallRepair { get; init; }
+
+    [JsonIgnore]
+    public int ToolCallRepairCount => ToolCallRepair?.AttemptedStepIds.Count ?? 0;
+
     public static RuntimeTurnProgress Create(string? requiredToolName)
         => new(
             RuntimeUsageTotals.Empty,
@@ -110,6 +116,19 @@ public sealed record RuntimeTurnProgress(
 
     internal static string? NormalizeOptional(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
+
+/// <summary>
+/// Turn-level repair reservations keyed by stable Step ID. A StepPrepared
+/// recovery rebuilds the Step under the same ID, so a reservation survives it.
+/// </summary>
+public sealed record RuntimeToolCallRepairProgress(IReadOnlyList<string> AttemptedStepIds)
+{
+    [JsonIgnore]
+    public int Count => AttemptedStepIds.Count;
+
+    public bool Contains(RuntimeStepId stepId)
+        => AttemptedStepIds.Contains(stepId.Value, StringComparer.Ordinal);
 }
 
 public sealed record RuntimeUsageTotals(

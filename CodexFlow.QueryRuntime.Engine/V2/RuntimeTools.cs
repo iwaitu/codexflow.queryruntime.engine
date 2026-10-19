@@ -142,19 +142,34 @@ public sealed class RuntimeToolRegistry : IRuntimeToolRegistry
     private static readonly Regex CanonicalNamePattern = new(
         "^[a-z][a-z0-9_.-]{0,127}$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex MixedCaseCanonicalNamePattern = new(
+        "^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex VersionPattern = new(
         "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private readonly IReadOnlyDictionary<string, IRuntimeTool> _tools;
 
+    /// <summary>Strict registry: canonical names must be lower case.</summary>
     public RuntimeToolRegistry(IEnumerable<IRuntimeTool> tools)
+        : this(tools, allowMixedCaseNames: false)
+    {
+    }
+
+    /// <summary>
+    /// With <paramref name="allowMixedCaseNames"/> the registry also accepts ASCII
+    /// upper-case letters and keeps the host's original name everywhere; it never
+    /// lower-cases names. Names that differ only by case still collide.
+    /// </summary>
+    public RuntimeToolRegistry(IEnumerable<IRuntimeTool> tools, bool allowMixedCaseNames)
     {
         ArgumentNullException.ThrowIfNull(tools);
+        var namePattern = allowMixedCaseNames ? MixedCaseCanonicalNamePattern : CanonicalNamePattern;
         var resolved = new Dictionary<string, IRuntimeTool>(StringComparer.OrdinalIgnoreCase);
         foreach (var tool in tools)
         {
             ArgumentNullException.ThrowIfNull(tool);
-            ValidateDefinition(tool.Definition);
+            ValidateDefinition(tool.Definition, namePattern);
             var definition = tool.Definition with
             {
                 Descriptor = SnapshotDescriptor(tool.Definition.Descriptor),
@@ -182,7 +197,7 @@ public sealed class RuntimeToolRegistry : IRuntimeToolRegistry
                _tools.TryGetValue(canonicalName.Trim(), out tool);
     }
 
-    private static void ValidateDefinition(RuntimeToolDefinition definition)
+    private static void ValidateDefinition(RuntimeToolDefinition definition, Regex namePattern)
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(definition.Descriptor);
@@ -190,7 +205,7 @@ public sealed class RuntimeToolRegistry : IRuntimeToolRegistry
         ArgumentNullException.ThrowIfNull(definition.Sandbox);
         ArgumentNullException.ThrowIfNull(definition.Limits);
         var descriptor = definition.Descriptor;
-        if (!CanonicalNamePattern.IsMatch(descriptor.CanonicalName))
+        if (!namePattern.IsMatch(descriptor.CanonicalName))
         {
             throw new ArgumentException($"Invalid canonical tool name '{descriptor.CanonicalName}'.");
         }
@@ -277,9 +292,12 @@ public static class RuntimeToolArgumentNormalizer
         {
             throw new ArgumentException($"Schema node '{path}' must be an object.");
         }
-        if (schema.TryGetProperty("type", out var type) && type.ValueKind != JsonValueKind.String)
+        if (schema.TryGetProperty("type", out var type) &&
+            type.ValueKind != JsonValueKind.String &&
+            !TryGetNullableUnionType(type, out _))
         {
-            throw new ArgumentException($"Schema type at '{path}' must be a string.");
+            throw new ArgumentException(
+                $"Schema type at '{path}' must be a string or a two-member union of one supported type and null.");
         }
         if (schema.TryGetProperty("properties", out var properties))
         {
@@ -309,11 +327,57 @@ public static class RuntimeToolArgumentNormalizer
         }
     }
 
+    private static readonly FrozenSet<string> NullableUnionMemberTypes = new[]
+    {
+        "object", "array", "string", "integer", "number", "boolean"
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Accepts exactly two distinct string members, one "null" and one supported
+    /// non-null primitive type, in either order. Anything else is not a union.
+    /// </summary>
+    private static bool TryGetNullableUnionType(JsonElement type, out string nonNullType)
+    {
+        nonNullType = string.Empty;
+        if (type.ValueKind != JsonValueKind.Array || type.GetArrayLength() != 2)
+        {
+            return false;
+        }
+        var first = type[0];
+        var second = type[1];
+        if (first.ValueKind != JsonValueKind.String || second.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        var a = first.GetString()!;
+        var b = second.GetString()!;
+        var other = a == "null" ? b : b == "null" ? a : null;
+        if (other == null || other == "null" || !NullableUnionMemberTypes.Contains(other))
+        {
+            return false;
+        }
+        nonNullType = other;
+        return true;
+    }
+
     private static void ValidateValue(JsonElement schema, JsonElement value, string path)
     {
         if (schema.TryGetProperty("type", out var typeElement))
         {
-            var type = typeElement.GetString();
+            string? type;
+            if (typeElement.ValueKind == JsonValueKind.String)
+            {
+                type = typeElement.GetString();
+            }
+            else if (TryGetNullableUnionType(typeElement, out var nonNullType))
+            {
+                // null matches the union; enum (if any) still applies below.
+                type = value.ValueKind == JsonValueKind.Null ? "null" : nonNullType;
+            }
+            else
+            {
+                throw Malformed("tool_argument_schema_unsupported", $"Schema type at '{path}' is not supported.");
+            }
             var valid = type switch
             {
                 "object" => value.ValueKind == JsonValueKind.Object,

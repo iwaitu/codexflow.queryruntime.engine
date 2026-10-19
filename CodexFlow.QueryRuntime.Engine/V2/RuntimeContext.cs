@@ -89,7 +89,15 @@ public enum RuntimeContextTruncationPolicy
     FailClosedOnInitialMessages = 1,
 
     /// <summary>Fail closed on any budget-driven truncation, replacement or compaction.</summary>
-    FailClosedOnAny = 2
+    FailClosedOnAny = 2,
+
+    /// <summary>
+    /// Fail closed when any item, initial or later, hits a hard cap or is replaced,
+    /// while allowing projection compaction that leaves the initial messages intact.
+    /// Normalization still happens at append time; the Runtime rejects before the
+    /// next model request so no truncated evidence is sent.
+    /// </summary>
+    FailClosedOnHardCaps = 3
 }
 
 /// <summary>
@@ -200,13 +208,15 @@ internal static class RuntimeContextTruncation
         var initialPrefix = $"h{initialHistoryVersion}:m";
         foreach (var contextEvent in events)
         {
-            var truncation = contextEvent.Kind == RuntimeContextEventKind.ContextCompacted ||
-                             TruncationCodes.Contains(contextEvent.Code);
+            var hardCap = TruncationCodes.Contains(contextEvent.Code);
+            var truncation = contextEvent.Kind == RuntimeContextEventKind.ContextCompacted || hardCap;
             if (!truncation)
             {
                 continue;
             }
-            var affected = policy == RuntimeContextTruncationPolicy.FailClosedOnAny
+            var affectsAnyItem = policy == RuntimeContextTruncationPolicy.FailClosedOnAny ||
+                                 policy == RuntimeContextTruncationPolicy.FailClosedOnHardCaps && hardCap;
+            var affected = affectsAnyItem
                 ? contextEvent.ItemIds
                 : contextEvent.ItemIds
                     .Where(id => id.Value.StartsWith(initialPrefix, StringComparison.Ordinal))

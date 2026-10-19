@@ -192,9 +192,18 @@ public sealed class RuntimeJsonlAuditStore : IRuntimeAuditSink, IAsyncDisposable
         {
             await _writeLock.WaitAsync(ct).ConfigureAwait(false);
             writeLockAcquired = true;
-            if (auditEvent.SchemaVersion != RuntimeAuditSchema.CurrentVersion)
+            if (!RuntimeAuditSchema.IsSupported(auditEvent.SchemaVersion))
             {
                 throw new InvalidDataException($"Unsupported C6 audit schema: {auditEvent.SchemaVersion}.");
+            }
+            if (_eventCount == 0)
+            {
+                // The first event fixes the run schema; legacy runs keep version 1 bytes.
+                _manifest = _manifest with { SchemaVersion = auditEvent.SchemaVersion };
+            }
+            else if (auditEvent.SchemaVersion != _manifest.SchemaVersion)
+            {
+                throw new InvalidDataException("C6 audit events of one run must share one schema version.");
             }
             if (_eventCount >= _options.MaxEventCount)
             {
@@ -316,7 +325,7 @@ public sealed class RuntimeJsonlAuditStore : IRuntimeAuditSink, IAsyncDisposable
             throw new InvalidDataException("C6 audit must be the direct audit.v1.jsonl child of its run directory.");
         }
         var manifest = TryReadManifest(runDirectory, options.MaxJsonDepth) ?? throw new InvalidDataException("C6 audit manifest is missing or invalid.");
-        if (manifest.SchemaVersion != RuntimeAuditSchema.CurrentVersion)
+        if (!RuntimeAuditSchema.IsSupported(manifest.SchemaVersion))
         {
             throw new RuntimeAuditReplayException(new RuntimeError(
                 RuntimeErrorCategory.SchemaIncompatible,
@@ -551,6 +560,19 @@ public sealed class RuntimeJsonlAuditStore : IRuntimeAuditSink, IAsyncDisposable
             RuntimeTerminationDecisionAuditPayload value => new RuntimePublicAuditPayload
             {
                 Decision = value.Decision
+            },
+            // Shape only: no tool name, arguments, request or response text.
+            RuntimeToolCallRepairAuditPayload value => new RuntimePublicAuditPayload(
+                ToolCallCount: value.Outcome == RuntimeToolCallRepairCodes.OutcomeToolCallRecovered ? 1 : 0,
+                TextLength: value.ResponseText?.Length ?? 0,
+                ErrorCode: value.ErrorCode,
+                InputTokens: value.Usage?.InputTokens ?? 0,
+                OutputTokens: value.Usage?.OutputTokens ?? 0,
+                TotalTokens: value.Usage?.TotalTokens ?? 0)
+            {
+                Decision = value.Outcome == null
+                    ? $"{value.Phase}:{value.Trigger}:{value.ReservationIndex}"
+                    : $"{value.Phase}:{value.Outcome}:{value.ReservationIndex}"
             },
             RuntimePublicAuditPayload value => value,
             _ => throw new InvalidOperationException("Unsupported C6 audit payload projection.")

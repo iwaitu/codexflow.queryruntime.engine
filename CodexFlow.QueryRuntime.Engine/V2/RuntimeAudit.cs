@@ -7,9 +7,19 @@ namespace CodexFlow.QueryRuntime.Engine.V2;
 
 public static class RuntimeAuditSchema
 {
+    /// <summary>Legacy schema, written whenever no enhanced feature is enabled.</summary>
     public const int CurrentVersion = 1;
 
+    /// <summary>Written for every event of a Turn that enables Q6 tool-call repair.</summary>
+    public const int EnhancedVersion = 2;
+
     public const int MaxEventsPerTurn = 100_000;
+
+    public static bool IsSupported(int version)
+        => version is CurrentVersion or EnhancedVersion;
+
+    internal static int ForRequest(RuntimeToolCallRepairPolicy? toolCallRepair)
+        => toolCallRepair == null ? CurrentVersion : EnhancedVersion;
 }
 
 public readonly record struct RuntimeAuditEventId(string Value);
@@ -31,7 +41,10 @@ public enum RuntimeAuditEventKind
     /// introduced after audit v1 (continue_without_tools) are recorded, so
     /// recordings of legacy decisions stay unchanged.
     /// </summary>
-    TerminationDecided = 7
+    TerminationDecided = 7,
+
+    /// <summary>Q6 tool-call repair reservation or outcome (audit schema 2 only).</summary>
+    ToolCallRepairAttempted = 8
 }
 
 public enum RuntimeAuditSensitivity
@@ -69,6 +82,7 @@ public enum RuntimeAuditFailureMode
 [JsonDerivedType(typeof(RuntimeTurnTerminalAuditPayload), "turn_terminal")]
 [JsonDerivedType(typeof(RuntimeToolFinalizationAuditPayload), "tool_finalization")]
 [JsonDerivedType(typeof(RuntimeTerminationDecisionAuditPayload), "termination_decision")]
+[JsonDerivedType(typeof(RuntimeToolCallRepairAuditPayload), "tool_call_repair")]
 [JsonDerivedType(typeof(RuntimePublicAuditPayload), "public_summary")]
 public abstract record RuntimeAuditPayload;
 
@@ -145,6 +159,40 @@ public sealed record RuntimeTerminationDecisionAuditPayload(
     RuntimeStepId AfterStepId,
     string Decision,
     string? Feedback) : RuntimeAuditPayload;
+
+/// <summary>
+/// Q6 repair record. The reservation phase is written before the repair request
+/// and carries the exact repair request (sensitive); the outcome phase is written
+/// before the Step commits and carries the raw repair response (sensitive) plus
+/// the recovered tool identity and argument digest.
+/// </summary>
+/// <param name="Phase">reservation or outcome.</param>
+/// <param name="Trigger">malformed_tool_call or invalid_tool_call_identity.</param>
+/// <param name="ReservationIndex">One-based repair ordinal within the Turn.</param>
+/// <param name="MaxPerTurn">The frozen shared repair budget.</param>
+public sealed record RuntimeToolCallRepairAuditPayload(
+    RuntimeStepId StepId,
+    string Phase,
+    string Trigger,
+    int ReservationIndex,
+    int MaxPerTurn) : RuntimeAuditPayload
+{
+    public string? Outcome { get; init; }
+
+    public RuntimeModelRequest? RepairRequest { get; init; }
+
+    public string? ResponseText { get; init; }
+
+    public string? ResponseSha256 { get; init; }
+
+    public string? RecoveredToolName { get; init; }
+
+    public string? ArgumentsSha256 { get; init; }
+
+    public RuntimeUsageTotals? Usage { get; init; }
+
+    public string? ErrorCode { get; init; }
+}
 
 /// <summary>
 /// Explicit allow-list projection used by public durable audit. It contains
@@ -358,15 +406,27 @@ public static class RuntimeRecordedReplay
         var finalized = false;
         var toolFreeNext = false;
         RuntimeTurnTerminalAuditPayload? terminal = null;
+        var recordingVersion = recording.Events.Count > 0 ? recording.Events[0].SchemaVersion : 0;
+        var continueWithoutToolsCount = 0;
+        var repairReservations = new Dictionary<string, RuntimeToolCallRepairAuditPayload>(StringComparer.Ordinal);
+        var repairOutcomes = new Dictionary<string, RuntimeToolCallRepairAuditPayload>(StringComparer.Ordinal);
+        int? repairBudget = null;
 
         for (var index = 0; index < recording.Events.Count; index++)
         {
             var current = recording.Events[index];
-            if (current.SchemaVersion != RuntimeAuditSchema.CurrentVersion)
+            if (!RuntimeAuditSchema.IsSupported(current.SchemaVersion))
             {
                 throw Corrupt(
                     "audit_schema_incompatible",
-                    $"Audit schema {current.SchemaVersion} is not supported; expected {RuntimeAuditSchema.CurrentVersion}.",
+                    $"Audit schema {current.SchemaVersion} is not supported; expected {RuntimeAuditSchema.CurrentVersion} or {RuntimeAuditSchema.EnhancedVersion}.",
+                    RuntimeErrorCategory.SchemaIncompatible);
+            }
+            if (current.SchemaVersion != recordingVersion)
+            {
+                throw Corrupt(
+                    "audit_schema_incompatible",
+                    "All events of one recording must use the same audit schema.",
                     RuntimeErrorCategory.SchemaIncompatible);
             }
             if (current.Sequence != index + 1)
@@ -427,6 +487,10 @@ public static class RuntimeRecordedReplay
                     {
                         throw Corrupt("audit_model_response_without_request", "A model response has no unique preceding request.");
                     }
+                    if (repairReservations.ContainsKey(response.StepId.Value))
+                    {
+                        ValidateRepairedResponse(response, repairOutcomes.GetValueOrDefault(response.StepId.Value));
+                    }
                     foreach (var call in response.Output.ToolCalls)
                     {
                         if (!calls.Add(call.InvocationId.Value))
@@ -472,6 +536,61 @@ public static class RuntimeRecordedReplay
                         throw Corrupt("audit_termination_decision_invalid", "The recorded termination decision is unknown or orphaned.");
                     }
                     toolFreeNext = true;
+                    continueWithoutToolsCount++;
+                    if (repairBudget is { } sharedBudget &&
+                        repairReservations.Count + continueWithoutToolsCount > sharedBudget)
+                    {
+                        throw Corrupt("audit_tool_call_repair_budget_exceeded", "Repairs and continue_without_tools exceed the shared budget.");
+                    }
+                    break;
+                case RuntimeToolCallRepairAuditPayload repair:
+                    if (recordingVersion != RuntimeAuditSchema.EnhancedVersion)
+                    {
+                        throw Corrupt(
+                            "audit_tool_call_repair_schema_invalid",
+                            "Tool-call repair events require audit schema 2.",
+                            RuntimeErrorCategory.SchemaIncompatible);
+                    }
+                    var repairStep = repair.StepId.Value;
+                    if (!requests.Contains(repairStep) || responses.Contains(repairStep) ||
+                        !RuntimeToolCallRepairCodes.IsTrigger(repair.Trigger) ||
+                        repair.MaxPerTurn is < 1 or > RuntimeToolCallRepairPolicy.MaxAllowedPerTurn ||
+                        repairBudget is { } frozenBudget && frozenBudget != repair.MaxPerTurn)
+                    {
+                        throw Corrupt("audit_tool_call_repair_invalid", "A tool-call repair is orphaned, late, or inconsistent.");
+                    }
+                    repairBudget = repair.MaxPerTurn;
+                    if (repair.Phase == RuntimeToolCallRepairCodes.PhaseReservation)
+                    {
+                        if (repair.Outcome != null || repair.RepairRequest == null ||
+                            repair.RepairRequest.StepId != repair.StepId ||
+                            repair.RepairRequest.Tools.Count != 0 ||
+                            !repairReservations.TryAdd(repairStep, repair) ||
+                            repair.ReservationIndex != repairReservations.Count ||
+                            repairReservations.Count + continueWithoutToolsCount > repair.MaxPerTurn)
+                        {
+                            throw Corrupt("audit_tool_call_repair_reservation_invalid", "A Step may reserve one repair within the shared Turn budget.");
+                        }
+                    }
+                    else if (repair.Phase == RuntimeToolCallRepairCodes.PhaseOutcome)
+                    {
+                        if (!repairReservations.TryGetValue(repairStep, out var reservation) ||
+                            reservation.ReservationIndex != repair.ReservationIndex ||
+                            !string.Equals(reservation.Trigger, repair.Trigger, StringComparison.Ordinal) ||
+                            !RuntimeToolCallRepairCodes.IsKnownOutcome(repair.Outcome) ||
+                            !repairOutcomes.TryAdd(repairStep, repair) ||
+                            repair.Outcome == RuntimeToolCallRepairCodes.OutcomeToolCallRecovered &&
+                            (string.IsNullOrWhiteSpace(repair.RecoveredToolName) || string.IsNullOrWhiteSpace(repair.ArgumentsSha256)) ||
+                            repair.Outcome == RuntimeToolCallRepairCodes.OutcomeFinalPayloadReturned &&
+                            string.IsNullOrWhiteSpace(repair.ResponseSha256))
+                        {
+                            throw Corrupt("audit_tool_call_repair_outcome_invalid", "A repair outcome must follow its own reservation exactly once.");
+                        }
+                    }
+                    else
+                    {
+                        throw Corrupt("audit_tool_call_repair_phase_invalid", "Unknown tool-call repair phase.");
+                    }
                     break;
                 case RuntimeTurnTerminalAuditPayload value:
                     if (index != recording.Events.Count - 1 || terminal != null)
@@ -489,6 +608,15 @@ public static class RuntimeRecordedReplay
             throw Corrupt("audit_terminal_missing", "The recording has no terminal event.");
         }
         var completed = terminal.Status == RuntimeTurnStatus.Completed;
+        if (completed && repairReservations.Keys.Any(step =>
+                !repairOutcomes.TryGetValue(step, out var outcome) ||
+                !RuntimeToolCallRepairCodes.IsSuccess(outcome.Outcome) ||
+                !responses.Contains(step)))
+        {
+            throw Corrupt(
+                "audit_tool_call_repair_interrupted",
+                "A completed Turn cannot contain an interrupted or rejected tool-call repair.");
+        }
         var trajectoryCountsInvalid = completed
             ? requests.Count != responses.Count ||
               terminal.TotalSteps != responses.Count ||
@@ -540,6 +668,44 @@ public static class RuntimeRecordedReplay
             ToolExecutions: false);
     }
 
+    private static void ValidateRepairedResponse(
+        RuntimeModelResponseAuditPayload response,
+        RuntimeToolCallRepairAuditPayload? outcome)
+    {
+        if (outcome == null || !RuntimeToolCallRepairCodes.IsSuccess(outcome.Outcome))
+        {
+            throw Corrupt(
+                "audit_tool_call_repair_commit_invalid",
+                "A Step with a repair reservation committed output without a successful repair outcome.");
+        }
+        var calls = response.Output.ToolCalls;
+        if (outcome.Outcome == RuntimeToolCallRepairCodes.OutcomeToolCallRecovered)
+        {
+            if (calls.Count != 1 ||
+                !string.Equals(calls[0].Name, outcome.RecoveredToolName, StringComparison.Ordinal) ||
+                !string.Equals(
+                    RuntimeToolCallRepair.ArgumentsDigest(calls[0].Arguments),
+                    outcome.ArgumentsSha256,
+                    StringComparison.Ordinal))
+            {
+                throw Corrupt(
+                    "audit_tool_call_repair_commit_mismatch",
+                    "The committed tool call does not match the recorded repair outcome.");
+            }
+            return;
+        }
+        if (calls.Count != 0 ||
+            !string.Equals(
+                RuntimeToolCallRepair.TextDigest(response.Output.Text),
+                outcome.ResponseSha256,
+                StringComparison.Ordinal))
+        {
+            throw Corrupt(
+                "audit_tool_call_repair_commit_mismatch",
+                "The committed final payload does not match the recorded repair response.");
+        }
+    }
+
     private static RuntimeAuditReplayException Corrupt(
         string code,
         string message,
@@ -573,6 +739,9 @@ public static class RuntimeRecordedReplay
             RuntimeAuditEventKind.TerminationDecided =>
                 value.Payload is RuntimeTerminationDecisionAuditPayload decision &&
                 value.StepId == decision.AfterStepId && value.InvocationId == null,
+            RuntimeAuditEventKind.ToolCallRepairAttempted =>
+                value.Payload is RuntimeToolCallRepairAuditPayload repair &&
+                value.StepId == repair.StepId && value.InvocationId == null,
             _ => false
         };
         if (!valid)
@@ -621,4 +790,5 @@ public sealed class RuntimeAuditReplayException(RuntimeError error, Exception? i
 [JsonSerializable(typeof(RuntimePublicAuditPayload))]
 [JsonSerializable(typeof(RuntimeToolFinalizationAuditPayload))]
 [JsonSerializable(typeof(RuntimeTerminationDecisionAuditPayload))]
+[JsonSerializable(typeof(RuntimeToolCallRepairAuditPayload))]
 public partial class RuntimeAuditJsonContext : JsonSerializerContext;
