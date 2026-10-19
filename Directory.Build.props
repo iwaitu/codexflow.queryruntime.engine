@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <VersionPrefix>0.24.1-ia.20261019.2</VersionPrefix>
+    <VersionPrefix>0.24.1-ia.20261019.3</VersionPrefix>
     <PackageVersion Condition="'$(PackageVersion)' == ''">$(VersionPrefix)</PackageVersion>
     <Authors>CodexFlow</Authors>
     <Company>CodexFlow</Company>
@@ -24,4 +24,3 @@
     <None Include="$(MSBuildThisFileDirectory)assets/nuget/icon.png" Pack="true" PackagePath="\" Link="icon.png" />
   </ItemGroup>
 </Project>
-

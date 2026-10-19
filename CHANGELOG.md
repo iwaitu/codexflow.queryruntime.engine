@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.24.1-ia.20261019.3] (local prerelease, not published)
+
+- Fix ToolPipeline budget admission counting a prepared invocation twice. The
+  transition to Executing already reserves it in ToolCallCount. Batched calls
+  can use exactly the declared limit; genuine overflow remains denied and each
+  admitted invocation executes at most once. No API, limit or replay change.
+- Fixed-input incident sequence 3/2/3/1/1/2 now reaches twelve tool calls and
+  tool-free finalization; genuine overflow and recorded replay remain checked.
+
 ## [0.24.1-ia.20261019.2] (local prerelease, not published)
 
 Opt-in additions for the ia-engine bundle integration. With none of them enabled,
@@ -157,4 +166,3 @@ calls, retries, context projection, checkpoints and audit records are unchanged.
 
 Log management and NuGet trusted publishing. See the git history for earlier
 releases.
-

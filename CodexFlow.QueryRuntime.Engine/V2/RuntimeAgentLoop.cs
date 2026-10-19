@@ -1321,7 +1321,8 @@ public sealed class RuntimeAgentLoop
                 results[index] = unknown;
                 continue;
             }
-            if (session.ActiveTurn!.Progress.ToolCallCount + prepared.Count >= request.Budget.MaxToolCalls)
+            // Each admitted call already entered Executing below, which counted it in ToolCallCount.
+            if (session.ActiveTurn!.Progress.ToolCallCount >= request.Budget.MaxToolCalls)
             {
                 var exhausted = FailureResult(
                     call,
