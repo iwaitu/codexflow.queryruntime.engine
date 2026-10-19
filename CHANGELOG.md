@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.0]
+
+First published release containing the ia-engine bundle integration work
+previously shipped only as the local `0.24.1-ia.20261019.2`–`.4` prereleases
+(details below): opt-in context hard-cap protection, durable tool-call recovery,
+single-count tool-budget admission, and safe finalization/persistence of
+accounted tool-budget denials. Defaults are unchanged when the new options are
+not enabled.
+
 ## [0.24.1-ia.20261019.4] (local prerelease, not published)
 
 - With an explicit AfterToolCalls finalization policy, a fully accounted hard-cap
