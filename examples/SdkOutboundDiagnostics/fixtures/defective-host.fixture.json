@@ -4,7 +4,7 @@
   "issue": "Host options factory drops explicit MaxOutputTokens and RequireJsonObject (synthetic, reviewed, non-sensitive).",
   "apiMode": "chat_completions",
   "model": "qwen3-next-80b",
-  "sdkVersion": "2.0.26",
+  "sdkVersion": "2.0.27",
   "adapterVersion": "qre.meai-adapter/2",
   "optionsMapping": "passthrough-empty",
   "request": {

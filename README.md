@@ -10,7 +10,7 @@ CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and ligh
 
 QRE can be embedded directly into .NET host applications via official NuGet packages or published as a standalone, zero-dependency `qre` Native AOT binary, operating independently of the CodexFlow web platform.
 
-This repository is on the **0.25.0 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
+This repository is on the **0.25.1 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
 
 ---
 
@@ -692,12 +692,12 @@ Model Studio recommends omitting `max_tokens` for structured output to avoid tru
 Embed the QRE V2 engine and model providers directly into any C# / .NET 10 host application:
 
 ### 1. Package References
-Add the official NuGet packages (`0.25.0`):
+Add the official NuGet packages (`0.25.1`):
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.25.0" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.25.0" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.25.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.25.1" />
 </ItemGroup>
 ```
 

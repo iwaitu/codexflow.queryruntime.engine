@@ -76,7 +76,7 @@ both sides were completely observed and a rule supports the combination.
 package-local, case-sensitive aliases; cross-package alias comparison needs an
 explicit `--alias-map`. The earliest cross-run difference is not a proven root cause.
 
-## Capability matrix (VllmChatClient 2.0.26)
+## Capability matrix (VllmChatClient 2.0.27)
 
 All accepted cells: injected transport used, one handler-visible send per
 streaming call, no streaming retry, deferred `JsonContent` with unknown length,

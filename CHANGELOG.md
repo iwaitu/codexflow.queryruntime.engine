@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.1]
+
+- Upgrade all runtime and example references to VllmChatClient **2.0.27**. Ordinary
+  JSON-array message text now stays a string instead of becoming multimedia
+  content parts; typed media and native tool history retain their protocols.
+- Re-verify all 27 provider/API-mode capability cells against the published SDK
+  and align the diagnostics matrix and offline fixtures with 2.0.27.
+- No QRE agent-loop policy or public protocol changes.
+
 ## [0.25.0]
 
 First published release containing the ia-engine bundle integration work
