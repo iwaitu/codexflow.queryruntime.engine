@@ -61,6 +61,12 @@ public static partial class QreModelErrorClassifier
             // Not the caller's token: an HTTP timeout or provider-side abort.
             return Create(RuntimeErrorCategory.ProviderTransport, TimeoutCode, exception, retryable: true);
         }
+        if (exception is NotSupportedException)
+        {
+            // Deterministic SDK request rejection (for example native Anthropic
+            // JSON without a schema) is not a failed network stream.
+            return Create(RuntimeErrorCategory.ProviderProtocol, RequestRejectedCode, exception, retryable: false);
+        }
         if (IsAuthenticationMessage(exception.Message))
         {
             return Create(RuntimeErrorCategory.ProviderAuthentication, AuthenticationFailedCode, exception, retryable: false);

@@ -395,7 +395,16 @@ internal static class QreDiagnosticsAnalyzer
         {
             if (http.ResponseFormat.Value is "json_object" or "json_schema")
             {
-                if (http.ResponseFormat.SourcePath != "response_format" && http.ResponseFormat.SourcePath != "text.format")
+                if (http.ResponseFormat.SourcePath == "output_config.format" && http.Protocol == QreApiModeNames.AnthropicMessages)
+                {
+                    findings.Add(Finding("responseFormat", adapter.ResponseFormat.Value, http.ResponseFormat.Value,
+                        adapter.ResponseFormat.Value != "json_schema" || http.ResponseFormat.Value != "json_schema"
+                            ? QreFindingClass.UnexpectedChange
+                            : Registered(QreTransportCapabilityMatrix.JsonSchemaOutputConfigFormat)
+                                ? QreFindingClass.ExpectedTransform : QreFindingClass.NotComparable,
+                        QreTransportCapabilityMatrix.JsonSchemaOutputConfigFormat));
+                }
+                else if (http.ResponseFormat.SourcePath != "response_format" && http.ResponseFormat.SourcePath != "text.format")
                 {
                     notes.Add("json_format_non_standard_path");
                 }

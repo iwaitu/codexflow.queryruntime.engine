@@ -164,6 +164,25 @@ public sealed class QreDiagnosticsAnalysisTests : IDisposable
                                                        f.Classification == QreFindingClass.UnexpectedChange);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NativeSchemaTransform_IsNotCertifiedForUnknownSdkOrMismatchedFormat(bool unknownSdk)
+    {
+        using var schema = JsonDocument.Parse("""{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}""");
+        var (sink, _) = await AnalyzeDirectAsync(Request(parameters: new RuntimeModelParameters(Model: ChatModel)
+        {
+            ResponseFormat = RuntimeResponseFormat.ForJsonSchema(schema.RootElement)
+        }), apiMode: QreModelApiMode.AnthropicMessages);
+        var records = sink.Records.Select(record => record.EventType == QreDiagnosticEventTypes.AdapterPrepared
+            ? unknownSdk ? record with { SdkVersion = "0.0.0-unverified" }
+                : record with { Request = record.Request! with { ResponseFormat = new QreSemanticValue { State = QreDiagnosticFieldStates.Present, Value = "json_object", SourcePath = "ChatOptions.ResponseFormat" } } }
+            : record).ToArray();
+        var analysis = QreDiagnosticsAnalyzer.AnalyzeCall(records[0].ModelCallId!, records, versionsSupported: true);
+        var finding = Assert.Single(analysis.Findings, f => f.FieldPath == "responseFormat" && f.SourceStage == QreDiagnosticsAnalyzer.AdapterStage);
+        Assert.Equal(unknownSdk ? QreFindingClass.NotComparable : QreFindingClass.UnexpectedChange, finding.Classification);
+    }
+
     [Fact]
     public async Task NoToolsAndNoRequiredTool_IsExpectedTransform()
     {
@@ -215,7 +234,11 @@ public sealed class QreDiagnosticsAnalysisTests : IDisposable
         Assert.Contains("known_sdk_limitation", maxTokens.Tags);
         Assert.Equal("adapter_prepared->http_prepared", gemini.FirstUnexpectedBoundary);
 
-        var withSystem = Request(parameters: new RuntimeModelParameters(Model: ChatModel, RequireJsonObject: true));
+        using var nativeSchema = JsonDocument.Parse("""{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}""");
+        var withSystem = Request(parameters: new RuntimeModelParameters(Model: ChatModel)
+        {
+            ResponseFormat = RuntimeResponseFormat.ForJsonSchema(nativeSchema.RootElement, "probe")
+        });
         withSystem = withSystem with
         {
             Messages = [new RuntimeMessage(RuntimeMessageRole.System, [new RuntimeTextItem("system rules")]), .. withSystem.Messages]
@@ -223,7 +246,9 @@ public sealed class QreDiagnosticsAnalysisTests : IDisposable
         var (_, anthropic) = await AnalyzeDirectAsync(withSystem, apiMode: QreModelApiMode.AnthropicMessages);
         Assert.DoesNotContain(anthropic.Findings, static f => f.FieldPath == "messages" && f.Classification == QreFindingClass.UnexpectedChange);
         var format = Assert.Single(anthropic.Findings, static f => f.FieldPath == "responseFormat" && f.SourceStage == QreDiagnosticsAnalyzer.AdapterStage);
-        Assert.Contains("unsupported_constraint", format.Tags);
+        Assert.Equal(QreFindingClass.ExpectedTransform, format.Classification);
+        Assert.Equal(QreTransportCapabilityMatrix.JsonSchemaOutputConfigFormat, format.Rule);
+        Assert.DoesNotContain("unsupported_constraint", format.Tags);
         Assert.Contains(anthropic.Findings, static f => f.Rule == QreTransportCapabilityMatrix.MaxTokensDefaultWhenUnspecified && f.Classification == QreFindingClass.ExpectedTransform);
         Assert.Contains("system_hoisted_to_top_level", anthropic.Notes);
 

@@ -32,7 +32,7 @@ internal static class QreSemanticProjector
     private static readonly HashSet<string> AnthropicFields = new(StringComparer.Ordinal)
     {
         "model", "max_tokens", "messages", "system", "tools", "tool_choice", "temperature", "stream", "thinking",
-        "top_p"
+        "top_p", "output_config"
     };
 
     public static QreSemanticRequest FromRuntime(RuntimeModelRequest request, QreOutboundDiagnostics diagnostics)
@@ -541,13 +541,7 @@ internal static class QreSemanticProjector
             ToolChoice = toolChoice,
             Temperature = NumberProperty(root, "temperature") ?? Absent("temperature"),
             MaxOutputTokens = NumberProperty(root, "max_tokens") ?? Absent("max_tokens"),
-            // The Messages API has no JSON response-format field.
-            ResponseFormat = new QreSemanticValue
-            {
-                State = QreDiagnosticFieldStates.Absent,
-                Value = "none",
-                SourcePath = "unsupported_by_protocol"
-            },
+            ResponseFormat = AnthropicResponseFormat(root),
             Stream = BoolProperty(root, "stream"),
             Model = HttpModel(root, diagnostics),
             UncheckedFieldCount = CountUnchecked(root, AnthropicFields),
@@ -603,6 +597,20 @@ internal static class QreSemanticProjector
                 kinds.Add("other");
             }
         }
+    }
+
+    private static QreSemanticValue AnthropicResponseFormat(JsonElement root)
+    {
+        const string path = "output_config.format";
+        if (!root.TryGetProperty("output_config", out var config))
+            return new QreSemanticValue { State = QreDiagnosticFieldStates.Absent, Value = "none", SourcePath = path };
+        if (config.ValueKind != JsonValueKind.Object)
+            return new QreSemanticValue { State = QreDiagnosticFieldStates.Invalid, SourcePath = path };
+        if (!config.TryGetProperty("format", out var format))
+            return new QreSemanticValue { State = QreDiagnosticFieldStates.Absent, Value = "none", SourcePath = path };
+        return format.ValueKind == JsonValueKind.Object
+            ? FormatCategory(format, path)
+            : new QreSemanticValue { State = QreDiagnosticFieldStates.Invalid, SourcePath = path };
     }
 
     private static QreSemanticValue ResponseFormat(JsonElement root, string property, string[] alternatives)

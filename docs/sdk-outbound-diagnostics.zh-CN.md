@@ -50,12 +50,13 @@ qre diagnose rebuild fixture.json [--json]
 | Temperature 由 double 转 float、在 float 精度内相等 | expected_transform |
 | 已登记的 SDK 改写（见能力矩阵） | expected_transform |
 | 已观察到的 SDK 丢失显式约束 | unexpected_change + `known_sdk_limitation` |
-| 协议无法承载该约束（Anthropic 的 JSON 格式） | unexpected_change + `unsupported_constraint` |
+| Anthropic JSON Schema 映射为 `output_config.format` | expected_transform |
+| Anthropic 无 schema 的 JsonObject | 发送 HTTP 前拒绝，不宣称约束已成功传输 |
 | 未验证的 Provider × API 模式组合 | not_comparable |
 
 `RequireJsonObject = false` 等同于未指定。工具与模型名是包内、区分大小写的别名；跨包别名需显式 `--alias-map` 才能比较。跨运行的“最早差异”不是已证明的根因。
 
-## 能力矩阵（VllmChatClient 2.0.27）
+## 能力矩阵（VllmChatClient 2.0.28）
 
 所有被接受的组合：使用注入的传输；每次流式调用一次 Handler 可见发送；流式路径无重试；请求为延迟序列化的 `JsonContent` 且长度未知；SDK 会在释放 chat client 时释放注入的 `HttpClient`，并向其写入默认 Header。使用共享基类的客户端在内容和用量之后单独发出 provider 的结束更新；Gemini 专用客户端的 OpenAI 兼容文本流仍不报告常规 Stop，其既有能力仍为 `tool_calls_only`。
 
@@ -66,7 +67,7 @@ qre diagnose rebuild fixture.json [--json]
 | gemini | verified；丢失 `max_tokens`、`response_format`、`tool_choice` | unsupported | unsupported |
 | deepseek | verified；丢失 `response_format` | verified；丢失 `response_format` | verified |
 
-Anthropic 组合在未指定时默认 `max_tokens` 为 8192，且没有 JSON 响应格式字段。其他 SDK 版本的所有组合均报告 `unverified`。把同一个 `HttpClient` 实例共享给 SDK **不受支持**；请改为共享 Handler。
+Anthropic 组合在未指定时默认 `max_tokens` 为 8192；JSON Schema 通过 `output_config.format` 传递，登记转换为 `anthropic_json_schema_output_config_format`。无 schema 的 JsonObject 在 HTTP 发送前拒绝，限制标记为 `anthropic_json_object_requires_schema`；请使用 `RuntimeResponseFormat.ForJsonSchema` / `ChatResponseFormat.ForJsonSchema`。schema 原样传递，不自动改写服务端不支持的约束。该能力描述请求传输，不代表已证明服务端执行了所有约束。其他 SDK 版本的所有组合均报告 `unverified`。把同一个 `HttpClient` 实例共享给 SDK **不受支持**；请改为共享 Handler。
 
 ## 嵌入
 

@@ -5,6 +5,19 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.2]
+
+- Upgrade runtime and example references to published VllmChatClient **2.0.28**.
+- Native Anthropic JSON Schema now reaches `output_config.format` in regular and
+  streaming requests. Diagnostics recognize this path as the registered
+  `anthropic_json_schema_output_config_format` transform rather than a lost format.
+- Verify the capability matrix against SDK 2.0.28. Native schema-free JsonObject
+  requests now fail before HTTP with `NotSupportedException`; supply a schema or
+  remove the format. The adapter preserves schemas and does not rewrite unsupported
+  constraints. Other API modes retain their existing behavior.
+- With `ClassifyProviderErrors`, SDK `NotSupportedException` is a non-retryable protocol request
+  rejection (`provider_request_rejected`), rather than a transport stream failure.
+
 ## [0.25.1]
 
 - Upgrade all runtime and example references to VllmChatClient **2.0.27**. Ordinary

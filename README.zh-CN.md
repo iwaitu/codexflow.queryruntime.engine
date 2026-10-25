@@ -10,7 +10,7 @@ CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发�
 
 QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中，也可以编译为零外部依赖的独立 `qre` Native AOT 命令行工具直接运行，完全解耦于 CodexFlow Web 平台。
 
-当前仓库处于 **0.25.1 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
+当前仓库处于 **0.25.2 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
 
 ---
 
@@ -630,6 +630,12 @@ QRE 底层基于 `Microsoft.Extensions.AI` 构建，并通过官方 `CodexFlow.Q
 > **底层驱动**：**`VllmChatClient`** 负责序列化 schema 请求；是否实施文法约束解码取决于远端后端与模型的支持。
 > **QRE 协同**：QRE 运行时负责上层 Agent 循环编排、`QreThinkingPolicy` 思考策略协同，以及全链路出站诊断（Outbound Diagnostics）监控。
 
+Anthropic 原生 Messages（SDK 2.0.28+）在普通和流式请求中，把
+`ForJsonSchema(...)` 映射到 `output_config.format`。无 schema 的 `Json` /
+`RuntimeResponseFormat.JsonObject()` 会在 HTTP 发送前抛 `NotSupportedException`；
+请提供 schema 或取消格式要求。启用 QRE 的 `ClassifyProviderErrors` 时，
+该错误归为不可重试的协议请求拒绝。SDK 不自动改写后端不支持的 schema 约束。
+
 #### 1. 强模式 vs 弱提示模式
 - **`ChatResponseFormat.Json` (`json_object`)**：模型仅在 Prompt 中被提示输出合法 JSON，但无字段模式校验，可能出现漏字段或类型偏差；
 - **`ChatResponseFormat.ForJsonSchema(...)` (`json_schema`)**：向服务端请求 schema 约束输出，客户端仍需校验结果。HTTP 200 不代表后端执行了严格约束，参见[真实 API 验证记录](examples/live-api-validation.md)。
@@ -700,12 +706,12 @@ var options = new VllmChatOptions
 你可以直接将 QRE 核心与模型库作为 NuGet 包集成到任意 C# / .NET 10 应用中（Web API、后台服务或桌面客户端）。
 
 ### 1. 引用核心包
-在你的 `.csproj` 中引入官方 NuGet 包（`0.25.1`）：
+在你的 `.csproj` 中引入官方 NuGet 包（`0.25.2`）：
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.25.1" />
-  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.25.1" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Engine" Version="0.25.2" />
+  <PackageReference Include="CodexFlow.QueryRuntime.Models" Version="0.25.2" />
 </ItemGroup>
 ```
 

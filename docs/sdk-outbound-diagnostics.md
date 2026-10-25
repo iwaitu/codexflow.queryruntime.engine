@@ -69,14 +69,15 @@ both sides were completely observed and a rule supports the combination.
 | `double` → `float` temperature within float precision | expected_transform |
 | Registered SDK rewrite (see matrix) | expected_transform |
 | Observed SDK loss of an explicit constraint | unexpected_change + `known_sdk_limitation` |
-| Protocol cannot carry the constraint (JSON format on Anthropic) | unexpected_change + `unsupported_constraint` |
+| Native Anthropic JSON Schema mapped to `output_config.format` | expected_transform |
+| Native Anthropic schema-free JsonObject | rejected before HTTP; not a successfully transmitted constraint |
 | Unverified Provider × API-mode cell | not_comparable |
 
 `RequireJsonObject = false` equals "unspecified". Tool and model names are
 package-local, case-sensitive aliases; cross-package alias comparison needs an
 explicit `--alias-map`. The earliest cross-run difference is not a proven root cause.
 
-## Capability matrix (VllmChatClient 2.0.27)
+## Capability matrix (VllmChatClient 2.0.28)
 
 All accepted cells: injected transport used, one handler-visible send per
 streaming call, no streaming retry, deferred `JsonContent` with unknown length,
@@ -92,7 +93,12 @@ still omits the normal Stop reason; its legacy capability remains `tool_calls_on
 | gemini | verified; drops `max_tokens`, `response_format`, `tool_choice` | unsupported | unsupported |
 | deepseek | verified; drops `response_format` | verified; drops `response_format` | verified |
 
-Anthropic cells default `max_tokens` to 8192 and have no JSON response format.
+Anthropic cells default `max_tokens` to 8192 and support JSON Schema through
+`output_config.format` (registered transform `anthropic_json_schema_output_config_format`).
+Schema-free JsonObject is rejected before HTTP (`anthropic_json_object_requires_schema`);
+use `RuntimeResponseFormat.ForJsonSchema` / `ChatResponseFormat.ForJsonSchema` instead.
+Schemas are preserved, without rewriting unsupported constraints. This describes
+request transmission, not proof that every server constraint was enforced.
 Other SDK versions report every cell as `unverified`. Sharing one `HttpClient`
 instance with the SDK is **unsupported**; share a handler instead.
 

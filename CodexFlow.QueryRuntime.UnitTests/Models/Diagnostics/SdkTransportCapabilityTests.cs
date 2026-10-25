@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using CodexFlow.QueryRuntime.Cli.Diagnostics;
 using CodexFlow.QueryRuntime.Models;
 using CodexFlow.QueryRuntime.Models.Diagnostics;
@@ -69,7 +70,7 @@ public sealed class SdkTransportCapabilityTests
         {
             var body = request.Content == null ? string.Empty : await request.Content.ReadAsStringAsync(ct);
             captured.Add((request.RequestUri!.AbsolutePath, request.Content, null, body));
-            return DiagnosticsTestSupport.Sse(mode, QreOfflineResponse.TextResponse("hello"));
+            return DiagnosticsTestSupport.Sse(mode, QreOfflineResponse.TextResponse(mode == QreModelApiMode.AnthropicMessages ? "{\"ok\":true}" : "hello"));
         });
         var http = new HttpClient(transport);
         var descriptor = new QreModelClientDescriptor
@@ -92,7 +93,9 @@ public sealed class SdkTransportCapabilityTests
         var sawCompletion = false;
         await foreach (var update in client.GetStreamingResponseAsync(
                            [new ChatMessage(ChatRole.User, "hi")],
-                           new ChatOptions { MaxOutputTokens = 12, Temperature = 0.25f, ResponseFormat = ChatResponseFormat.Json },
+                           new ChatOptions { MaxOutputTokens = 12, Temperature = 0.25f, ResponseFormat = mode == QreModelApiMode.AnthropicMessages
+                               ? ChatResponseFormat.ForJsonSchema(JsonSerializer.SerializeToElement(new { type = "object", properties = new { ok = new { type = "boolean" } }, required = new[] { "ok" }, additionalProperties = false }), "probe")
+                               : ChatResponseFormat.Json },
                            TestContext.Current.CancellationToken))
         {
             Assert.False(sawCompletion, "The SDK emitted another update after its completion.");
@@ -141,7 +144,19 @@ public sealed class SdkTransportCapabilityTests
         }
         var jsonDropped = cell.KnownLimitations.Contains(QreTransportCapabilityMatrix.ResponseFormatDropped) ||
                           cell.KnownLimitations.Contains(QreTransportCapabilityMatrix.JsonFormatUnsupportedByProtocol);
-        if (jsonDropped)
+        if (mode == QreModelApiMode.AnthropicMessages)
+        {
+            Assert.Equal("json_schema", semantic.ResponseFormat.Value);
+            Assert.Equal("output_config.format", semantic.ResponseFormat.SourcePath);
+            using var body = JsonDocument.Parse(send.Body);
+            var format = body.RootElement.GetProperty("output_config").GetProperty("format");
+            Assert.Equal("json_schema", format.GetProperty("type").GetString());
+            Assert.False(format.GetProperty("schema").GetProperty("additionalProperties").GetBoolean());
+            Assert.Contains(QreTransportCapabilityMatrix.JsonSchemaOutputConfigFormat, cell.RegisteredTransforms);
+            Assert.Contains(QreTransportCapabilityMatrix.JsonObjectRequiresSchema, cell.KnownLimitations);
+            Assert.DoesNotContain(QreTransportCapabilityMatrix.JsonFormatUnsupportedByProtocol, cell.KnownLimitations);
+        }
+        else if (jsonDropped)
         {
             Assert.NotEqual("json_object", semantic.ResponseFormat.Value);
         }

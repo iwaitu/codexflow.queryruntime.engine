@@ -70,7 +70,7 @@ public sealed record QreTransportCapability
 /// </summary>
 public static class QreTransportCapabilityMatrix
 {
-    public const string VerifiedSdkVersion = "2.0.27";
+    public const string VerifiedSdkVersion = "2.0.28";
 
     public const string SharedHostHttpClientScenario = QreCapabilityStatus.Unsupported;
 
@@ -90,6 +90,9 @@ public static class QreTransportCapabilityMatrix
     public const string ResponseFormatDropped = "response_format_dropped";
     public const string ToolChoiceDropped = "tool_choice_dropped";
     public const string JsonFormatUnsupportedByProtocol = "json_response_format_unsupported_by_protocol";
+    public const string JsonSchemaOutputConfigFormat = "anthropic_json_schema_output_config_format";
+    /// <summary>Capability metadata: schema-free JSON is rejected before HTTP, so no HTTP observation is available for this constraint.</summary>
+    public const string JsonObjectRequiresSchema = "anthropic_json_object_requires_schema";
 
     private static readonly string[] Providers =
         ["openai-gpt-oss", "openai-gpt", "gemini", "claude", "kimi", "minimax", "glm", "qwen", "deepseek"];
@@ -165,7 +168,8 @@ public static class QreTransportCapabilityMatrix
                     case QreApiModeNames.AnthropicMessages:
                         transforms.Add(MaxTokensDefaultWhenUnspecified);
                         transforms.Add(SystemHoistedToTopLevel);
-                        limitations.Add(JsonFormatUnsupportedByProtocol);
+                        transforms.Add(JsonSchemaOutputConfigFormat);
+                        limitations.Add(JsonObjectRequiresSchema);
                         break;
                 }
                 if (reasoningFlags && mode != QreApiModeNames.AnthropicMessages)
