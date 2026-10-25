@@ -17,6 +17,8 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   constraints. Other API modes retain their existing behavior.
 - With `ClassifyProviderErrors`, SDK `NotSupportedException` is a non-retryable protocol request
   rejection (`provider_request_rejected`), rather than a transport stream failure.
+- Wait for local process termination after a successful timeout/cancellation kill
+  before returning, avoiding Windows working-directory cleanup races.
 
 ## [0.25.1]
 

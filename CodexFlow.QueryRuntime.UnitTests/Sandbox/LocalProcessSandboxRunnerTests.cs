@@ -151,6 +151,21 @@ public sealed class LocalProcessSandboxRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_CallerCancellationWaitsForProcessExitBeforeWorkspaceCleanup()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancel.CancelAfter(TimeSpan.FromMilliseconds(300));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await new LocalProcessSandboxRunner().RunAsync(new Qre.SandboxJobSpec
+            {
+                Command = TestProcess.Command("sleep"), WorkingDirectory = workspace.Path,
+                Limits = new Qre.SandboxLimits { Timeout = TimeSpan.FromSeconds(30), MaxOutputBytes = 4096 }
+            }, cancel.Token));
+        // Disposal immediately deletes the process working directory on Windows.
+    }
+
+    [Fact]
     public async Task RunAsync_TruncatesOutputByMaxOutputBytes()
     {
         using var workspace = TemporaryWorkspace.Create();

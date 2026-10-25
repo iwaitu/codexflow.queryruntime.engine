@@ -81,11 +81,15 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             timedOut = true;
-            TryKill(process);
+            // Kill requests termination; Windows can retain the working directory
+            // until the process actually exits. Do not return that race to callers.
+            if (TryKill(process))
+                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            TryKill(process);
+            if (TryKill(process))
+                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
 
@@ -124,7 +128,7 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
         }
     }
 
-    private static void TryKill(Process process)
+    private static bool TryKill(Process process)
     {
         try
         {
@@ -132,6 +136,7 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
             {
                 process.Kill(entireProcessTree: true);
             }
+            return true;
         }
         catch (InvalidOperationException)
         {
@@ -142,6 +147,7 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
         catch (NotSupportedException)
         {
         }
+        return false;
     }
 
     private sealed class BoundedOutputBuffer(int maxBytes)
