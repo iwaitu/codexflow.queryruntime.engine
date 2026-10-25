@@ -5,6 +5,17 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.4]
+
+- Consume VllmChatClient **2.0.31** with native Sonnet 5.5 thinking and signed
+  reasoning replay support. Preserve opaque reasoning data intact through context
+  history; reject oversized data atomically with `opaque_reasoning_item_too_large`.
+- Verify real SDK/protocol/Engine history round trips in all three streaming modes
+  and non-retryable forced-tool rejection before HTTP. Native Sonnet callers must
+  select Auto explicitly when they need a tool action.
+- The initial comparison run uses user-authorized local NuGet builds while the
+  public SDK package is validating; local provenance is recorded separately.
+
 ## [0.25.3]
 
 - Consume the published VllmChatClient **2.0.30** package. Explicit DeepSeek V4

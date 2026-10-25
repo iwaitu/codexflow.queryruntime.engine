@@ -336,6 +336,8 @@ public sealed class RuntimeHistory
         var resolved = options ?? RuntimeContextOptions.Default;
         resolved.Validate();
         var history = new RuntimeHistory(version, resolved);
+        history.ValidateOpaqueReasoning(canonicalMessages.Select(static entry =>
+            (entry ?? throw new ArgumentNullException(nameof(canonicalMessages))).Message));
         var messageIds = new HashSet<string>(StringComparer.Ordinal);
         var itemIds = new HashSet<string>(StringComparer.Ordinal);
         long previousSequence = -1;
@@ -418,6 +420,7 @@ public sealed class RuntimeHistory
     public long AppendBatch(IReadOnlyList<RuntimeMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
+        ValidateOpaqueReasoning(messages);
         Version = checked(Version + 1);
         AppendCore(messages, Version);
         return Version;
@@ -450,6 +453,8 @@ public sealed class RuntimeHistory
 
     private void AppendCore(IReadOnlyList<RuntimeMessage> messages, long version)
     {
+        // Validate the whole batch before normalization can mutate indexes or history.
+        ValidateOpaqueReasoning(messages);
         foreach (var message in messages)
         {
             ArgumentNullException.ThrowIfNull(message);
@@ -469,6 +474,23 @@ public sealed class RuntimeHistory
                 version,
                 normalized,
                 Array.AsReadOnly(itemIds)));
+        }
+    }
+
+    private void ValidateOpaqueReasoning(IEnumerable<RuntimeMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            ArgumentNullException.ThrowIfNull(message);
+            ArgumentNullException.ThrowIfNull(message.Items);
+            foreach (var reasoning in message.Items.OfType<RuntimeReasoningItem>())
+            {
+                var estimatedTokens = RuntimeTokenEstimator.Estimate(reasoning.ProtectedData);
+                if (estimatedTokens > _options.MaxItemTokens)
+                {
+                    throw new RuntimeOpaqueReasoningLimitException(estimatedTokens, _options.MaxItemTokens);
+                }
+            }
         }
     }
 
@@ -527,14 +549,16 @@ public sealed class RuntimeHistory
                 case RuntimeReasoningItem reasoning:
                 {
                     var bounded = Bound(reasoning.Text, _options.MaxItemTokens, out var truncated);
-                    var protectedData = Bound(reasoning.ProtectedData, _options.MaxItemTokens, out var protectedTruncated);
+                    // Provider-signed opaque data is indivisible; append prevalidation
+                    // rejects an oversized value instead of silently corrupting it.
+                    var protectedData = reasoning.ProtectedData ?? string.Empty;
                     if (string.IsNullOrEmpty(bounded) && string.IsNullOrEmpty(protectedData))
                     {
                         Record(version, "empty_reasoning_omitted", sourceId);
                         continue;
                     }
                     items.Add(new RuntimeReasoningItem(bounded, protectedData));
-                    if (truncated || protectedTruncated)
+                    if (truncated)
                     {
                         Record(version, "reasoning_fragment_hard_cap", sourceId);
                     }

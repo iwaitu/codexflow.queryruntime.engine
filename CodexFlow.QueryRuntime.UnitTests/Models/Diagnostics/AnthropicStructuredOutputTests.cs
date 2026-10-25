@@ -107,7 +107,7 @@ public sealed class AnthropicStructuredOutputTests
         Assert.Equal(format == "schema" ? "json_schema" : "none", semantic!.ResponseFormat.Value);
         Assert.Equal("output_config.format", semantic.ResponseFormat.SourcePath);
         Assert.Equal(0, semantic.UncheckedFieldCount);
-        Assert.Equal("2.0.30", QreTransportCapabilityMatrix.SdkVersion);
+        Assert.Equal("2.0.31", QreTransportCapabilityMatrix.SdkVersion);
         Assert.True(QreTransportCapabilityMatrix.IsVerifiedSdk);
     }
 }
