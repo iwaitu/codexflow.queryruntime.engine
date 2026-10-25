@@ -22,7 +22,7 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.25.2", result.StandardOutput);
+        Assert.Contains("0.25.3", result.StandardOutput);
     }
 
     [Fact]

@@ -5,6 +5,23 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.3]
+
+- Consume the published VllmChatClient **2.0.30** package. Explicit DeepSeek V4
+  family names, including `deepseek-v4.1-flash-1017`, select its V4 client;
+  V3/R1 and unspecified families keep their existing client.
+- The V4 adapter removes leaked `ds_safety` blocks from answer/reasoning text
+  and outgoing reasoning history. Raw provider captures remain unchanged;
+  tool names, invocation IDs and argument values are not filtered.
+- Reverify outbound transport capabilities against SDK 2.0.30. The provider-level
+  DeepSeek matrix is exercised with V3; V4 request shapes and filtering have
+  separate model-specific tests rather than a blanket provider transform.
+- SDK 2.0.29 failed three history-replay gates and was not adopted. Published
+  2.0.30 passes regular/streaming Chat and Anthropic replay, including JSON-string
+  reasoning and native assistant replay blocks. Opaque signed/redacted blocks
+  remain untouched; Responses replay and inherited usage/signature/streamed-text
+  mappings are not claimed as fixed.
+
 ## [0.25.2]
 
 - Upgrade runtime and example references to published VllmChatClient **2.0.28**.

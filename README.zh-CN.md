@@ -10,9 +10,17 @@ CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发�
 
 QRE 既可以通过官方 NuGet 包以原生 C# 形式嵌入到宿主应用中，也可以编译为零外部依赖的独立 `qre` Native AOT 命令行工具直接运行，完全解耦于 CodexFlow Web 平台。
 
-当前仓库处于 **0.25.2 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
+当前仓库处于 **0.25.3 正式版（纯 V2 架构）**。所有新集成均构建在 `CodexFlow.QueryRuntime.Protocol`、`CodexFlow.QueryRuntime.Engine.V2` 与 `CodexFlow.QueryRuntime.Models` 之上；旧版 v1 API 已完全从执行面切断，仅保留数据层契约用于历史 Trace 兼容与迁移参考。
 
 ---
+
+DeepSeek V4 名称（如 `deepseek-v4.1-flash-1017`）使用 SDK 2.0.30 的 V4
+适配器，过滤泄漏到文本和推理历史中的审核块；工具参数和原始捕获不变。
+V3/R1 保持原客户端。提供商传输矩阵以 V3 为 DeepSeek 基线，V4 行为另有
+专项验证。发送 schema 不代表提供商强制执行；阿里云 1017 只保证 JSON Object。
+原生回放保留不透明签名/redacted块，不修复SDK原有签名或计量映射。
+已验收Chat/Anthropic普通及流式回放，Responses回放未验证；流式历史可能
+把推理同时拼入assistant文本，这一既有映射保持原样。
 
 ## 目录
 

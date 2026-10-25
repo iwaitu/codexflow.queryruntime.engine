@@ -77,7 +77,19 @@ both sides were completely observed and a rule supports the combination.
 package-local, case-sensitive aliases; cross-package alias comparison needs an
 explicit `--alias-map`. The earliest cross-run difference is not a proven root cause.
 
-## Capability matrix (VllmChatClient 2.0.28)
+## Capability matrix (VllmChatClient 2.0.30)
+
+The `deepseek` provider row is exercised with V3. Explicit V4 model names use
+`VllmDeepseekV4ChatClient`; model-specific tests also check their actual chat and
+Anthropic request fields. V4 response text and outgoing reasoning history may
+have leaked moderation blocks removed. This is an adapter result, not raw
+provider text. Raw HTTP captures retain the original body; function names,
+invocation IDs and argument values remain unchanged. No filtering transform is
+registered for every DeepSeek model solely because the provider ID matches.
+Regular/streaming Chat and Anthropic replay are verified on SDK 2.0.30, including
+JSON-string reasoning and native assistant text/unsigned thinking. Opaque signed,
+redacted and unknown blocks remain untouched. Responses replay and the base SDK's
+signature, input-usage and reasoning-in-streamed-text mappings are not fixed here.
 
 All accepted cells: injected transport used, one handler-visible send per
 streaming call, no streaming retry, deferred `JsonContent` with unknown length,

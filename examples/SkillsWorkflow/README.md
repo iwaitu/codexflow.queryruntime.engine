@@ -10,7 +10,7 @@
    - 保持极低的常驻 Token 开销，避免上下文窗口被冗长的规程污染。
 2. **QRE 工具调度**：
    - 宿主把 SDK 的 `ListSkillFiles` 与 `ReadSkillFile` 映射为 QRE 工具声明，并通过 `IRuntimeToolExecutor` 执行；仅设置 `EnableSkills` 并不能完成 QRE 工具执行接线。
-   - 示例通过反射访问锁定版本 VllmChatClient 2.0.28 的私有方法，升级 SDK 时需重新验证。SDK 还提供 `CreateSkillFile`，本示例没有授权其执行。
+   - 示例通过反射访问锁定版本 VllmChatClient 2.0.30 的私有方法，升级 SDK 时需重新验证。SDK 还提供 `CreateSkillFile`，本示例没有授权其执行。
    - 在线测试显式要求模型列出并读取技能，验证调用链，不衡量模型自主选择技能的能力。
 
 ## 运行方式

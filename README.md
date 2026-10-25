@@ -10,9 +10,20 @@ CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and ligh
 
 QRE can be embedded directly into .NET host applications via official NuGet packages or published as a standalone, zero-dependency `qre` Native AOT binary, operating independently of the CodexFlow web platform.
 
-This repository is on the **0.25.2 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
+This repository is on the **0.25.3 stable, v2-only** line. All active development and integrations target `CodexFlow.QueryRuntime.Protocol`, `CodexFlow.QueryRuntime.Engine.V2`, and `CodexFlow.QueryRuntime.Models`. The legacy v1 API has been severed from active execution and remains strictly for historical trace inspection and migration compatibility.
 
 ---
+
+DeepSeek V4 names (for example `deepseek-v4.1-flash-1017`) use the SDK 2.0.30
+V4 adapter. It filters leaked moderation blocks in text and reasoning history;
+tool arguments and raw captures remain unchanged. V3/R1 routes retain their
+existing adapter. The provider transport matrix uses V3 as its DeepSeek baseline;
+V4 behavior is verified separately. A requested schema is not proof that a
+provider enforces it; Alibaba's 1017 model guarantees JSON Object only.
+Native replay filtering preserves opaque signed/redacted blocks and does not
+fix the base SDK's signature or usage mapping. Chat/Anthropic regular and streaming
+replay are verified; Responses replay is not. Existing streaming history may
+include reasoning in assistant text; that inherited mapping is unchanged.
 
 ## Table of Contents
 
