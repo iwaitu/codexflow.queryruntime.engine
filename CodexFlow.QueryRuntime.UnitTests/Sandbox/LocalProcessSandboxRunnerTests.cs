@@ -1,5 +1,6 @@
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
 using CodexFlow.QueryRuntime.UnitTests.Infrastructure;
+using System.Diagnostics;
 using Qre = CodexFlow.QueryRuntime.Abstractions;
 using Xunit;
 
@@ -155,13 +156,33 @@ public sealed class LocalProcessSandboxRunnerTests
     {
         using var workspace = TemporaryWorkspace.Create();
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        cancel.CancelAfter(TimeSpan.FromMilliseconds(300));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await new LocalProcessSandboxRunner().RunAsync(new Qre.SandboxJobSpec
+        var running = new LocalProcessSandboxRunner().RunAsync(new Qre.SandboxJobSpec
+        {
+            Command = TestProcess.Command("sleep", "ready.pid"), WorkingDirectory = workspace.Path,
+            Limits = new Qre.SandboxLimits { Timeout = TimeSpan.FromSeconds(30), MaxOutputBytes = 4096 }
+        }, cancel.Token);
+        try
+        {
+            using var ready = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            ready.CancelAfter(TimeSpan.FromSeconds(10));
+            var pidFile = System.IO.Path.Combine(workspace.Path, "ready.pid");
+            int pid;
+            while (!File.Exists(pidFile) || !int.TryParse(await File.ReadAllTextAsync(pidFile, ready.Token), out pid))
+                await Task.Delay(10, ready.Token);
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await running);
+            try
             {
-                Command = TestProcess.Command("sleep"), WorkingDirectory = workspace.Path,
-                Limits = new Qre.SandboxLimits { Timeout = TimeSpan.FromSeconds(30), MaxOutputBytes = 4096 }
-            }, cancel.Token));
+                using var process = Process.GetProcessById(pid);
+                Assert.True(process.HasExited, "The runner returned before its fixture process exited.");
+            }
+            catch (ArgumentException) { /* PID is already gone. */ }
+        }
+        finally
+        {
+            cancel.Cancel();
+            try { await running; } catch (OperationCanceledException) { }
+        }
         // Disposal immediately deletes the process working directory on Windows.
     }
 
@@ -207,7 +228,25 @@ public sealed class LocalProcessSandboxRunnerTests
         {
             if (Directory.Exists(Path))
             {
-                Directory.Delete(Path, recursive: true);
+                // Windows directory deletion can race transient handles even
+                // after the runner confirmed process exit. Retry only sharing/
+                // lock violations, bounded to one second; persistent locks fail.
+                var cleanup = Stopwatch.StartNew();
+                var delay = 10;
+                for (;;)
+                {
+                    try
+                    {
+                        Directory.Delete(Path, recursive: true);
+                        return;
+                    }
+                    catch (IOException error) when (OperatingSystem.IsWindows() &&
+                        (error.HResult & 0xffff) is 32 or 33 && cleanup.Elapsed < TimeSpan.FromSeconds(1))
+                    {
+                        Thread.Sleep(delay);
+                        delay = Math.Min(delay * 2, 100);
+                    }
+                }
             }
         }
     }

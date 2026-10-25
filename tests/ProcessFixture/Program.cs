@@ -27,6 +27,11 @@ internal static class Program
                 Console.Write(args[1]);
                 break;
             case "sleep":
+                if (args.Length > 1)
+                {
+                    await File.WriteAllTextAsync(args[1] + ".tmp", Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+                    File.Move(args[1] + ".tmp", args[1]);
+                }
                 await Task.Delay(TimeSpan.FromSeconds(10));
                 break;
             case "stdio":

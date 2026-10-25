@@ -83,13 +83,11 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
             timedOut = true;
             // Kill requests termination; Windows can retain the working directory
             // until the process actually exits. Do not return that race to callers.
-            if (TryKill(process))
-                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await KillAndWaitForExitAsync(process).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            if (TryKill(process))
-                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            await KillAndWaitForExitAsync(process).ConfigureAwait(false);
             throw;
         }
 
@@ -128,7 +126,23 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
         }
     }
 
-    private static bool TryKill(Process process)
+    private static async Task KillAndWaitForExitAsync(Process process)
+    {
+        TryKill(process);
+        // Kill can fail because the process is already terminating. Confirm exit
+        // independently of both the kill result and the caller's canceled token.
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await process.WaitForExitAsync(cleanup.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+        {
+            throw new TimeoutException("Could not confirm sandbox process termination within the cleanup deadline.");
+        }
+    }
+
+    private static void TryKill(Process process)
     {
         try
         {
@@ -136,7 +150,6 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
             {
                 process.Kill(entireProcessTree: true);
             }
-            return true;
         }
         catch (InvalidOperationException)
         {
@@ -147,7 +160,6 @@ public sealed class LocalProcessSandboxRunner : ISandboxRunner
         catch (NotSupportedException)
         {
         }
-        return false;
     }
 
     private sealed class BoundedOutputBuffer(int maxBytes)
