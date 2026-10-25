@@ -9,7 +9,7 @@ using Xunit;
 namespace CodexFlow.QueryRuntime.UnitTests.Models;
 
 /// <summary>
-/// DeepSeek V4 family routing and behaviour, exercised through the QRE factory against the real VllmChatClient 2.0.30 with an in-memory transport
+/// DeepSeek V4 family routing and behaviour, exercised through the QRE factory against the real VllmChatClient 2.0.32 with an in-memory transport
 /// (no socket, no provider). V3 controls prove that the default family is unchanged. The audit-tag removal is a declared SDK transformation of
 /// response text and reasoning history only: tool names, ids and arguments are never filtered. The SDK's Anthropic <c>message_start</c> input usage
 /// is not mapped by V3; V4 must emit exactly the usage values V3 emits and these tests do not claim to fix that older metering behaviour.
@@ -218,12 +218,16 @@ public sealed class DeepseekV4CompatibilityTests
         var root = sent.RootElement;
         Assert.Equal(V4Model, root.GetProperty("model").GetString());
         Assert.Equal(256, root.GetProperty("max_tokens").GetInt32());
-        Assert.False(root.TryGetProperty("response_format", out _));
+        Assert.Equal("json_schema", response.AdditionalProperties?["vllm.structured_output.requested"]);
+        Assert.Equal("json_object", response.AdditionalProperties?["vllm.structured_output.actual"]);
+        Assert.Equal(false, response.AdditionalProperties?["vllm.structured_output.provider_schema_enforced"]);
+        Assert.Contains("VllmDeepSeekJsonObjectSchema", root.GetRawText(), StringComparison.Ordinal);
         if (native)
         {
+            Assert.False(root.TryGetProperty("response_format", out _));
             var format = root.GetProperty("output_config").GetProperty("format");
-            Assert.Equal("json_schema", format.GetProperty("type").GetString());
-            Assert.True(JsonElement.DeepEquals(Schema(), format.GetProperty("schema")));
+            Assert.Equal("json_object", format.GetProperty("type").GetString());
+            Assert.False(format.TryGetProperty("schema", out _));
             Assert.Equal("disabled", root.GetProperty("thinking").GetProperty("type").GetString());
             Assert.False(root.TryGetProperty("format", out _));
             Assert.False(root.TryGetProperty("extra_body", out _));
@@ -232,8 +236,9 @@ public sealed class DeepseekV4CompatibilityTests
         else
         {
             Assert.Equal(JsonValueKind.False, root.GetProperty("enable_thinking").ValueKind);
-            Assert.True(JsonElement.DeepEquals(Schema(), root.GetProperty("format")));      // the 2.0.30 V4 chat path still carries the schema in the vLLM extensions
-            Assert.True(JsonElement.DeepEquals(Schema(), root.GetProperty("extra_body").GetProperty("structured_outputs").GetProperty("json")));
+            Assert.Equal("json_object", root.GetProperty("response_format").GetProperty("type").GetString());
+            Assert.False(root.TryGetProperty("format", out _));
+            Assert.False(root.TryGetProperty("extra_body", out _));
             Assert.False(root.TryGetProperty("output_config", out _));
             Assert.False(root.TryGetProperty("thinking", out _));
         }

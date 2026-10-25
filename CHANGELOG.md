@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.5]
+
+- Consume VllmChatClient **2.0.32**. Existing JSON Schema callers targeting
+  `deepseek-v4.1-flash-1017` use SDK JSON Object compatibility with the original
+  schema in system instructions; tool schemas and generation call sites stay
+  unchanged. Provider-side strict schema validation is not guaranteed.
+- Pin updated SDK diagnostics/version contracts and verify the real QRE
+  factory's outgoing formats and preserved response metadata with fake transport.
+
 ## [0.25.4]
 
 - Consume VllmChatClient **2.0.31** with native Sonnet 5.5 thinking and signed
