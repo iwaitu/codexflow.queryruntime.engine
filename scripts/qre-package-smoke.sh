@@ -36,6 +36,20 @@ if [[ ! -f "${MODELS_PACKAGE}" ]]; then
   exit 1
 fi
 unzip -l "${MODELS_PACKAGE}" > "${SCRATCH}/models-contents.txt"
+for licensed_package in "${PACKAGE}" "${MODELS_PACKAGE}"; do
+  unzip -p "${licensed_package}" '*.nuspec' > "${SCRATCH}/license.nuspec"
+  if ! grep -Fq '<license type="expression">MPL-2.0</license>' "${SCRATCH}/license.nuspec"; then
+    echo "Package must declare the MPL-2.0 license: ${licensed_package}" >&2
+    exit 1
+  fi
+  for license_asset in LICENSE.txt THIRD-PARTY-NOTICES.md; do
+    unzip -p "${licensed_package}" "${license_asset}" > "${SCRATCH}/${license_asset}"
+    if [[ ! -s "${SCRATCH}/${license_asset}" ]]; then
+      echo "Package is missing license asset ${license_asset}: ${licensed_package}" >&2
+      exit 1
+    fi
+  done
+done
 if ! grep -Fq 'lib/net10.0/CodexFlow.QueryRuntime.Models.dll' "${SCRATCH}/models-contents.txt"; then
   echo "Models package is missing lib/net10.0/CodexFlow.QueryRuntime.Models.dll" >&2
   exit 1

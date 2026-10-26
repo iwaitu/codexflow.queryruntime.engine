@@ -9,7 +9,7 @@ using Xunit;
 namespace CodexFlow.QueryRuntime.UnitTests.Models;
 
 /// <summary>
-/// DeepSeek V4 family routing and behaviour, exercised through the QRE factory against the real VllmChatClient 2.0.32 with an in-memory transport
+/// DeepSeek V4 family routing and behaviour, exercised through the QRE factory against the real VllmChatClient 2.0.34 with an in-memory transport
 /// (no socket, no provider). V3 controls prove that the default family is unchanged. The audit-tag removal is a declared SDK transformation of
 /// response text and reasoning history only: tool names, ids and arguments are never filtered. The SDK's Anthropic <c>message_start</c> input usage
 /// is not mapped by V3; V4 must emit exactly the usage values V3 emits and these tests do not claim to fix that older metering behaviour.

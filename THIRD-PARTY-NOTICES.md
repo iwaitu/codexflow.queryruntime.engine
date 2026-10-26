@@ -1,6 +1,8 @@
 # Third-Party Notices
 
-QueryRuntime is licensed under MIT. Its NuGet dependencies retain their own licenses.
+Copyright (c) 2026 Ivilson.
+
+QueryRuntime is licensed under the Mozilla Public License 2.0 (MPL-2.0). Its NuGet dependencies retain their own licenses.
 The blocking license inventory currently permits only MIT, Apache-2.0, and MPL-2.0 packages.
 
 - Microsoft and .NET runtime/extension packages: MIT.

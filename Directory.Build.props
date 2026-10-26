@@ -1,11 +1,11 @@
 <Project>
   <PropertyGroup>
-    <VersionPrefix>0.25.5</VersionPrefix>
+    <VersionPrefix>0.25.6</VersionPrefix>
     <PackageVersion Condition="'$(PackageVersion)' == ''">$(VersionPrefix)</PackageVersion>
     <Authors>CodexFlow</Authors>
     <Company>CodexFlow</Company>
     <Description>Auditable, replayable, sandboxed QueryRuntime libraries for .NET agent applications.</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/iwaitu/codexflow.queryruntime.engine</PackageProjectUrl>
     <RepositoryUrl>https://github.com/iwaitu/codexflow.queryruntime.engine</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -20,6 +20,8 @@
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE.txt" Pack="true" PackagePath="\" Link="LICENSE.txt" />
+    <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Link="THIRD-PARTY-NOTICES.md" />
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Link="README.md" />
     <None Include="$(MSBuildThisFileDirectory)assets/nuget/icon.png" Pack="true" PackagePath="\" Link="icon.png" />
   </ItemGroup>

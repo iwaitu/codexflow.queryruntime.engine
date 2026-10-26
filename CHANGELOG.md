@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.6]
+
+- Upgrade all SDK consumers and examples to published VllmChatClient **2.0.34**,
+  including GLM-5.3-Flash low-thinking compatibility and the 2.0.33 usage fixes.
+- Change the project and NuGet package license to **MPL-2.0**; include the
+  license text and third-party notices in both published packages, and update
+  English/Chinese license documentation. Dependency licenses remain unchanged.
+- Revalidate transport diagnostics and pin the verified SDK version to 2.0.34.
+
 ## [0.25.5]
 
 - Consume VllmChatClient **2.0.32**. Existing JSON Schema callers targeting

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/ci.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/ci.yml)
 [![Release](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE.txt)
 
 CodexFlow QueryRuntime（简称 **QRE**）是一个面向工业级 Agent 开发的跨平台 .NET 核心运行时与轻量级命令行 Harness。它专注于将模型循环、工具执行、策略门禁、严格审计回放、本地故障恢复（H1 Crash Recovery）、沙箱隔离与 SDK 出站诊断沉淀为高内聚、可复现、可跨平台发布的工程基础设施。
 
@@ -915,4 +915,4 @@ dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
 
 ## 开源许可证
 
-本项目采用 [MIT 许可证](LICENSE.txt)。
+本项目采用 [Mozilla Public License 2.0（MPL-2.0）](LICENSE.txt)。

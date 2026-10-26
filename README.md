@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/ci.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/ci.yml)
 [![Release](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml/badge.svg)](https://github.com/iwaitu/codexflow.queryruntime.engine/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE.txt)
 
 CodexFlow QueryRuntime (**QRE**) is a cross-platform .NET agent runtime and lightweight command-line harness engineered for production-grade agentic systems. It packages model iteration loops, policy-gated tool execution, audit and replay, fault recovery (H1 Crash Recovery), sandboxing, and client-side outbound diagnostics into a cohesive, deterministic, and self-contained infrastructure.
 
@@ -901,4 +901,4 @@ dotnet publish CodexFlow.QueryRuntime.Cli/CodexFlow.QueryRuntime.Cli.csproj \
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE.txt).
+This project is licensed under the [Mozilla Public License 2.0](LICENSE.txt).

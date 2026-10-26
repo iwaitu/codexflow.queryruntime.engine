@@ -188,7 +188,7 @@ jobs:
           PUB="CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/${{ matrix.rid }}/publish"
           OUT="qre-${{ matrix.rid }}.tar.gz"
           chmod +x "$PUB/qre"
-          tar -czf "$OUT" -C "$PUB" qre
+          tar -czf "$OUT" -C "$PUB" qre -C "$GITHUB_WORKSPACE" LICENSE.txt THIRD-PARTY-NOTICES.md
           shasum -a 256 "$OUT" > "$OUT.sha256" 2>/dev/null || sha256sum "$OUT" > "$OUT.sha256"
           ls -la "$OUT" "$OUT.sha256"
 
@@ -198,7 +198,7 @@ jobs:
         run: |
           $pub = "CodexFlow.QueryRuntime.Cli/bin/Release/net10.0/${{ matrix.rid }}/publish"
           $out = "qre-${{ matrix.rid }}.zip"
-          Compress-Archive -Path "$pub/qre.exe" -DestinationPath $out -Force
+          Compress-Archive -Path @("$pub/qre.exe", "LICENSE.txt", "THIRD-PARTY-NOTICES.md") -DestinationPath $out -Force
           (Get-FileHash $out -Algorithm SHA256).Hash.ToLower() + "  " + $out | Out-File -Encoding ascii "$out.sha256"
           Get-ChildItem $out, "$out.sha256"
 
