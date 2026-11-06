@@ -70,7 +70,7 @@ public sealed record QreTransportCapability
 /// </summary>
 public static class QreTransportCapabilityMatrix
 {
-    public const string VerifiedSdkVersion = "2.0.34";
+    public const string VerifiedSdkVersion = "2.0.35";
 
     public const string SharedHostHttpClientScenario = QreCapabilityStatus.Unsupported;
 
@@ -85,11 +85,14 @@ public static class QreTransportCapabilityMatrix
     public const string SdkInjectedSystemPrompt = "sdk_injected_leading_system_prompt";
     public const string SystemHoistedToTopLevel = "system_hoisted_to_top_level";
     public const string ReasoningFlagsExtraBody = "reasoning_flags_extra_fields";
+    /// <summary>The SDK forwards <c>AIFunction.AdditionalProperties["strictJsonSchema"]</c> as the tool-level <c>strict</c> flag (SDK 2.0.35+).</summary>
+    public const string ToolStrictField = "tool_strict_field";
 
     public const string MaxTokensDropped = "max_tokens_dropped";
     public const string ResponseFormatDropped = "response_format_dropped";
     public const string ToolChoiceDropped = "tool_choice_dropped";
     public const string JsonFormatUnsupportedByProtocol = "json_response_format_unsupported_by_protocol";
+    public const string ToolStrictDropped = "tool_strict_dropped";
     public const string JsonSchemaOutputConfigFormat = "anthropic_json_schema_output_config_format";
     /// <summary>Capability metadata: schema-free JSON is rejected before HTTP, so no HTTP observation is available for this constraint.</summary>
     public const string JsonObjectRequiresSchema = "anthropic_json_object_requires_schema";
@@ -179,6 +182,14 @@ public static class QreTransportCapabilityMatrix
                 if (provider == "openai-gpt-oss")
                 {
                     transforms.Add(SdkInjectedSystemPrompt);
+                }
+                if (provider == "gemini")
+                {
+                    limitations.Add(ToolStrictDropped);
+                }
+                else
+                {
+                    transforms.Add(ToolStrictField);
                 }
 
                 cells.Add(new QreTransportCapability

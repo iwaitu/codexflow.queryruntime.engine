@@ -173,7 +173,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
-        var (messages, options) = Prepare(request);
+        var (messages, options, strictWarning) = Prepare(request);
         RuntimeModelCompletedEvent? pendingCompletion = null;
         var capture = _options.ClassifyProviderErrors ? new QreModelHttpErrorCapture() : null;
 
@@ -239,6 +239,10 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
             yield return MissingFinishReasonWarning();
             pendingCompletion = new RuntimeModelCompletedEvent(RuntimeModelStopReason.Unknown);
         }
+        if (strictWarning != null)
+        {
+            yield return new RuntimeWarningEvent(strictWarning);
+        }
         yield return pendingCompletion;
     }
 
@@ -258,9 +262,10 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         var observer = QreModelCallObserver.Begin(diagnostics, _target, request, attempt, ct);
         IReadOnlyList<ChatMessage> messages;
         ChatOptions options;
+        RuntimeWarning? strictWarning;
         try
         {
-            (messages, options) = Prepare(request);
+            (messages, options, strictWarning) = Prepare(request);
         }
         catch (Exception ex)
         {
@@ -353,6 +358,11 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
                 yield return MissingFinishReasonWarning();
                 pendingCompletion = new RuntimeModelCompletedEvent(RuntimeModelStopReason.Unknown);
             }
+            if (strictWarning != null)
+            {
+                observer.CountEvent();
+                yield return new RuntimeWarningEvent(strictWarning);
+            }
             observer.CountEvent();
             observer.Completed(pendingCompletion.StopReason, finishReasonObserved);
             yield return pendingCompletion;
@@ -367,14 +377,35 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         }
     }
 
-    private (IReadOnlyList<ChatMessage> Messages, ChatOptions Options) Prepare(RuntimeModelRequest request)
+    private (IReadOnlyList<ChatMessage> Messages, ChatOptions Options, RuntimeWarning? StrictWarning) Prepare(RuntimeModelRequest request)
     {
         var messages = MeaiRuntimeProtocolAdapter.ToMeaiMessages(request.Messages);
         var options = _optionsFactory(request) ??
             throw new RuntimeProtocolAdapterException("The MEAI options factory returned null.");
-        options.Tools = request.Tools
-            .Select(static descriptor => (AITool)new RuntimeToolDeclarationAIFunction(descriptor))
-            .ToList();
+        var requestStrict = _options.ToolStrict == MeaiToolStrictMode.WhenSchemaCompatible;
+        List<string>? downgraded = null;
+        var tools = new List<AITool>(request.Tools.Count);
+        foreach (var descriptor in request.Tools)
+        {
+            var strict = false;
+            if (requestStrict)
+            {
+                strict = RuntimeToolStrictSchema.IsCompatible(descriptor.InputSchema);
+                if (!strict)
+                {
+                    (downgraded ??= []).Add(descriptor.CanonicalName);
+                }
+            }
+            tools.Add(new RuntimeToolDeclarationAIFunction(descriptor, strict));
+        }
+        options.Tools = tools;
+        var strictWarning = downgraded is null
+            ? null
+            : new RuntimeWarning(
+                "tool_strict_downgraded",
+                "Strict tool schemas were requested but these tools do not satisfy the strict subset " +
+                "(additionalProperties:false and every property required), so they were sent without strict: " +
+                string.Join(", ", downgraded));
         options.ToolMode = request.Tools.Count == 0
             ? ChatToolMode.None
             : string.IsNullOrWhiteSpace(request.Parameters.RequiredToolName)
@@ -386,7 +417,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
             // factory; without one the factory value is kept for existing hosts.
             options.ResponseFormat = ToChatResponseFormat(responseFormat);
         }
-        return (messages, options);
+        return (messages, options, strictWarning);
     }
 
     internal static ChatResponseFormat ToChatResponseFormat(RuntimeResponseFormat format)
@@ -470,7 +501,8 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
     }
 
     private sealed class RuntimeToolDeclarationAIFunction(
-        RuntimeToolDescriptor descriptor) : AIFunction
+        RuntimeToolDescriptor descriptor,
+        bool strict) : AIFunction
     {
         private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -487,12 +519,25 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
         public override string Description => descriptor.Description;
 
         public override IReadOnlyDictionary<string, object?> AdditionalProperties { get; } =
-            new Dictionary<string, object?>(StringComparer.Ordinal)
+            BuildAdditionalProperties(descriptor, strict);
+
+        // "strictJsonSchema" is the key VllmChatClient (>= 2.0.35) and Microsoft.Extensions.AI.OpenAI read.
+        internal const string StrictJsonSchemaKey = "strictJsonSchema";
+
+        private static Dictionary<string, object?> BuildAdditionalProperties(RuntimeToolDescriptor descriptor, bool strict)
+        {
+            var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["qre.tool.version"] = descriptor.Version,
                 ["qre.tool.side_effect"] = descriptor.SideEffect.ToString(),
                 ["qre.tool.idempotency"] = descriptor.Idempotency.ToString()
             };
+            if (strict)
+            {
+                properties[StrictJsonSchemaKey] = true;
+            }
+            return properties;
+        }
 
         protected override ValueTask<object?> InvokeCoreAsync(
             AIFunctionArguments arguments,

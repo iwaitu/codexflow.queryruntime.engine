@@ -1,5 +1,6 @@
 using CodexFlow.QueryRuntime.Experimental;
 using CodexFlow.QueryRuntime.Models;
+using CodexFlow.QueryRuntime.Models.Diagnostics;
 using CodexFlow.QueryRuntime.Protocol;
 using Microsoft.Extensions.AI;
 
@@ -26,10 +27,11 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
     public IExperimentalModelClient CreateExperimentalModelClient()
         => new ChatClientExperimentalModelClient(_chatClient);
 
-    public IRuntimeModelClient CreateRuntimeModelClient()
+    public IRuntimeModelClient CreateRuntimeModelClient(MeaiRuntimeModelClientOptions? options = null)
         => new MeaiRuntimeModelClient(
             _chatClient,
-            request => CreateChatOptions(maxOutputTokens: request.Parameters.MaxOutputTokens ?? 256));
+            request => CreateChatOptions(maxOutputTokens: request.Parameters.MaxOutputTokens ?? 256),
+            options ?? MeaiRuntimeModelClientOptions.Default);
 
     public static bool TryCreate(out RealQueryRuntimeTestHost? host, out string reason)
     {
@@ -74,8 +76,22 @@ internal sealed class RealQueryRuntimeTestHost : IDisposable
     // Live integration tests share the exact same provider-neutral adapter
     // surface as the CLI, so selection behavior cannot drift between them.
     private static IChatClient CreateChatClient(RealQreModelSettings settings)
-        => QreModelProviderSelector.CreateDefault()
-            .CreateClient(settings.ApiUrl, settings.ApiKey, settings.Model, settings.ApiMode);
+        => CurlTransportHandler.Enabled
+            ? QreModelProviderSelector.CreateDefault().CreateClient(new QreModelClientDescriptor
+            {
+                ApiUrl = new Uri(settings.ApiUrl),
+                ApiKey = settings.ApiKey,
+                Model = settings.Model,
+                ApiMode = ParseApiMode(settings.ApiMode),
+                HttpClient = new HttpClient(new CurlTransportHandler()) { Timeout = TimeSpan.FromMinutes(3) }
+            })
+            : QreModelProviderSelector.CreateDefault()
+                .CreateClient(settings.ApiUrl, settings.ApiKey, settings.Model, settings.ApiMode);
+
+    private static QreModelApiMode ParseApiMode(string? apiMode)
+        => string.IsNullOrWhiteSpace(apiMode)
+            ? QreModelApiMode.ChatCompletions
+            : Enum.GetValues<QreModelApiMode>().Single(mode => QreApiModeNames.ToWireName(mode) == apiMode);
 
     internal sealed class RealQreModelSettings
     {

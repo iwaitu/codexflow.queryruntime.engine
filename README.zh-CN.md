@@ -232,6 +232,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--external` | 自动载入 `.qre/tools/*.json` 定义的外部工具 | 默认关闭 |
 | `--tool-search` | 开启动态工具按需检索，防止过多工具污染 Context | 默认关闭 |
 | `--tool-search-top-k <n>`| 动态激活工具的最大数量 | 默认 `5` |
+| `--strict-tools` | 对 schema 兼容的工具请求服务端 strict 校验（只是请求，不保证服务端强制；不兼容的工具原样发送并给出 warning） | 默认关闭 |
 | `--required-tool <name>` | 强制 Agent 在首轮必须率先调用指定工具 | 无 |
 | `--approve-risk <reason>`| 显式授权风险写操作（`repair` 分区写工具必填） | 无（未提供且触发高危工具时将直接阻断） |
 | `--thinking <mode>` | 思考模式管理策略 | `auto`（推荐，有工具或要求 JSON 时自动关闭），可选 `off`, `on`, `preserve` |

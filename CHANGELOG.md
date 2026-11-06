@@ -5,6 +5,24 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [Unreleased]
+
+- Consume VllmChatClient **2.0.35** and pin it as the verified SDK version.
+- Add opt-in provider-side strict tool schemas:
+  `MeaiRuntimeModelClientOptions.ToolStrict = MeaiToolStrictMode.WhenSchemaCompatible`
+  (CLI: `--strict-tools`). Tools whose input schema satisfies the OpenAI strict
+  subset (`additionalProperties: false`, every property `required`, checked
+  recursively) are sent with `strict: true`; others are sent unchanged and
+  reported once per call as a `tool_strict_downgraded` warning. Default is off,
+  so requests are unchanged.
+- Register `tool_strict_field` / `tool_strict_dropped` in the transport
+  capability matrix, verified for every provider and API mode against the real
+  SDK (Gemini drops the flag).
+- This is a request, not a guarantee. A live check against vLLM 0.28.0
+  (`qwen3.8-27b-fp8`) accepted `strict` but still returned an out-of-enum tool
+  argument in `auto`, `required` and named modes, while `response_format`
+  json_schema was enforced. Keep validating tool arguments.
+
 ## [0.25.6]
 
 - Upgrade all SDK consumers and examples to published VllmChatClient **2.0.34**,

@@ -202,6 +202,9 @@ internal static class QreCli
                 case "--tool-search":
                     options.ToolSearch.Enabled = true;
                     break;
+                case "--strict-tools":
+                    options.StrictTools = true;
+                    break;
                 case "--sdk-diagnostics":
                     if (++i >= args.Length || !TryParseSdkDiagnosticsMode(args[i], out var sdkDiagnostics))
                     {
@@ -703,7 +706,8 @@ internal static class QreCli
         {
             return new MeaiRuntimeModelClient(
                 QreVllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode),
-                CreateCliChatOptions);
+                CreateCliChatOptions,
+                CreateClientOptions(options));
         }
 
         var (chatClient, target) = QreVllmChatClientFactory.CreateOwned(
@@ -714,8 +718,18 @@ internal static class QreCli
             diagnostics?.Diagnostics,
             TestTransportFactory);
         diagnostics?.SetCoverage(QreCliDiagnosticsSession.ProviderCoverage(target, options.SdkDiagnostics));
-        return new MeaiRuntimeModelClient(chatClient, CreateCliChatOptions, diagnostics?.Diagnostics, target);
+        return new MeaiRuntimeModelClient(
+            chatClient,
+            CreateCliChatOptions,
+            CreateClientOptions(options),
+            diagnostics?.Diagnostics,
+            target);
     }
+
+    private static MeaiRuntimeModelClientOptions CreateClientOptions(QreRunOptions options)
+        => options.StrictTools
+            ? new MeaiRuntimeModelClientOptions { ToolStrict = MeaiToolStrictMode.WhenSchemaCompatible }
+            : MeaiRuntimeModelClientOptions.Default;
 
     /// <summary>
     /// The CLI's options factory. It returns a new instance per call because the
@@ -3821,6 +3835,7 @@ internal static class QreCli
         Console.WriteLine("  --external              Include .qre/tools/*.json stdio tool manifests.");
         Console.WriteLine("  --tool-search           Start with tool_search and lazy-activate profile tools.");
         Console.WriteLine("  --tool-search-top-k <n> Max search hits to activate. Defaults to 5.");
+        Console.WriteLine("  --strict-tools          Request strict tool schemas for compatible tools (a request, not a guarantee).");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
         Console.WriteLine("  --runtime <v2>          Compatibility selector. v2 is the only execution runtime and the default.");
         Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
@@ -4130,6 +4145,9 @@ internal static class QreCli
         public QueryRuntimeExecutionOptions Runtime { get; } = new();
 
         public QueryRuntimeToolSearchOptions ToolSearch { get; } = new();
+
+        /// <summary>Request provider-side strict tool schemas for tools whose schema is strict-compatible.</summary>
+        public bool StrictTools { get; set; }
 
         public QueryRuntimeTraceOptions Trace { get; set; } = new();
 

@@ -229,6 +229,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--external` | Load external tool manifests from `.qre/tools/*.json` | Disabled |
 | `--tool-search` | Enable dynamic lazy tool retrieval | Disabled |
 | `--tool-search-top-k <n>`| Maximum tools activated per search query | `5` |
+| `--strict-tools` | Request provider-side strict schemas for compatible tools (a request, not a guarantee; incompatible tools are sent unchanged with a warning) | Disabled |
 | `--required-tool <name>` | Mandate calling a specific tool on the first step | None |
 | `--approve-risk <reason>`| Explicit risk approval for write/repair tools | None (fail-closed if missing) |
 | `--thinking <mode>` | Chain-of-thought coordination policy | `auto` (default), `off`, `on`, `preserve` |
