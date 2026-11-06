@@ -5,7 +5,7 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
-## [Unreleased]
+## [0.25.7]
 
 - Consume VllmChatClient **2.0.35** and pin it as the verified SDK version.
 - Add opt-in provider-side strict tool schemas:
