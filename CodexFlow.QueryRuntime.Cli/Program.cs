@@ -16,7 +16,10 @@ using CodexFlow.QueryRuntime.Sandbox.Docker;
 using CodexFlow.QueryRuntime.Sandbox.LocalProcess;
 using Microsoft.Extensions.AI;
 
-return await QreCli.RunAsync(args, CancellationToken.None).ConfigureAwait(false);
+using (QreCli.UseUtf8Console())
+{
+    return await QreCli.RunAsync(args, CancellationToken.None).ConfigureAwait(false);
+}
 
 internal static class QreCli
 {
@@ -26,6 +29,63 @@ internal static class QreCli
     /// SDK are unchanged. Not reachable from command-line arguments.
     /// </summary>
     internal static Func<QreModelApiMode, HttpMessageHandler>? TestTransportFactory { get; set; }
+
+    /// <summary>
+    /// The CLI writes UTF-8 (without a byte order mark) and reads UTF-8, whatever the system code page is. .NET's console otherwise uses the ANSI code
+    /// page (GBK on a Chinese Windows), so Chinese text reached a pipe, a file or a UTF-8 terminal (Git Bash, an editor, a script) as mojibake while
+    /// the JSON and audit files the CLI itself writes are UTF-8. The previous encodings are restored on exit for an interactive console, so the
+    /// terminal's own code page is not left changed.
+    /// </summary>
+    internal static IDisposable UseUtf8Console()
+    {
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        Encoding? previousOutput = null;
+        Encoding? previousInput = null;
+        try
+        {
+            previousOutput = Console.OutputEncoding;
+            Console.OutputEncoding = utf8;
+        }
+        catch (IOException)
+        {
+            previousOutput = null; // no console to configure (detached process)
+        }
+
+        try
+        {
+            previousInput = Console.InputEncoding;
+            Console.InputEncoding = utf8;
+        }
+        catch (IOException)
+        {
+            previousInput = null;
+        }
+
+        return new ConsoleEncodingRestore(previousOutput, previousInput);
+    }
+
+    private sealed class ConsoleEncodingRestore(Encoding? output, Encoding? input) : IDisposable
+    {
+        public void Dispose()
+        {
+            try
+            {
+                if (output is not null && !Console.IsOutputRedirected)
+                {
+                    Console.OutputEncoding = output;
+                }
+
+                if (input is not null && !Console.IsInputRedirected)
+                {
+                    Console.InputEncoding = input;
+                }
+            }
+            catch (IOException)
+            {
+                // The console went away; nothing to restore.
+            }
+        }
+    }
 
     public static async Task<int> RunAsync(string[] args, CancellationToken ct)
     {

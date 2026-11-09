@@ -25,6 +25,73 @@ public sealed class QreCliSmokeTests
         Assert.Contains("0.25.9", result.StandardOutput);
     }
 
+    // On a Chinese Windows the .NET console encodes redirected output with the ANSI code page (GBK), so Chinese text reached a pipe or a UTF-8
+    // terminal (Git Bash, an editor, a script) as mojibake. The entry point switches the console to UTF-8 (no byte order mark) and puts the
+    // previous encodings back on exit.
+    [Fact]
+    public void UseUtf8Console_SetsUtf8WithoutAByteOrderMark_AndRestoresTheOriginalEncodings()
+    {
+        var originalOutput = Console.OutputEncoding;
+        var originalInput = Console.InputEncoding;
+        try
+        {
+            // Start from a legacy code page so the switch is observable on any machine.
+            Console.OutputEncoding = Encoding.ASCII;
+            Console.InputEncoding = Encoding.ASCII;
+
+            using (QreCli.UseUtf8Console())
+            {
+                Assert.Equal(65001, Console.OutputEncoding.CodePage);
+                Assert.Equal(65001, Console.InputEncoding.CodePage);
+                Assert.Empty(Console.OutputEncoding.GetPreamble());
+                Assert.Equal("中文".Length * 3, Console.OutputEncoding.GetBytes("中文").Length);
+            }
+
+            if (!Console.IsOutputRedirected)
+            {
+                Assert.Equal(Encoding.ASCII.CodePage, Console.OutputEncoding.CodePage);
+            }
+        }
+        finally
+        {
+            Console.OutputEncoding = originalOutput;
+            Console.InputEncoding = originalInput;
+        }
+    }
+
+    // End to end with a real process. Whether this fails without the fix depends on the code page the test host hands to the child (a console on
+    // a GBK machine does; a detached host may not), so the test above is the deterministic guard.
+    [Fact]
+    public async Task Output_IsUtf8_WhateverTheSystemCodePage()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        const string text = "中文输出：漏洞升级方案✓";
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            WorkingDirectory = workspace.Path,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "qre.dll"), "run", "--workspace", workspace.Path, "--response", text, "显示中文" })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start qre.");
+        using var stdout = new MemoryStream();
+        var copy = process.StandardOutput.BaseStream.CopyToAsync(stdout, TestContext.Current.CancellationToken);
+        var stderr = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        await copy;
+
+        Assert.True(process.ExitCode == 0, await stderr);
+        var bytes = stdout.ToArray();
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF, "no byte order mark");
+        Assert.Contains(text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false).GetString(bytes), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Run_DefaultsToV2HostingFacadeAndReturnsTypedMetadata()
     {
