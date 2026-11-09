@@ -13,6 +13,8 @@ public sealed class QreModelProviderSelectorTests
     [InlineData("gpt-oss-20b", "openai-gpt-oss")]
     [InlineData("openai/gpt-oss-120b", "openai-gpt-oss")]
     [InlineData("openai/gpt-4o", "openai-gpt")]
+    [InlineData("gpt-6.1-terra", "openai-gpt")]
+    [InlineData("gpt-oss-120b", "openai-gpt-oss")]
     [InlineData("gemini-2.5-pro", "gemini")]
     [InlineData("claude-sonnet-4-6", "claude")]
     [InlineData("kimi-k2", "kimi")]

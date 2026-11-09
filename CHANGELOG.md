@@ -5,6 +5,15 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.8]
+
+- Consume VllmChatClient **2.0.36** and pin it as the verified SDK version. That release makes `VllmOpenAiGptClient` work
+  against OpenAI's own API (`api.openai.com`, Chat Completions and Responses); earlier versions sent fields OpenAI rejects
+  with `400 unknown_parameter`.
+- Route OpenAI's own model ids (`gpt-*`, e.g. `gpt-6.1-terra`) to the OpenAI GPT provider. Before, only the
+  `openai/gpt-` prefix was recognised, so a real `gpt-*` id fell through to a generic client. `gpt-oss` is still selected
+  first.
+
 ## [0.25.7]
 
 - Consume VllmChatClient **2.0.35** and pin it as the verified SDK version.

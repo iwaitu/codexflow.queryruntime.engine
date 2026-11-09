@@ -17,13 +17,14 @@ public sealed class GptOssModelProvider : VllmModelProvider
         => new VllmGptOssChatClient(apiUrlText, descriptor.ApiKey, descriptor.Model, descriptor.HttpClient, descriptor.ApiMode.ToVllmApiMode());
 }
 
-/// <summary>OpenAI GPT chat models served behind an OpenAI-compatible endpoint.</summary>
+/// <summary>OpenAI GPT chat models, served by OpenAI itself or behind an OpenAI-compatible endpoint.</summary>
 public sealed class OpenAiGptModelProvider : VllmModelProvider
 {
     public override string Id => "openai-gpt";
 
     public override bool CanHandle(string normalizedModel)
-        => normalizedModel.StartsWith("openai/gpt-", StringComparison.Ordinal);
+        => normalizedModel.StartsWith("openai/gpt-", StringComparison.Ordinal) ||
+           normalizedModel.StartsWith("gpt-", StringComparison.Ordinal); // OpenAI's own ids; gpt-oss is selected before this provider
 
     protected override IChatClient CreateClientCore(QreModelClientDescriptor descriptor, string apiUrlText)
         => new VllmOpenAiGptClient(apiUrlText, descriptor.ApiKey, descriptor.Model, descriptor.HttpClient, descriptor.ApiMode.ToVllmApiMode());
