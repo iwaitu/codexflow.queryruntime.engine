@@ -5,6 +5,12 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.9]
+
+- Consume VllmChatClient **2.0.37** and pin it as the verified SDK version. That release sends structured output
+  (`json_object` / `json_schema`) to OpenAI's own Responses API as `text.format` instead of the Chat Completions
+  `response_format`, which the Responses API rejects.
+
 ## [0.25.8]
 
 - Consume VllmChatClient **2.0.36** and pin it as the verified SDK version. That release makes `VllmOpenAiGptClient` work
