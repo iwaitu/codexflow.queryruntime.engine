@@ -5,6 +5,12 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.25.10]
+
+- The `qre` CLI now reads and writes UTF-8 (no byte order mark) instead of the system ANSI code page. On a Chinese Windows the .NET console
+  encoded redirected output as GBK, so Chinese text reached pipes, files and UTF-8 terminals (Git Bash, editors, scripts) as mojibake, while
+  the JSON and audit files the CLI itself writes were already UTF-8. An interactive console gets its previous encodings back on exit.
+
 ## [0.25.9]
 
 - Consume VllmChatClient **2.0.37** and pin it as the verified SDK version. That release sends structured output
