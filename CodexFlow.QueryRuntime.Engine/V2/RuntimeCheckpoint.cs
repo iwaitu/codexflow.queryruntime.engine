@@ -279,10 +279,52 @@ public sealed record RuntimeCheckpointDocument(
         var bytes = JsonSerializer.SerializeToUtf8Bytes(
             session,
             RuntimeCheckpointJsonContext.Default.RuntimeSessionState);
-        return JsonSerializer.Deserialize(
+        var snapshot = JsonSerializer.Deserialize(
                    bytes,
                    RuntimeCheckpointJsonContext.Default.RuntimeSessionState) ??
                throw new InvalidOperationException("Could not snapshot Runtime session state.");
+        return snapshot with
+        {
+            ActiveTurn = snapshot.ActiveTurn == null ? null : DropFinishedStepRequests(snapshot.ActiveTurn),
+            TerminalTurns = Array.AsReadOnly(snapshot.TerminalTurns.Select(DropFinishedStepRequests).ToArray())
+        };
+    }
+
+    /// <summary>
+    /// Every Step keeps the full model request and context projection it was
+    /// sampled with, each up to a whole context window, so a checkpoint grew with
+    /// the square of the Step count and a long Turn ran into the file quota.
+    /// Recovery reads the canonical history and, at most, the last Step's request;
+    /// the earlier Steps keep their identity, tools, output and tool invocations
+    /// but not their messages. The audit still records every request.
+    /// </summary>
+    private static RuntimeTurnState DropFinishedStepRequests(RuntimeTurnState turn)
+    {
+        if (turn.Steps == null || turn.Steps.Count <= 1)
+        {
+            return turn;
+        }
+        var steps = new RuntimeStepState[turn.Steps.Count];
+        for (var index = 0; index < steps.Length; index++)
+        {
+            var step = turn.Steps[index];
+            steps[index] = index == steps.Length - 1 || step?.Context?.ModelRequest == null
+                ? step!
+                : step with
+                {
+                    Context = new RuntimeStepContext(
+                        step.Context.StepId,
+                        step.Context.Index,
+                        step.Context.ModelRequest with { Messages = [] },
+                        step.Context.Policy,
+                        step.Context.Environment,
+                        step.Context.Budget,
+                        step.Context.HistoryVersion,
+                        step.Context.CreatedAt,
+                        preparedContext: null)
+                };
+        }
+        return turn with { Steps = Array.AsReadOnly(steps) };
     }
 }
 
