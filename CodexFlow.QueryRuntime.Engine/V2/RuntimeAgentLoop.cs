@@ -84,6 +84,15 @@ public sealed class RuntimeAgentLoop
         var contextEvents = new List<RuntimeContextEvent>();
         await PublishHistoryEventsAsync(history, request.ContextEventSink, contextEvents, token).ConfigureAwait(false);
         var session = checkpoint?.Session ?? RuntimeSessionState.Create(request.SessionId, request.HistoryVersion);
+        // Every invocation id seen so far; a model output that reuses one is given a new id.
+        var usedInvocationIds = history.ToMessages()
+            .SelectMany(static message => message.Items)
+            .OfType<RuntimeToolCallItem>()
+            .Select(static item => item.Call.InvocationId.Value)
+            .Concat((session.ActiveTurn?.Steps ?? [])
+                .SelectMany(static step => step.ToolInvocations ?? [])
+                .Select(static invocation => invocation.Call.InvocationId.Value))
+            .ToHashSet(StringComparer.Ordinal);
         RuntimeCheckpointKind? resumeKind = checkpoint?.Kind;
         if (checkpoint == null)
         {
@@ -371,6 +380,7 @@ public sealed class RuntimeAgentLoop
                         checkpointEmitter,
                         token).ConfigureAwait(false);
                 }
+                output = EnsureUniqueInvocationIds(output, usedInvocationIds, stepIndex);
                 RuntimeError? toolFreeViolation = null;
                 if (forcedToolFree)
                 {
@@ -1802,6 +1812,56 @@ public sealed class RuntimeAgentLoop
     /// dropped (keeping the text answer, with a warning) or rejected, per policy.
     /// The returned error, if any, fails the Turn after the output is committed.
     /// </summary>
+    /// <summary>
+    /// Some providers number tool calls per response ("name:0"), so an id can
+    /// repeat in a later Step or even within one response. The Runtime pairs
+    /// calls with results by id for the whole Turn, so a repeated id gets a new,
+    /// unique one before the output is committed; the model later sees the call
+    /// and its result under that id.
+    /// </summary>
+    private static RuntimeModelOutput EnsureUniqueInvocationIds(
+        RuntimeModelOutput output,
+        HashSet<string> usedInvocationIds,
+        int stepIndex)
+    {
+        List<string>? reassigned = null;
+        var items = new RuntimeItem[output.Items.Count];
+        for (var index = 0; index < items.Length; index++)
+        {
+            var item = output.Items[index];
+            items[index] = item;
+            if (item is not RuntimeToolCallItem toolCall ||
+                string.IsNullOrWhiteSpace(toolCall.Call.InvocationId.Value) ||
+                usedInvocationIds.Add(toolCall.Call.InvocationId.Value))
+            {
+                continue;
+            }
+            var original = toolCall.Call.InvocationId.Value;
+            var candidate = $"{original}_s{stepIndex}";
+            for (var suffix = 2; !usedInvocationIds.Add(candidate); suffix++)
+            {
+                candidate = $"{original}_s{stepIndex}_{suffix}";
+            }
+            items[index] = toolCall with
+            {
+                Call = toolCall.Call with { InvocationId = new RuntimeInvocationId(candidate) }
+            };
+            (reassigned ??= []).Add($"{original} -> {candidate}");
+        }
+        if (reassigned == null)
+        {
+            return output;
+        }
+        return output with
+        {
+            Items = Array.AsReadOnly(items),
+            Warnings = Array.AsReadOnly(output.Warnings.Append(new RuntimeWarning(
+                "tool_call_id_reassigned",
+                "The model reused tool call id(s) from this Turn; they were given unique ids: " +
+                string.Join(", ", reassigned))).ToArray())
+        };
+    }
+
     private static (RuntimeModelOutput Output, RuntimeError? Violation) ApplyToolFreeStepToolCallHandling(
         RuntimeModelOutput output,
         RuntimeToolFinalizationPolicy? policy,

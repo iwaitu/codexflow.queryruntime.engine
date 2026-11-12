@@ -375,7 +375,8 @@ public sealed class AgentRuntime : IResumableAgentRuntime
             {
                 lock (_sync)
                 {
-                    _ordinals.Add(call.InvocationId.Value, _assigned++);
+                    // Assignment, not Add: an id must never be able to fail the Turn here.
+                    _ordinals[call.InvocationId.Value] = _assigned++;
                 }
             }
             return prepared;
@@ -391,7 +392,7 @@ public sealed class AgentRuntime : IResumableAgentRuntime
             var shouldDrain = false;
             lock (_sync)
             {
-                if (!_ordinals.TryGetValue(prepared.Call.InvocationId.Value, out var ordinal))
+                if (!_ordinals.Remove(prepared.Call.InvocationId.Value, out var ordinal))
                 {
                     throw new InvalidOperationException("The presenting pipeline did not observe tool preparation.");
                 }

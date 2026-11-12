@@ -35,6 +35,12 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   now sends the SDK's `cache_control` opt-in for Claude models in that API mode (`auto`, the default). `on` sends it for
   every model served through Anthropic Messages; `off` never sends it. Other API modes are unaffected.
 
+- A tool call whose id repeats an earlier one in the Turn no longer fails the Turn. Some providers number tool calls per
+  response (for example `read_section:0`), so the same id came back in a later Step: `AgentRuntime` then failed with
+  `tool_preparation_failed` ("An item with the same key has already been added"), and without that the history replaced
+  the second call and its result with a "duplicate omitted" placeholder. A repeated id, across Steps or within one
+  response, is now given a unique id before the output is committed and reported as a `tool_call_id_reassigned` warning.
+
 ## [0.25.10]
 
 - The `qre` CLI now reads and writes UTF-8 (no byte order mark) instead of the system ANSI code page. On a Chinese Windows the .NET console
