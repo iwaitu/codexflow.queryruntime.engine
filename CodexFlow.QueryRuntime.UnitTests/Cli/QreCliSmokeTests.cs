@@ -22,7 +22,7 @@ public sealed class QreCliSmokeTests
             () => QreCli.RunAsync(["--version"], TestContext.Current.CancellationToken));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("0.26.0", result.StandardOutput);
+        Assert.Contains("0.26.1", result.StandardOutput);
     }
 
     // On a Chinese Windows the .NET console encodes redirected output with the ANSI code page (GBK), so Chinese text reached a pipe or a UTF-8

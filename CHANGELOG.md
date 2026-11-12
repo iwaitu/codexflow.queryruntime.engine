@@ -5,6 +5,13 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.1]
+
+- Consume VllmChatClient **2.0.39** and pin it as the verified SDK version. That release makes the Responses API mode of
+  the OpenAI GPT provider work through OpenRouter-style gateways: with 2.0.37 every `--api-mode responses` request to
+  such a host was rejected with "Invalid Responses API request" (`reasoning`: expected object, received boolean), and
+  structured output was sent as `response_format` instead of `text.format`.
+
 ## [0.26.0]
 
 - Context compaction now keeps a stable boundary instead of re-selecting the most recent messages on every Step. Once the
