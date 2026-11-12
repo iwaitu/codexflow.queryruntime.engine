@@ -5,7 +5,7 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
-## [Unreleased]
+## [0.26.0]
 
 - Context compaction now keeps a stable boundary instead of re-selecting the most recent messages on every Step. Once the
   projection exceeds `MaxContextTokens`, everything after a boundary is kept verbatim and the boundary moves only when the
@@ -31,15 +31,36 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   from its prompt cache, read from the usage counts (`RuntimeUsageKeys.CachedInputTokens`, with the provider spellings
   as fallback). `MeaiRuntimeModelClient` also takes the value from MEAI's `UsageDetails.CachedInputTokenCount`.
   `qre run --json` prints `cachedInputTokens`. The properties are computed and not serialized.
-- Add `qre run --prompt-cache auto|on|off`. Anthropic Messages caches nothing unless the request asks for it, so the CLI
-  now sends the SDK's `cache_control` opt-in for Claude models in that API mode (`auto`, the default). `on` sends it for
-  every model served through Anthropic Messages; `off` never sends it. Other API modes are unaffected.
+- Add `qre run --prompt-cache on|auto|off`. Anthropic Messages caches nothing unless the request asks for it, so the CLI
+  now sends the SDK's `cache_control` opt-in for every model served through that API mode (`on`, the default). `auto`
+  sends it for Claude models only, for a third-party gateway that rejects the field; `off` never sends it. Other API
+  modes cache on their own and are unaffected.
 
 - A tool call whose id repeats an earlier one in the Turn no longer fails the Turn. Some providers number tool calls per
   response (for example `read_section:0`), so the same id came back in a later Step: `AgentRuntime` then failed with
   `tool_preparation_failed` ("An item with the same key has already been added"), and without that the history replaced
   the second call and its result with a "duplicate omitted" placeholder. A repeated id, across Steps or within one
   response, is now given a unique id before the output is committed and reported as a `tool_call_id_reassigned` warning.
+
+- The compaction summary now lists finished tool calls under `CompletedToolCalls` as
+  `tool {arguments} => result snippet`, keeps the most recent entries when a section is long, and puts a call under
+  `OutstandingTasks` only when it has no result. Every omitted call used to be listed as an outstanding task by id
+  alone, so after compaction a model repeated work it had already done (a 14-file read took 29 tool calls).
+- `qre diff latest` now shows the patch of the latest v2 run. It looked only for legacy traces, never found the run's
+  `diff.patch`, and fell back to `git diff`, which does not show files the run created.
+
+- `tool_search` no longer offers a tool that has a descriptor but no implementation in the current profile. Such a tool
+  was listed in the deferred catalog and reported as activated, but was never exposed, so a model kept selecting it
+  until the step budget ran out.
+- `qre run --json` prints `errorMessage` next to `errorCode` when a Turn fails.
+- Add `scripts/qre-e2e-live.py`, an end-to-end release check that drives a built `qre` binary against a live model
+  through eight scenarios (lookup, replay, compaction, tool search, kill and resume, verify, repair, JSON output).
+
+- A long Turn no longer fails with `checkpoint_write_failed` ("Checkpoint payload exceeds the 16777216 byte quota").
+  Every Step kept its full model request and context projection in the checkpoint, each up to a whole context window,
+  so the file grew with the square of the Step count and passed 16 MiB after about 36 Steps. A checkpoint now keeps
+  those messages for the last Step only; earlier Steps keep their identity, tools, output and tool invocations.
+  Recovery reads the canonical history, and the audit still records every request.
 
 ## [0.25.10]
 
