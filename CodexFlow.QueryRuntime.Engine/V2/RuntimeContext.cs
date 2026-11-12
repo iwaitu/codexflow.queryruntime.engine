@@ -953,7 +953,7 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
     /// Compacts at a boundary that does not move while the history only grows, so
     /// consecutive Steps send the same prefix and a provider prompt cache keeps
     /// hitting. Candidate boundaries sit where the cumulative estimated tokens of
-    /// the history cross a multiple of 2/5 of <see cref="RuntimeContextOptions.MaxContextTokens"/>;
+    /// the non-system history cross a multiple of 2/5 of <see cref="RuntimeContextOptions.MaxContextTokens"/>;
     /// they depend only on the messages before them. The earliest boundary whose
     /// projection fits is used: everything after it is kept verbatim, and from
     /// before it only the system messages, the last user message and tool calls
@@ -970,12 +970,18 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
         var entries = history.Messages;
         var count = entries.Count;
         var prefixTokens = new long[count + 1];
+        // System messages always stay visible, so they do not count towards the
+        // stride: every boundary then frees about one stride of history.
+        var strideTokens = new long[count + 1];
         var callIndex = new Dictionary<string, int>(StringComparer.Ordinal);
         var resultIndex = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var index = 0; index < count; index++)
         {
             var message = entries[index].Message;
-            prefixTokens[index + 1] = prefixTokens[index] + RuntimeTokenEstimator.Estimate(message);
+            var messageTokens = RuntimeTokenEstimator.Estimate(message);
+            prefixTokens[index + 1] = prefixTokens[index] + messageTokens;
+            strideTokens[index + 1] = strideTokens[index] +
+                (message.Role == RuntimeMessageRole.System ? 0 : messageTokens);
             foreach (var item in message.Items)
             {
                 switch (item)
@@ -998,11 +1004,11 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
         var nextThreshold = stride;
         for (var boundary = 1; boundary < count; boundary++)
         {
-            if (prefixTokens[boundary] < nextThreshold)
+            if (strideTokens[boundary] < nextThreshold)
             {
                 continue;
             }
-            nextThreshold = (prefixTokens[boundary] / stride + 1) * stride;
+            nextThreshold = (strideTokens[boundary] / stride + 1) * stride;
             var tailTokens = prefixTokens[count] - prefixTokens[boundary];
             if (tailTokens > messageBudget)
             {
