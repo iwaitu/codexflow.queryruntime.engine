@@ -53,6 +53,7 @@ V3/R1 保持原客户端。提供商传输矩阵以 V3 为 DeepSeek 基线，V4 
 - [模型支持与智能思考策略](#模型支持与智能思考策略)
   - [思考策略控制 (`--thinking`)](#思考策略控制---thinking)
   - [结构化输出与 JSON Schema 请求](#结构化输出与-json-schema-请求)
+  - [提示缓存（KV Cache）最佳实践](#提示缓存kv-cache最佳实践)
 - [嵌入 .NET 应用开发指南](#嵌入-net-应用开发指南)
 - [示例工程全景 (Examples)](#示例工程全景-examples)
 - [构建、测试与 Native AOT 发布](#构建测试与-native-aot-发布)
@@ -233,6 +234,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--tool-search` | 开启动态工具按需检索，防止过多工具污染 Context | 默认关闭 |
 | `--tool-search-top-k <n>`| 动态激活工具的最大数量 | 默认 `5` |
 | `--strict-tools` | 对 schema 兼容的工具请求服务端 strict 校验（只是请求，不保证服务端强制；不兼容的工具原样发送并给出 warning） | 默认关闭 |
+| `--prompt-cache <mode>` | 要求 Anthropic Messages 端点缓存提示：`auto`（仅 Claude 模型）、`on`（该 API 模式下的所有模型）或 `off`。其它 API 模式自动缓存，不受影响 | `auto` |
 | `--required-tool <name>` | 强制 Agent 在首轮必须率先调用指定工具 | 无 |
 | `--approve-risk <reason>`| 显式授权风险写操作（`repair` 分区写工具必填） | 无（未提供且触发高危工具时将直接阻断） |
 | `--thinking <mode>` | 思考模式管理策略 | `auto`（推荐，有工具或要求 JSON 时自动关闭），可选 `off`, `on`, `preserve` |
@@ -707,6 +709,40 @@ var options = new VllmChatOptions
 - **全链路出站诊断 (`qre diagnose` / Outbound Diagnostics)**：通过三层探针（意图 $\rightarrow$ 适配层 $\rightarrow$ 传输层 HTTP Request）深度检测 `response_format`，精准捕获中间网关或模型代理可能发生的 `response_format_dropped`（字段丢弃）静默降级风险。
 
 > 完整可运行代码与强类型 POCO 反序列化示范请参见 [`examples/StructuredOutputsJsonSchema`](examples/StructuredOutputsJsonSchema)。
+
+### 提示缓存（KV Cache）最佳实践
+
+provider 只在请求前缀与之前某次请求逐字节相同时才复用缓存。QRE 会在一个 Turn 的各个 Step 之间保持前缀稳定，
+下面这些做法能让它一直稳定。
+
+1. **整个 Turn 内保持 system prompt 和工具集合不变。** 易变内容（日期、run id、工作区状态）放进 user 消息，
+   不要放进 system prompt 或工具描述。
+2. **用 `RuntimeContextOptions.ForModelWindow(...)` 设置上下文窗口。** 历史超出窗口后，压缩在一个稳定边界处切开，
+   边界只在投影再次超预算时前移（大约每增长 2/5 个窗口一次），中间各 Step 持续命中缓存。窗口设得很小会让边界每隔
+   几步就移动一次。
+3. **使用工具收尾（finalization）或 `ContinueWithoutTools` 时，设置 `KeepToolDeclarationsOnToolFreeSteps = true`。**
+   收尾 Step 会原样发送工具定义且不改 tool choice，而不是把工具去掉。此时约束模型不再调用工具的只有收尾指令；
+   模型若仍调用，按 `ToolCallHandling` 处理。`qre` CLI 默认开启；该 Step 请求 JSON 输出时不生效。
+4. **只在工具很多时使用 `--tool-search`。** 新激活的工具会追加在已发送工具之后，但每次激活仍会让对话部分的缓存
+   失效一次。工具只有几个时，一开始就全部暴露更省。
+5. **Turn 中途尽量不要改变必选工具或响应格式**，每次变化都会改变请求。
+6. **给 `MaxOutputTokens` 留余量。** 边界刚移动后模型能看到的最近历史变少，推理模型会多花输出 token；
+   上限太紧可能让该 Step 没有任何输出。
+7. **实际测量。** `RuntimeUsage.CachedInputTokens`（单次模型调用）和 `RuntimeUsageTotals.CachedInputTokens`
+   （整个 Turn）给出命中缓存的输入 token 数；`qre run --json` 在 `inputTokens` 旁输出 `cachedInputTokens`。
+8. **Claude 需要显式开启。** Anthropic Messages 只有在请求里要求时才缓存。`qre` CLI 默认对 Claude 模型开启
+   （`--prompt-cache auto`；`on` 扩展到所有走 Anthropic Messages 的模型，`off` 关闭）。嵌入使用时，在 options
+   factory 里通过 `ChatOptions.AdditionalProperties` 设置 `VllmAnthropicCacheControl`。
+
+经 OpenRouter 用多步工具任务实测（缓存命中占输入 token 的比例）：
+
+| 场景 | 改进前 | 改进后 |
+|---|---|---|
+| 压缩之后的 Step，`deepseek-v4.1-flash`，各 99 步 | 31.5% | 67.1% |
+| 无工具的收尾 Step，`qwen3.8-flash`，各 5 轮 | 0% | 91% |
+| 无工具的收尾 Step，`deepseek-v4.1-flash` | 0–14% | 83–88% |
+
+provider 侧的缓存是尽力而为，各轮之间会有波动；机制细节见技术指南 §5.11。
 
 ---
 

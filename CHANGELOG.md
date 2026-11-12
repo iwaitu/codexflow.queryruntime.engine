@@ -25,6 +25,16 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   a call it emits anyway is handled by `ToolCallHandling` as before. The option is skipped when the Step requests JSON
   output. The `qre` CLI turns it on.
 
+- A compaction summary now follows the leading system messages instead of preceding them. The system prompt never
+  changes, so it stays a cacheable prefix when the summary is rewritten.
+- Add `RuntimeUsage.CachedInputTokens` and `RuntimeUsageTotals.CachedInputTokens`: the input tokens a provider served
+  from its prompt cache, read from the usage counts (`RuntimeUsageKeys.CachedInputTokens`, with the provider spellings
+  as fallback). `MeaiRuntimeModelClient` also takes the value from MEAI's `UsageDetails.CachedInputTokenCount`.
+  `qre run --json` prints `cachedInputTokens`. The properties are computed and not serialized.
+- Add `qre run --prompt-cache auto|on|off`. Anthropic Messages caches nothing unless the request asks for it, so the CLI
+  now sends the SDK's `cache_control` opt-in for Claude models in that API mode (`auto`, the default). `on` sends it for
+  every model served through Anthropic Messages; `off` never sends it. Other API modes are unaffected.
+
 ## [0.25.10]
 
 - The `qre` CLI now reads and writes UTF-8 (no byte order mark) instead of the system ANSI code page. On a Chinese Windows the .NET console

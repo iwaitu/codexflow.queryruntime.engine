@@ -56,6 +56,7 @@ include reasoning in assistant text; that inherited mapping is unchanged.
 - [Model Providers & Thinking Policies](#model-providers--thinking-policies)
   - [Thinking Policy Control (`--thinking`)](#thinking-policy-control---thinking)
   - [Structured Outputs via JSON Schema](#structured-outputs-via-json-schema)
+  - [Prompt Cache Best Practices](#prompt-cache-best-practices)
 - [Embedding in .NET Applications](#embedding-in-net-applications)
 - [Runnable Examples Showcase](#runnable-examples-showcase)
 - [Building, Testing & Native AOT Publish](#building-testing--native-aot-publish)
@@ -230,6 +231,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--tool-search` | Enable dynamic lazy tool retrieval | Disabled |
 | `--tool-search-top-k <n>`| Maximum tools activated per search query | `5` |
 | `--strict-tools` | Request provider-side strict schemas for compatible tools (a request, not a guarantee; incompatible tools are sent unchanged with a warning) | Disabled |
+| `--prompt-cache <mode>` | Ask an Anthropic Messages endpoint to cache the prompt: `auto` (Claude models only), `on` (every model in that API mode) or `off`. Other API modes cache on their own and ignore it | `auto` |
 | `--required-tool <name>` | Mandate calling a specific tool on the first step | None |
 | `--approve-risk <reason>`| Explicit risk approval for write/repair tools | None (fail-closed if missing) |
 | `--thinking <mode>` | Chain-of-thought coordination policy | `auto` (default), `off`, `on`, `preserve` |
@@ -703,6 +705,43 @@ Model Studio recommends omitting `max_tokens` for structured output to avoid tru
 - **Full-Link Outbound Diagnostics (`qre diagnose`)**: Three-tier probes track `response_format` from C# intent through to the HTTP Request Body, catching silent `response_format_dropped` degradations by intermediate proxies.
 
 > For a complete runnable example with strong-typed C# POCO deserialization, see [`examples/StructuredOutputsJsonSchema`](examples/StructuredOutputsJsonSchema).
+
+### Prompt Cache Best Practices
+
+Providers reuse the cached prefix of a request only while it is byte-identical to an earlier one. QRE keeps that prefix
+stable across the Steps of a Turn; these habits keep it that way.
+
+1. **Keep the system prompt and the tool set fixed for the whole Turn.** Put volatile text (dates, run ids, workspace
+   state) in a user message, never in the system prompt or a tool description.
+2. **Size the context window with `RuntimeContextOptions.ForModelWindow(...)`.** When the history outgrows it, compaction
+   cuts at a boundary that stays put until the projection overflows again (about once per 2/5 of the window), so the
+   Steps in between keep hitting the cache. A very small window moves the boundary every few Steps.
+3. **Set `KeepToolDeclarationsOnToolFreeSteps = true` when you use tool finalization or `ContinueWithoutTools`.** The
+   final Step then sends the same tool definitions with the tool choice unchanged, instead of dropping them. Only the
+   finalization instruction tells the model not to call a tool; a call it makes anyway is handled by `ToolCallHandling`.
+   The `qre` CLI turns this on. It is skipped when the Step requests JSON output.
+4. **Use `--tool-search` only for large catalogs.** An activated tool is appended after the tools already sent, but each
+   activation still costs one cache miss for the conversation. With a handful of tools, expose them all from the start.
+5. **Do not change the required tool or the response format in the middle of a Turn** unless you need to; each change
+   alters the request.
+6. **Leave room in `MaxOutputTokens`.** Right after a boundary moves the model sees less recent history and reasoning
+   models spend more output tokens; a tight cap can end the Step with no content.
+7. **Measure it.** `RuntimeUsage.CachedInputTokens` (per model call) and `RuntimeUsageTotals.CachedInputTokens` (per
+   Turn) report the input tokens served from the cache; `qre run --json` prints `cachedInputTokens` next to `inputTokens`.
+8. **Claude needs an explicit opt-in.** Anthropic Messages caches nothing unless the request asks for it. The `qre` CLI
+   asks for Claude models by default (`--prompt-cache auto`; `on` extends it to every model served through Anthropic
+   Messages, `off` disables it). When embedding, set `VllmAnthropicCacheControl` in `ChatOptions.AdditionalProperties`
+   from your options factory.
+
+Measured through OpenRouter with a multi-step tool task (cached share of input tokens):
+
+| Scenario | Before | After |
+|---|---|---|
+| Steps after compaction, `deepseek-v4.1-flash`, 99 Steps each | 31.5% | 67.1% |
+| Final tool-free Step, `qwen3.8-flash`, 5 runs each | 0% | 91% |
+| Final tool-free Step, `deepseek-v4.1-flash` | 0-14% | 83-88% |
+
+Provider-side caching is best effort and varies between runs; see the technical guide, section 5.11, for the mechanics.
 
 ---
 

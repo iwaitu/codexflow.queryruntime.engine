@@ -141,13 +141,22 @@ public static class MeaiRuntimeProtocolAdapter
             call.InformationalOnly);
 
     private static RuntimeUsage ToProtocolUsage(UsageDetails usage)
-        => new(
+    {
+        var additional = usage.AdditionalCounts == null
+            ? null
+            : new Dictionary<string, long>(usage.AdditionalCounts, StringComparer.Ordinal);
+        if (usage.CachedInputTokenCount is { } cached &&
+            additional?.ContainsKey(RuntimeUsageKeys.CachedInputTokens) != true)
+        {
+            // MEAI clients report cache hits on the typed property; keep one key for the Runtime.
+            (additional ??= new Dictionary<string, long>(StringComparer.Ordinal))[RuntimeUsageKeys.CachedInputTokens] = cached;
+        }
+        return new RuntimeUsage(
             usage.InputTokenCount,
             usage.OutputTokenCount,
             usage.TotalTokenCount,
-            usage.AdditionalCounts == null
-                ? null
-                : new Dictionary<string, long>(usage.AdditionalCounts, StringComparer.Ordinal));
+            additional);
+    }
 
     private static RuntimeMessageRole ToProtocolRole(ChatRole role)
     {

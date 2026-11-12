@@ -217,7 +217,50 @@ public sealed record RuntimeUsage(
     long? InputTokens = null,
     long? OutputTokens = null,
     long? TotalTokens = null,
-    IReadOnlyDictionary<string, long>? Additional = null);
+    IReadOnlyDictionary<string, long>? Additional = null)
+{
+    /// <summary>
+    /// Input tokens the provider served from its prompt cache, or null when it
+    /// reported none. Read from <see cref="Additional"/>; not serialized.
+    /// </summary>
+    [JsonIgnore]
+    public long? CachedInputTokens => RuntimeUsageKeys.ReadCachedInputTokens(Additional);
+}
+
+/// <summary>Well-known keys of <see cref="RuntimeUsage.Additional"/>.</summary>
+public static class RuntimeUsageKeys
+{
+    /// <summary>Input tokens served from the provider prompt cache, whatever the provider calls them.</summary>
+    public const string CachedInputTokens = "cached_input_tokens";
+
+    // Provider spellings, used when the model client did not add the unified key.
+    private static readonly string[] ProviderCachedKeys =
+    [
+        "prompt_tokens_details.cached_tokens",
+        "input_tokens_details.cached_tokens",
+        "cache_read_input_tokens"
+    ];
+
+    public static long? ReadCachedInputTokens(IReadOnlyDictionary<string, long>? additional)
+    {
+        if (additional == null)
+        {
+            return null;
+        }
+        if (additional.TryGetValue(CachedInputTokens, out var unified))
+        {
+            return unified;
+        }
+        foreach (var key in ProviderCachedKeys)
+        {
+            if (additional.TryGetValue(key, out var value))
+            {
+                return value;
+            }
+        }
+        return null;
+    }
+}
 
 public sealed record RuntimeWarning(string Code, string Message);
 

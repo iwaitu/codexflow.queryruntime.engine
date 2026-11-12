@@ -906,13 +906,21 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
                 ? string.Empty
                 : BuildSummary(omitted, objective, requiredToolName, summaryTokenBudget);
         }
-        var messages = new List<RuntimeMessage>();
+        var messages = selected.Select(static entry => RuntimeHistory.Snapshot(entry.Message)).ToList();
         var replacementIds = omitted.SelectMany(static entry => entry.ItemIds).ToArray();
         if (!string.IsNullOrWhiteSpace(summary))
         {
-            messages.Add(new RuntimeMessage(RuntimeMessageRole.System, [new RuntimeTextItem(summary)]));
+            // After the leading system messages: they never change, so the summary,
+            // which does, must not sit in front of them in the request prefix.
+            var leadingSystem = 0;
+            while (leadingSystem < messages.Count && messages[leadingSystem].Role == RuntimeMessageRole.System)
+            {
+                leadingSystem++;
+            }
+            messages.Insert(
+                leadingSystem,
+                new RuntimeMessage(RuntimeMessageRole.System, [new RuntimeTextItem(summary)]));
         }
-        messages.AddRange(selected.Select(static entry => RuntimeHistory.Snapshot(entry.Message)));
 
         var includedIds = selected.SelectMany(static entry => entry.ItemIds).ToArray();
         var estimated = messages.Sum(RuntimeTokenEstimator.Estimate);

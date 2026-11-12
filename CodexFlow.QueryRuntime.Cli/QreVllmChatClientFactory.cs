@@ -22,6 +22,18 @@ internal static class QreVllmChatClientFactory
         HttpClient? httpClient = null)
         => Selector.CreateClient(apiUrl, apiKey, model, apiMode, httpClient);
 
+    /// <summary>The API mode and provider id the given settings resolve to.</summary>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings", Justification = "CLI accepts endpoint text from flags and environment variables.")]
+    public static (QreModelApiMode ApiMode, string ProviderId) Describe(
+        string apiUrl,
+        string apiKey,
+        string model,
+        string? apiMode)
+    {
+        var descriptor = QreModelClientDescriptor.Create(apiUrl, apiKey, model, apiMode);
+        return (descriptor.ApiMode, Selector.Select(descriptor.Model).Id);
+    }
+
     /// <summary>
     /// Builds the chat client over a CLI-owned HttpClient whose pipeline contains
     /// the outbound diagnostic handler (when enabled) above the transport. The

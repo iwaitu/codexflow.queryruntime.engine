@@ -170,7 +170,10 @@ public sealed class RuntimeContextTests
         Assert.True(visibleCalls.SetEquals(visibleResults));
         Assert.Contains(prepared.Events, static item => item.Kind == RuntimeContextEventKind.ContextCompacted);
         Assert.NotEmpty(prepared.ReplacedItemIds);
-        Assert.StartsWith("[C5 deterministic local summary", Assert.IsType<RuntimeTextItem>(prepared.Messages[0].Items[0]).Text);
+        // The summary follows the leading system message, which stays first.
+        Assert.Equal("constraint", Assert.IsType<RuntimeTextItem>(prepared.Messages[0].Items[0]).Text);
+        Assert.Equal(RuntimeMessageRole.System, prepared.Messages[1].Role);
+        Assert.StartsWith("[C5 deterministic local summary", Assert.IsType<RuntimeTextItem>(prepared.Messages[1].Items[0]).Text);
     }
 
     [Theory]

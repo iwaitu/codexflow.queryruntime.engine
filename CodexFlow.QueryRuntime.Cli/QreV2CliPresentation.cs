@@ -1,6 +1,18 @@
 using System.Text.Json;
 using CodexFlow.QueryRuntime.Engine.V2;
 
+/// <summary>When the CLI asks an Anthropic Messages endpoint to cache the prompt.</summary>
+internal enum QrePromptCacheMode
+{
+    /// <summary>Claude models only.</summary>
+    Auto = 0,
+
+    /// <summary>Every model served through Anthropic Messages.</summary>
+    On = 1,
+
+    Off = 2
+}
+
 internal sealed record QreV2RunOutput(
     string Type,
     string FinalText,
@@ -16,6 +28,9 @@ internal sealed record QreV2RunOutput(
     long? TotalTokens,
     string? ErrorCode)
 {
+    /// <summary>Input tokens the provider served from its prompt cache; 0 when it reported none.</summary>
+    public long CachedInputTokens { get; init; }
+
     public string Profile { get; init; } = "none";
 
     public string Runner { get; init; } = "local";

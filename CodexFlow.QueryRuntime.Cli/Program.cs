@@ -265,6 +265,13 @@ internal static class QreCli
                 case "--strict-tools":
                     options.StrictTools = true;
                     break;
+                case "--prompt-cache":
+                    if (++i >= args.Length || !TryParsePromptCacheMode(args[i], out var promptCache))
+                    {
+                        return Fail("--prompt-cache requires auto, on, or off.");
+                    }
+                    options.PromptCache = promptCache;
+                    break;
                 case "--sdk-diagnostics":
                     if (++i >= args.Length || !TryParseSdkDiagnosticsMode(args[i], out var sdkDiagnostics))
                     {
@@ -565,6 +572,7 @@ internal static class QreCli
                     result.Usage.TotalTokens,
                     result.Error?.Code)
                 {
+                    CachedInputTokens = result.Usage.CachedInputTokens,
                     Profile = normalizedProfile,
                     Runner = runnerName,
                     Tools = toolPipeline.Descriptors.Select(static tool => tool.CanonicalName).ToArray(),
@@ -763,11 +771,16 @@ internal static class QreCli
             return null;
         }
 
+        var (resolvedApiMode, providerId) = QreVllmChatClientFactory.Describe(apiUrl, apiKey, model, apiMode);
+        Func<RuntimeModelRequest, ChatOptions> optionsFactory =
+            UsesAnthropicPromptCache(options.PromptCache, resolvedApiMode, providerId)
+                ? CreateCliChatOptionsWithAnthropicCache
+                : CreateCliChatOptions;
         if (diagnostics == null && TestTransportFactory == null)
         {
             return new MeaiRuntimeModelClient(
                 QreVllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode),
-                CreateCliChatOptions,
+                optionsFactory,
                 CreateClientOptions(options));
         }
 
@@ -781,10 +794,46 @@ internal static class QreCli
         diagnostics?.SetCoverage(QreCliDiagnosticsSession.ProviderCoverage(target, options.SdkDiagnostics));
         return new MeaiRuntimeModelClient(
             chatClient,
-            CreateCliChatOptions,
+            optionsFactory,
             CreateClientOptions(options),
             diagnostics?.Diagnostics,
             target);
+    }
+
+    /// <summary>
+    /// Anthropic Messages caches nothing unless the request asks for it; the other
+    /// API shapes cache on their own. Auto asks only for Claude models, because a
+    /// third-party Anthropic-compatible gateway may reject the field.
+    /// </summary>
+    internal static bool UsesAnthropicPromptCache(QrePromptCacheMode mode, QreModelApiMode apiMode, string providerId)
+        => apiMode == QreModelApiMode.AnthropicMessages && mode switch
+        {
+            QrePromptCacheMode.On => true,
+            QrePromptCacheMode.Auto => string.Equals(providerId, "claude", StringComparison.Ordinal),
+            _ => false
+        };
+
+    internal static ChatOptions CreateCliChatOptionsWithAnthropicCache(RuntimeModelRequest request)
+    {
+        var options = CreateCliChatOptions(request);
+        // Top-level cache_control: Anthropic caches the longest prefix it has seen, so each Step reuses the previous one.
+        options.AdditionalProperties = new AdditionalPropertiesDictionary
+        {
+            [VllmAnthropicCacheControl.OptionKey] = new VllmAnthropicCacheControl()
+        };
+        return options;
+    }
+
+    private static bool TryParsePromptCacheMode(string value, out QrePromptCacheMode mode)
+    {
+        mode = value.Trim().ToLowerInvariant() switch
+        {
+            "auto" => QrePromptCacheMode.Auto,
+            "on" or "true" or "enabled" or "enable" => QrePromptCacheMode.On,
+            "off" or "false" or "disabled" or "disable" => QrePromptCacheMode.Off,
+            _ => (QrePromptCacheMode)(-1)
+        };
+        return Enum.IsDefined(mode);
     }
 
     private static MeaiRuntimeModelClientOptions CreateClientOptions(QreRunOptions options)
@@ -3897,6 +3946,7 @@ internal static class QreCli
         Console.WriteLine("  --tool-search           Start with tool_search and lazy-activate profile tools.");
         Console.WriteLine("  --tool-search-top-k <n> Max search hits to activate. Defaults to 5.");
         Console.WriteLine("  --strict-tools          Request strict tool schemas for compatible tools (a request, not a guarantee).");
+        Console.WriteLine("  --prompt-cache <mode>   Anthropic Messages prompt caching: auto (Claude models, default), on, or off.");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
         Console.WriteLine("  --runtime <v2>          Compatibility selector. v2 is the only execution runtime and the default.");
         Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
@@ -4209,6 +4259,9 @@ internal static class QreCli
 
         /// <summary>Request provider-side strict tool schemas for tools whose schema is strict-compatible.</summary>
         public bool StrictTools { get; set; }
+
+        /// <summary>Whether Anthropic Messages requests ask the provider to cache the prompt.</summary>
+        public QrePromptCacheMode PromptCache { get; set; } = QrePromptCacheMode.Auto;
 
         public QueryRuntimeTraceOptions Trace { get; set; } = new();
 

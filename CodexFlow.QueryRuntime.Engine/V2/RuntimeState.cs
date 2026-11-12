@@ -137,6 +137,14 @@ public sealed record RuntimeUsageTotals(
     long TotalTokens,
     IReadOnlyDictionary<string, long> Additional)
 {
+    /// <summary>
+    /// Input tokens served from the provider prompt cache, summed over the model
+    /// calls counted here; 0 when the provider reported none. Compare with
+    /// <see cref="InputTokens"/> for the cache hit rate. Not serialized.
+    /// </summary>
+    [JsonIgnore]
+    public long CachedInputTokens => RuntimeUsageKeys.ReadCachedInputTokens(Additional) ?? 0;
+
     public static RuntimeUsageTotals Empty { get; } = new(
         0,
         0,
