@@ -674,6 +674,35 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
     }
 
     [Fact]
+    public void ToolSearch_AppendsNewlyActivatedToolsSoEarlierDeclarationsStayAPrefix()
+    {
+        var profile = QueryRuntimeToolProfile.ReadOnly;
+        AIFunction Tool(string name) => AIFunctionFactory.Create(
+            (string path) => $"{name} {path}",
+            new AIFunctionFactoryOptions { Name = name, Description = name });
+        var names = new[] { "qre_list_files", "qre_read_file", "qre_search_files" };
+        var descriptors = new ExperimentalToolRegistry().ListTools(profile)
+            .Where(descriptor => names.Contains(descriptor.Name))
+            .ToArray();
+        var session = new ExperimentalToolSearchSession(
+            profile,
+            names.Select(Tool).ToArray(),
+            descriptors,
+            new QueryRuntimeToolSearchOptions { Enabled = true, AlwaysOnToolNames = ["qre_read_file"] });
+        var initial = session.GetActiveTools().Select(static tool => tool.Name).ToArray();
+        Assert.Equal(["tool_search", "qre_read_file"], initial);
+
+        // Activated in reverse alphabetical order: each lands after what was already sent.
+        session.Search("select:qre_search_files");
+        var afterFirst = session.GetActiveTools().Select(static tool => tool.Name).ToArray();
+        session.Search("select:qre_list_files");
+        var afterSecond = session.GetActiveTools().Select(static tool => tool.Name).ToArray();
+
+        Assert.Equal(["tool_search", "qre_read_file", "qre_search_files"], afterFirst);
+        Assert.Equal(["tool_search", "qre_read_file", "qre_search_files", "qre_list_files"], afterSecond);
+    }
+
+    [Fact]
     public void ToolSearch_UsesPlainTextByDefault_AndSupportsExplicitRegex()
     {
         var profile = QueryRuntimeToolProfile.ReadOnly;

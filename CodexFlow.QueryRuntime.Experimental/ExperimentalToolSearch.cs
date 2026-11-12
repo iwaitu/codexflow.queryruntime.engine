@@ -14,6 +14,8 @@ public sealed class ExperimentalToolSearchSession
     private readonly Dictionary<string, AIFunction> _tools;
     private readonly Dictionary<string, QueryRuntimeToolDescriptor> _descriptors;
     private readonly HashSet<string> _activeToolNames;
+    // Tools activated after construction, in activation order.
+    private readonly List<string> _activatedLater = [];
     private readonly QueryRuntimeToolProfile _profile;
     private readonly QueryRuntimeToolSearchOptions _options;
     private readonly int? _stage;
@@ -85,12 +87,18 @@ public sealed class ExperimentalToolSearchSession
 
     public IReadOnlyList<AIFunction> GetActiveTools()
     {
+        // A tool activated mid-run is appended instead of sorted in, so the tool
+        // declarations already sent stay an unchanged prefix for a provider prompt cache.
         var activeTools = _activeToolNames
-            .Where(name => _tools.ContainsKey(name))
+            .Where(name => _tools.ContainsKey(name) &&
+                           !_activatedLater.Contains(name, StringComparer.OrdinalIgnoreCase))
             .Select(name => _tools[name])
             .OrderBy(tool => tool.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         activeTools.Insert(0, _toolSearchFunction);
+        activeTools.AddRange(_activatedLater
+            .Where(name => _tools.ContainsKey(name))
+            .Select(name => _tools[name]));
         return activeTools;
     }
 
@@ -144,7 +152,7 @@ public sealed class ExperimentalToolSearchSession
             var activated = false;
             if (ShouldActivate(hit, hasWriteIntent))
             {
-                activated = _activeToolNames.Add(hit.Tool.Name);
+                activated = Activate(hit.Tool.Name);
             }
 
             var discovery = hit.Tool.Discovery ?? QueryRuntimeToolDiscoveryMetadata.FromDescription(hit.Tool.Description);
@@ -173,6 +181,16 @@ public sealed class ExperimentalToolSearchSession
                 ? "No tools matched. Try a broader capability query such as file, git, test, patch, or search."
                 : "Call one of the activated tools directly if it matches the task.");
         return Serialize(response);
+    }
+
+    private bool Activate(string name)
+    {
+        if (!_activeToolNames.Add(name))
+        {
+            return false;
+        }
+        _activatedLater.Add(name);
+        return true;
     }
 
     private static string Serialize(ToolSearchResponse response)
@@ -218,7 +236,7 @@ public sealed class ExperimentalToolSearchSession
             var activated = false;
             if (available && !alreadyActive)
             {
-                activated = _activeToolNames.Add(descriptor.Name);
+                activated = Activate(descriptor.Name);
             }
 
             var discovery = descriptor.Discovery ?? QueryRuntimeToolDiscoveryMetadata.FromDescription(descriptor.Description);

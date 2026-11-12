@@ -14,6 +14,8 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   missed the cache. The boundary is a function of the history alone, so `Prepare` stays deterministic. A compacted
   projection now holds as much recent history as fits, not at most `RecentTrajectoryMessages` messages; that option
   applies only to the fallback used when no boundary fits.
+- A tool activated through `tool_search` is now appended after the tools already exposed instead of being sorted in by
+  name, so the tool declarations sent on earlier Steps stay an unchanged prefix. The initial set keeps its name order.
 
 ## [0.25.10]
 
