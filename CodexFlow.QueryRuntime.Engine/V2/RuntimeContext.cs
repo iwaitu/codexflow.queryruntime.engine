@@ -1211,8 +1211,23 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
         string? requiredToolName,
         int maxTokens)
     {
+        var omittedResults = new Dictionary<string, RuntimeToolResult>(StringComparer.Ordinal);
+        var omittedCalls = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in omitted.SelectMany(static entry => entry.Message.Items))
+        {
+            switch (item)
+            {
+                case RuntimeToolResultItem result:
+                    omittedResults[result.Result.InvocationId.Value] = result.Result;
+                    break;
+                case RuntimeToolCallItem call:
+                    omittedCalls.Add(call.Call.InvocationId.Value);
+                    break;
+            }
+        }
+
         var progress = new List<string>();
-        var findings = new List<string>();
+        var completed = new List<string>();
         var failures = new List<string>();
         var outstanding = new List<string>();
         foreach (var entry in omitted)
@@ -1224,14 +1239,29 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
                     case RuntimeTextItem text when entry.Message.Role == RuntimeMessageRole.Assistant:
                         progress.Add(Snippet(text.Text));
                         break;
-                    case RuntimeToolResultItem result when result.Result.Success:
-                        findings.Add($"{result.Result.InvocationId.Value}: {Snippet(result.Result.Text)}");
-                        break;
-                    case RuntimeToolResultItem result:
-                        failures.Add($"{result.Result.InvocationId.Value}: {Snippet(result.Result.Error?.Message ?? result.Result.Text)}");
-                        break;
                     case RuntimeToolCallItem call:
-                        outstanding.Add($"{call.Call.Name} ({call.Call.InvocationId.Value})");
+                    {
+                        // The call line names the tool and its arguments, so the model can
+                        // tell which work is already done instead of repeating it.
+                        var label = $"{call.Call.Name} {Snippet(call.Call.Arguments.GetRawText(), 32)}";
+                        if (!omittedResults.TryGetValue(call.Call.InvocationId.Value, out var result))
+                        {
+                            outstanding.Add($"{label} (no result yet)");
+                        }
+                        else if (result.Success)
+                        {
+                            completed.Add($"{label} => {Snippet(result.Text, 64)}");
+                        }
+                        else
+                        {
+                            failures.Add($"{label} => {Snippet(result.Error?.Message ?? result.Text, 64)}");
+                        }
+                        break;
+                    }
+                    case RuntimeToolResultItem result when !omittedCalls.Contains(result.Result.InvocationId.Value):
+                        // Its call is still visible, so the id is enough to pair them.
+                        (result.Result.Success ? completed : failures).Add(
+                            $"{result.Result.InvocationId.Value} => {Snippet(result.Result.Error?.Message ?? result.Result.Text, 64)}");
                         break;
                 }
             }
@@ -1239,35 +1269,58 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
 
         var builder = new StringBuilder();
         builder.AppendLine("[C5 deterministic local summary; non-authoritative model context]");
-        AppendSection(builder, "Goal", [Snippet(objective)]);
-        AppendSection(builder, "Constraints", requiredToolName == null ? [] : [$"Required tool: {requiredToolName}"]);
-        AppendSection(builder, "Progress", progress);
-        AppendSection(builder, "ImportantFindings", findings);
-        AppendSection(builder, "Decisions", []);
-        AppendSection(builder, "FailedAttempts", failures);
-        AppendSection(builder, "OutstandingTasks", outstanding);
+        builder.AppendLine(
+            "Earlier messages were removed to fit the context window. The tool calls under CompletedToolCalls " +
+            "have already run; do not repeat them unless you need a result again.");
+        AppendSection(builder, "Goal", [Snippet(objective)], 1);
+        AppendSection(builder, "Constraints", requiredToolName == null ? [] : [$"Required tool: {requiredToolName}"], 1);
+        AppendSection(builder, "Progress", progress, 12);
+        AppendSection(builder, "FailedAttempts", failures, 12);
+        AppendSection(builder, "OutstandingTasks", outstanding, 12);
+        // The finished calls come last and take what is left of the budget, newest
+        // first, so a tight budget drops the oldest of them and nothing else.
+        const int HeaderTokens = 24;
+        var remaining = maxTokens - RuntimeTokenEstimator.Estimate(builder.ToString()) - HeaderTokens;
+        var kept = 0;
+        for (var index = completed.Count - 1; index >= 0 && kept < 48; index--)
+        {
+            var cost = RuntimeTokenEstimator.Estimate(completed[index]) + 2;
+            if (cost > remaining)
+            {
+                break;
+            }
+            remaining -= cost;
+            kept++;
+        }
+        AppendSection(builder, "CompletedToolCalls", completed, kept);
         return RuntimeHistory.Bound(builder.ToString(), maxTokens, out _);
     }
 
-    private static void AppendSection(StringBuilder builder, string name, IReadOnlyList<string> values)
+    /// <summary>Lists the most recent <paramref name="limit"/> entries and says how many older ones were left out.</summary>
+    private static void AppendSection(StringBuilder builder, string name, IReadOnlyList<string> values, int limit)
     {
         builder.AppendLine(name + ":");
-        if (values.Count == 0)
+        var entries = values.Where(static value => !string.IsNullOrWhiteSpace(value)).ToArray();
+        if (entries.Length == 0)
         {
             builder.AppendLine("- none recorded");
             return;
         }
-        foreach (var value in values.Where(static value => !string.IsNullOrWhiteSpace(value)).Take(12))
+        if (entries.Length > limit)
+        {
+            builder.AppendLine($"- ({entries.Length - limit} earlier entries not shown)");
+        }
+        foreach (var value in entries.Skip(Math.Max(0, entries.Length - limit)))
         {
             builder.Append("- ").AppendLine(value);
         }
     }
 
-    private static string Snippet(string? value)
+    private static string Snippet(string? value, int maxTokens = 96)
     {
         var normalized = string.Join(' ', (value ?? string.Empty)
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return RuntimeHistory.Bound(normalized, 96, out _);
+        return RuntimeHistory.Bound(normalized, maxTokens, out _);
     }
 
     private static IReadOnlyList<RuntimeContextPartitionUsage> BuildPartitionUsage(

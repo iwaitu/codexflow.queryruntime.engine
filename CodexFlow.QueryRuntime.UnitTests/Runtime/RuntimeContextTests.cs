@@ -271,6 +271,62 @@ public sealed class RuntimeContextTests
     }
 
     [Fact]
+    public void ContextPrepare_SummaryListsFinishedToolCallsWithArgumentsAndDoesNotCallThemOutstanding()
+    {
+        var options = new RuntimeContextOptions
+        {
+            MaxContextTokens = 2_000,
+            MaxItemTokens = 400,
+            MaxToolResultTokens = 200,
+            LargeToolResultTokens = 200,
+            SummaryTokens = 400
+        };
+        var history = RuntimeHistory.Create(
+            [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("read every chapter")])],
+            0,
+            options);
+        for (var step = 0; step < 30; step++)
+        {
+            var call = new RuntimeToolCall(
+                new RuntimeInvocationId($"call-{step}"),
+                "read_file",
+                JsonSerializer.SerializeToElement(new { path = $"docs/chapter-{step:00}.md" }));
+            history.AppendBatch(
+            [
+                new RuntimeMessage(RuntimeMessageRole.Assistant, [new RuntimeToolCallItem(call)]),
+                new RuntimeMessage(RuntimeMessageRole.Tool,
+                    [new RuntimeToolResultItem(new RuntimeToolResult(
+                        call.InvocationId,
+                        $"marker: word-{step} " + new string('r', 240),
+                        true))])
+            ]);
+        }
+
+        var prepared = new RuntimeContextManager(options).Prepare(history.Snapshot(), "read every chapter", null);
+
+        Assert.True(prepared.Compacted);
+        var summary = prepared.Messages
+            .SelectMany(static message => message.Items)
+            .OfType<RuntimeTextItem>()
+            .Single(static item => item.Text.StartsWith("[C5 deterministic local summary", StringComparison.Ordinal))
+            .Text;
+        // Which file each finished call read, and what came back.
+        Assert.Contains("read_file {\"path\":\"docs/chapter-", summary, StringComparison.Ordinal);
+        Assert.Contains("=> marker: word-", summary, StringComparison.Ordinal);
+        // A call with a result is finished work, not an outstanding task.
+        var outstandingAt = summary.IndexOf("OutstandingTasks:", StringComparison.Ordinal);
+        var completedAt = summary.IndexOf("CompletedToolCalls:", StringComparison.Ordinal);
+        Assert.True(outstandingAt >= 0 && completedAt > outstandingAt);
+        var outstanding = summary[outstandingAt..completedAt];
+        Assert.Contains("- none recorded", outstanding, StringComparison.Ordinal);
+        Assert.DoesNotContain("read_file", outstanding, StringComparison.Ordinal);
+        // The budget drops the oldest finished calls, says so, and keeps the newest omitted one.
+        Assert.Contains("earlier entries not shown", summary, StringComparison.Ordinal);
+        var newestOmitted = prepared.OmittedItemIds.Count / 2 - 1;
+        Assert.Contains($"chapter-{newestOmitted:00}.md", summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AgentLoop_UsesPreparedProjectionAndExposesContextEvents()
     {
         var options = SmallOptions();
