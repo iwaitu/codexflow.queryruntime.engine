@@ -572,6 +572,7 @@ internal static class QreCli
                     result.Usage.TotalTokens,
                     result.Error?.Code)
                 {
+                    ErrorMessage = result.Error?.Message,
                     CachedInputTokens = result.Usage.CachedInputTokens,
                     Profile = normalizedProfile,
                     Runner = runnerName,
@@ -802,8 +803,9 @@ internal static class QreCli
 
     /// <summary>
     /// Anthropic Messages caches nothing unless the request asks for it; the other
-    /// API shapes cache on their own. Auto asks only for Claude models, because a
-    /// third-party Anthropic-compatible gateway may reject the field.
+    /// API shapes cache on their own. On, the default, asks for every model in
+    /// that mode; Auto asks only for Claude models, for a third-party
+    /// Anthropic-compatible gateway that rejects the field.
     /// </summary>
     internal static bool UsesAnthropicPromptCache(QrePromptCacheMode mode, QreModelApiMode apiMode, string providerId)
         => apiMode == QreModelApiMode.AnthropicMessages && mode switch
@@ -3054,6 +3056,38 @@ internal static class QreCli
         string? runId = null;
         string? runDirectory = null;
         string? manifestPath = null;
+        // v2 runs keep their patch next to audit.v1.jsonl; the legacy trace lookup below never sees them.
+        if (!stat && TryFindLatestV2RunDirectory(resolvedWorkspace, out var v2RunDirectory) &&
+            File.Exists(Path.Combine(v2RunDirectory, "diff.patch")))
+        {
+            var patch = await File.ReadAllTextAsync(Path.Combine(v2RunDirectory, "diff.patch"), ct).ConfigureAwait(false);
+            var runDiffOutput = string.IsNullOrWhiteSpace(patch) ? "(no git diff)" : patch;
+            if (json)
+            {
+                WriteJson(new QreDiffLatestOutput(
+                    "qre.diff.latest",
+                    resolvedWorkspace,
+                    "run-diff-patch",
+                    Path.GetFileName(v2RunDirectory),
+                    v2RunDirectory,
+                    Path.Combine(v2RunDirectory, "manifest.json"),
+                    stat,
+                    0,
+                    false,
+                    0,
+                    "(from latest run)",
+                    runDiffOutput,
+                    null));
+                return 0;
+            }
+
+            Console.WriteLine("status:");
+            Console.WriteLine("(from latest run)");
+            Console.WriteLine();
+            Console.WriteLine("diff:");
+            Console.WriteLine(runDiffOutput);
+            return 0;
+        }
         if (TryFindLatestTraceFile(resolvedWorkspace, out var latestTraceFile, out _))
         {
             var replay = ReadReplaySummary(latestTraceFile);
@@ -3686,6 +3720,20 @@ internal static class QreCli
         return 0;
     }
 
+    private static bool TryFindLatestV2RunDirectory(string workspace, out string runDirectory)
+    {
+        try
+        {
+            runDirectory = Path.GetDirectoryName(RuntimeJsonlAuditStore.FindLatestAuditFile(workspace)) ?? string.Empty;
+            return runDirectory.Length > 0;
+        }
+        catch (Exception ex) when (ex is DirectoryNotFoundException or FileNotFoundException)
+        {
+            runDirectory = string.Empty;
+            return false;
+        }
+    }
+
     private static bool TryFindLatestTraceFile(string workspace, out string traceFile, out string error)
     {
         try
@@ -3946,7 +3994,7 @@ internal static class QreCli
         Console.WriteLine("  --tool-search           Start with tool_search and lazy-activate profile tools.");
         Console.WriteLine("  --tool-search-top-k <n> Max search hits to activate. Defaults to 5.");
         Console.WriteLine("  --strict-tools          Request strict tool schemas for compatible tools (a request, not a guarantee).");
-        Console.WriteLine("  --prompt-cache <mode>   Anthropic Messages prompt caching: auto (Claude models, default), on, or off.");
+        Console.WriteLine("  --prompt-cache <mode>   Anthropic Messages prompt caching: on (default), auto (Claude models only), or off.");
         Console.WriteLine("  --max-rounds <n>        Runtime loop round limit. Defaults to 3.");
         Console.WriteLine("  --runtime <v2>          Compatibility selector. v2 is the only execution runtime and the default.");
         Console.WriteLine("  --required-tool <name>  Require one tool call before normal tool mode resumes.");
@@ -4261,7 +4309,7 @@ internal static class QreCli
         public bool StrictTools { get; set; }
 
         /// <summary>Whether Anthropic Messages requests ask the provider to cache the prompt.</summary>
-        public QrePromptCacheMode PromptCache { get; set; } = QrePromptCacheMode.Auto;
+        public QrePromptCacheMode PromptCache { get; set; } = QrePromptCacheMode.On;
 
         public QueryRuntimeTraceOptions Trace { get; set; } = new();
 

@@ -7,7 +7,7 @@ internal enum QrePromptCacheMode
     /// <summary>Claude models only.</summary>
     Auto = 0,
 
-    /// <summary>Every model served through Anthropic Messages.</summary>
+    /// <summary>Every model served through Anthropic Messages. The default.</summary>
     On = 1,
 
     Off = 2
@@ -28,6 +28,9 @@ internal sealed record QreV2RunOutput(
     long? TotalTokens,
     string? ErrorCode)
 {
+    /// <summary>The error message behind <c>ErrorCode</c>, when the Turn failed.</summary>
+    public string? ErrorMessage { get; init; }
+
     /// <summary>Input tokens the provider served from its prompt cache; 0 when it reported none.</summary>
     public long CachedInputTokens { get; init; }
 

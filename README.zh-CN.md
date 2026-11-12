@@ -234,7 +234,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--tool-search` | 开启动态工具按需检索，防止过多工具污染 Context | 默认关闭 |
 | `--tool-search-top-k <n>`| 动态激活工具的最大数量 | 默认 `5` |
 | `--strict-tools` | 对 schema 兼容的工具请求服务端 strict 校验（只是请求，不保证服务端强制；不兼容的工具原样发送并给出 warning） | 默认关闭 |
-| `--prompt-cache <mode>` | 要求 Anthropic Messages 端点缓存提示：`auto`（仅 Claude 模型）、`on`（该 API 模式下的所有模型）或 `off`。其它 API 模式自动缓存，不受影响 | `auto` |
+| `--prompt-cache <mode>` | 要求 Anthropic Messages 端点缓存提示：`on`（该 API 模式下的所有模型）、`auto`（仅 Claude 模型）或 `off`。其它 API 模式自动缓存，不受影响 | `on` |
 | `--required-tool <name>` | 强制 Agent 在首轮必须率先调用指定工具 | 无 |
 | `--approve-risk <reason>`| 显式授权风险写操作（`repair` 分区写工具必填） | 无（未提供且触发高危工具时将直接阻断） |
 | `--thinking <mode>` | 思考模式管理策略 | `auto`（推荐，有工具或要求 JSON 时自动关闭），可选 `off`, `on`, `preserve` |
@@ -730,9 +730,10 @@ provider 只在请求前缀与之前某次请求逐字节相同时才复用缓�
    上限太紧可能让该 Step 没有任何输出。
 7. **实际测量。** `RuntimeUsage.CachedInputTokens`（单次模型调用）和 `RuntimeUsageTotals.CachedInputTokens`
    （整个 Turn）给出命中缓存的输入 token 数；`qre run --json` 在 `inputTokens` 旁输出 `cachedInputTokens`。
-8. **Claude 需要显式开启。** Anthropic Messages 只有在请求里要求时才缓存。`qre` CLI 默认对 Claude 模型开启
-   （`--prompt-cache auto`；`on` 扩展到所有走 Anthropic Messages 的模型，`off` 关闭）。嵌入使用时，在 options
-   factory 里通过 `ChatOptions.AdditionalProperties` 设置 `VllmAnthropicCacheControl`。
+8. **Anthropic Messages 需要显式开启。** 这个 API 只有在请求里要求时才缓存。`qre` CLI 默认开启
+   （`--prompt-cache on`），对所有走 Anthropic Messages 的模型生效；第三方网关拒绝该字段时用 `auto`（只对 Claude
+   模型开启），或用 `off` 关闭。嵌入使用时，在 options factory 里通过 `ChatOptions.AdditionalProperties` 设置
+   `VllmAnthropicCacheControl`。
 
 经 OpenRouter 用多步工具任务实测（缓存命中占输入 token 的比例）：
 

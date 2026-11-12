@@ -231,7 +231,7 @@ qre run --workspace <path> [options] "<prompt>"
 | `--tool-search` | Enable dynamic lazy tool retrieval | Disabled |
 | `--tool-search-top-k <n>`| Maximum tools activated per search query | `5` |
 | `--strict-tools` | Request provider-side strict schemas for compatible tools (a request, not a guarantee; incompatible tools are sent unchanged with a warning) | Disabled |
-| `--prompt-cache <mode>` | Ask an Anthropic Messages endpoint to cache the prompt: `auto` (Claude models only), `on` (every model in that API mode) or `off`. Other API modes cache on their own and ignore it | `auto` |
+| `--prompt-cache <mode>` | Ask an Anthropic Messages endpoint to cache the prompt: `on` (every model in that API mode), `auto` (Claude models only) or `off`. Other API modes cache on their own and ignore it | `on` |
 | `--required-tool <name>` | Mandate calling a specific tool on the first step | None |
 | `--approve-risk <reason>`| Explicit risk approval for write/repair tools | None (fail-closed if missing) |
 | `--thinking <mode>` | Chain-of-thought coordination policy | `auto` (default), `off`, `on`, `preserve` |
@@ -728,10 +728,10 @@ stable across the Steps of a Turn; these habits keep it that way.
    models spend more output tokens; a tight cap can end the Step with no content.
 7. **Measure it.** `RuntimeUsage.CachedInputTokens` (per model call) and `RuntimeUsageTotals.CachedInputTokens` (per
    Turn) report the input tokens served from the cache; `qre run --json` prints `cachedInputTokens` next to `inputTokens`.
-8. **Claude needs an explicit opt-in.** Anthropic Messages caches nothing unless the request asks for it. The `qre` CLI
-   asks for Claude models by default (`--prompt-cache auto`; `on` extends it to every model served through Anthropic
-   Messages, `off` disables it). When embedding, set `VllmAnthropicCacheControl` in `ChatOptions.AdditionalProperties`
-   from your options factory.
+8. **Anthropic Messages needs an explicit opt-in.** That API caches nothing unless the request asks for it. The `qre`
+   CLI asks by default (`--prompt-cache on`) for every model served through Anthropic Messages; use `auto` to ask only
+   for Claude models when a third-party gateway rejects the field, or `off` to disable it. When embedding, set
+   `VllmAnthropicCacheControl` in `ChatOptions.AdditionalProperties` from your options factory.
 
 Measured through OpenRouter with a multi-step tool task (cached share of input tokens):
 
