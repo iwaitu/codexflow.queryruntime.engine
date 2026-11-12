@@ -703,6 +703,30 @@ public sealed class ExperimentalQueryRuntimeHarnessTests
     }
 
     [Fact]
+    public void ToolSearch_NeverOffersADescriptorThatHasNoToolBehindIt()
+    {
+        var profile = QueryRuntimeToolProfile.ReadOnly;
+        var readTool = AIFunctionFactory.Create(
+            (string path) => $"read {path}",
+            new AIFunctionFactoryOptions { Name = "qre_read_file", Description = "Read a file." });
+        // The registry lists every descriptor of the profile; only qre_read_file has a tool here.
+        var descriptors = new ExperimentalToolRegistry().ListTools(profile);
+        var orphan = descriptors.First(static descriptor => descriptor.Name != "qre_read_file").Name;
+        var session = new ExperimentalToolSearchSession(
+            profile,
+            [readTool],
+            descriptors,
+            new QueryRuntimeToolSearchOptions { Enabled = true });
+
+        Assert.DoesNotContain(orphan, session.GetCapabilityCatalog(), StringComparison.Ordinal);
+        using var selected = JsonDocument.Parse(session.Search($"select:{orphan}"));
+        var tool = Assert.Single(selected.RootElement.GetProperty("tools").EnumerateArray());
+        Assert.False(tool.GetProperty("activated").GetBoolean());
+        Assert.False(tool.GetProperty("availableNow").GetBoolean());
+        Assert.DoesNotContain(orphan, session.ActiveToolNames);
+    }
+
+    [Fact]
     public void ToolSearch_UsesPlainTextByDefault_AndSupportsExplicitRegex()
     {
         var profile = QueryRuntimeToolProfile.ReadOnly;

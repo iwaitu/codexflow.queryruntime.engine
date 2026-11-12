@@ -37,7 +37,11 @@ public sealed class ExperimentalToolSearchSession
         _options = options;
         _stage = stage;
         _tools = tools.ToDictionary(tool => tool.Name, StringComparer.OrdinalIgnoreCase);
-        _descriptors = descriptors.ToDictionary(descriptor => descriptor.Name, StringComparer.OrdinalIgnoreCase);
+        // A descriptor with no tool behind it can be found and "activated" but never
+        // called, which leaves the model selecting it again and again.
+        _descriptors = descriptors
+            .Where(descriptor => _tools.ContainsKey(descriptor.Name))
+            .ToDictionary(descriptor => descriptor.Name, StringComparer.OrdinalIgnoreCase);
         foreach (var tool in tools)
         {
             if (!_descriptors.ContainsKey(tool.Name))
