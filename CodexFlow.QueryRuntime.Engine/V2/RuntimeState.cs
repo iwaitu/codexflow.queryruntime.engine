@@ -260,7 +260,12 @@ public sealed record RuntimeStepContext
                 .ToArray()),
             Tools = Array.AsReadOnly(request.Tools
                 .Select(static tool => tool with { InputSchema = tool.InputSchema.Clone() })
-                .ToArray())
+                .ToArray()),
+            DeclaredOnlyTools = request.DeclaredOnlyTools == null
+                ? null
+                : Array.AsReadOnly(request.DeclaredOnlyTools
+                    .Select(static tool => tool with { InputSchema = tool.InputSchema.Clone() })
+                    .ToArray())
         };
 
     private static PreparedRuntimeContext Snapshot(PreparedRuntimeContext context)

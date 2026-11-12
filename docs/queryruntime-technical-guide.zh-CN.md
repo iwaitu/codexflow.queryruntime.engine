@@ -989,6 +989,17 @@ provider 的提示缓存（KV cache）可以持续命中；只有投影再次超
 当 Step 暴露的工具集合变化（预算随之变化）或 `RequiredToolName` 变化时，边界或摘要
 可能变化一次。
 
+**无工具 Step 与提示缓存**：finalization 或 `ContinueWithoutTools` 之后的 Step 不暴露任何
+工具。provider 把工具定义渲染在对话之前，去掉它们会让这个 Step（通常也是上下文最长的一步）
+从头失去缓存。设置 `RuntimeAgentLoopRequest.KeepToolDeclarationsOnToolFreeSteps = true` 后，
+Runtime 通过 `RuntimeModelRequest.DeclaredOnlyTools` 继续声明上一个暴露过工具的 Step 的工具，
+`MeaiRuntimeModelClient` 原样发送它们，并且不改变 tool choice：实测 provider 在
+tool choice 为 none 时会把工具定义从提示里去掉，前缀同样变化，所以只有请求形状完全不变才能
+命中缓存。该 Step 的 `Tools` 仍为空，约束模型不再调用工具的只有历史里的那条指令；模型若仍
+发起工具调用，按 `ToolCallHandling` 处理（有文本时忽略并告警，否则 fail-closed）。声明的工具
+同样计入工具 schema 预算，所以压缩边界不会因此移动。该 Step 请求 JSON 输出时不生效（部分
+provider 不能同时带工具和结构化输出）。此选项默认关闭，`qre` CLI 默认开启。
+
 **与模型上下文窗口的关系**：`MaxContextTokens` 应小于
 `模型窗口 − MaxOutputTokens − 安全余量`。安全余量用于吸收估算误差（见下文）和
 provider 侧的模板开销，建议至少 10%。

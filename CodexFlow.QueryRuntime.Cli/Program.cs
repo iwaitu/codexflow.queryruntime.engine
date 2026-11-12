@@ -511,6 +511,7 @@ internal static class QreCli
                     composition.RecoveryCompatibilityDigest),
                 ToolPipeline = toolPipeline,
                 ToolCatalogSelector = composition.ToolCatalogSelector,
+                KeepToolDeclarationsOnToolFreeSteps = true,
                 AuditSink = auditStore,
                 AuditFailureMode = RuntimeAuditFailureMode.FailClosed,
                 ToolApproval = options.ApprovalReason == null

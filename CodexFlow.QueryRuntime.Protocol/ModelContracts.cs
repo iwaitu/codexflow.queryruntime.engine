@@ -53,7 +53,21 @@ public sealed record RuntimeModelRequest(
     IReadOnlyList<RuntimeMessage> Messages,
     IReadOnlyList<RuntimeToolDescriptor> Tools,
     RuntimeModelParameters Parameters,
-    long HistoryVersion);
+    long HistoryVersion)
+{
+    /// <summary>
+    /// Tools the model client should still declare to the provider on a Step
+    /// that exposes none, exactly as it declared them on the previous Step and
+    /// without changing the tool choice. Providers render tool definitions ahead
+    /// of the conversation and drop them under a "none" tool choice, so only an
+    /// unchanged declaration keeps the request prefix, and a provider prompt
+    /// cache, valid. Null when nothing is declared; never set together with a
+    /// non-empty <see cref="Tools"/>. The model can still emit a tool call; the
+    /// Runtime does not execute it on such a Step.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<RuntimeToolDescriptor>? DeclaredOnlyTools { get; init; }
+}
 
 /// <param name="RequireJsonObject">
 /// Legacy JSON-object switch interpreted by the host options factory. Prefer

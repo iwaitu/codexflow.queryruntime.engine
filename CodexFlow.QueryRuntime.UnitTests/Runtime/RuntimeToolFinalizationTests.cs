@@ -75,6 +75,53 @@ public sealed class RuntimeToolFinalizationTests
     }
 
     [Fact]
+    public async Task KeepToolDeclarations_FinalStepDeclaresThePreviousStepsToolsButExposesNone()
+    {
+        var model = new ScriptedModelClient(CallTool("c1"), CallTool("c2"), _ => Text("done"));
+        var audit = new InMemoryRuntimeAuditSink();
+        var request = Request(Policy(afterToolCalls: 2)) with
+        {
+            ModelParameters = new RuntimeModelParameters(),
+            KeepToolDeclarationsOnToolFreeSteps = true,
+            AuditSink = audit
+        };
+
+        var result = await RunLoopAsync(new RuntimeAgentLoop(model), request);
+
+        Assert.Equal(RuntimeTurnStatus.Completed, result.Status);
+        Assert.Null(model.Requests[1].DeclaredOnlyTools);
+        var final = model.Requests[2];
+        Assert.Empty(final.Tools);
+        Assert.Equal(
+            model.Requests[1].Tools.Select(static tool => tool.CanonicalName),
+            final.DeclaredOnlyTools!.Select(static tool => tool.CanonicalName));
+        // The declarations are budgeted like exposed tools, so the projection budget does not move.
+        Assert.Equal(
+            result.PreparedContexts[1].ReservedToolTokens,
+            result.PreparedContexts[2].ReservedToolTokens);
+        // The audit invariant "a finalization Step exposes no tools" still holds.
+        Assert.Equal(RuntimeTurnStatus.Completed, RuntimeRecordedReplay.Replay(Recording(audit.Events)).Status);
+    }
+
+    [Fact]
+    public async Task KeepToolDeclarations_IsOffByDefaultAndSkippedForJsonOutput()
+    {
+        var plain = new ScriptedModelClient(CallTool("c1"), CallTool("c2"), _ => Text("done"));
+        await RunLoopAsync(
+            new RuntimeAgentLoop(plain),
+            Request(Policy(afterToolCalls: 2)) with { ModelParameters = new RuntimeModelParameters() });
+        Assert.Null(plain.Requests[2].DeclaredOnlyTools);
+
+        // Some providers cannot combine tools with structured output.
+        var json = new ScriptedModelClient(CallTool("c1"), CallTool("c2"), _ => Text("{\"ok\":true}"));
+        await RunLoopAsync(
+            new RuntimeAgentLoop(json),
+            Request(Policy(afterToolCalls: 2)) with { KeepToolDeclarationsOnToolFreeSteps = true });
+        Assert.Equal(ToolFreeJson, json.Requests[2].Parameters.ResponseFormat);
+        Assert.Null(json.Requests[2].DeclaredOnlyTools);
+    }
+
+    [Fact]
     public async Task Deadline_UsesTimeProviderAndRecordsElapsedTime()
     {
         var clock = new ManualTimeProvider(DateTimeOffset.UnixEpoch);

@@ -186,6 +186,7 @@ public sealed class RuntimeAgentLoop
                 var historySnapshot = history.Snapshot();
                 PreparedRuntimeContext preparedContext;
                 IReadOnlyList<RuntimeToolDescriptor> stepTools;
+                IReadOnlyList<RuntimeToolDescriptor>? declaredOnlyTools = null;
                 try
                 {
                     if (forcedToolFree)
@@ -221,7 +222,20 @@ public sealed class RuntimeAgentLoop
                                 "required_tool_omitted_from_context",
                                 $"The C5 tool catalog omitted required tool '{requiredToolName}'."));
                     }
-                    var reservedToolTokens = checked(stepTools.Sum(RuntimeTokenEstimator.Estimate));
+                    if (forcedToolFree && request.KeepToolDeclarationsOnToolFreeSteps &&
+                        !request.ModelParameters.RequireJsonObject &&
+                        RuntimeResponseFormats.ResolveForStep(request.ModelParameters.ResponseFormat, 0)
+                            is null or { Kind: RuntimeResponseFormatKind.Text })
+                    {
+                        // The same declarations as the last Step that exposed tools keep
+                        // the provider request prefix, and its prompt cache, unchanged.
+                        declaredOnlyTools = turn.Steps
+                            .Select(static step => step.Context.ModelRequest.Tools)
+                            .LastOrDefault(static tools => tools.Count > 0);
+                    }
+                    var reservedToolTokens = checked(
+                        stepTools.Sum(RuntimeTokenEstimator.Estimate) +
+                        (declaredOnlyTools?.Sum(RuntimeTokenEstimator.Estimate) ?? 0));
                     preparedContext = contextManager.Prepare(
                         historySnapshot,
                         request.Objective,
@@ -297,7 +311,10 @@ public sealed class RuntimeAgentLoop
                             request.ModelParameters.ResponseFormat,
                             stepTools.Count)
                     },
-                    session.HistoryVersion);
+                    session.HistoryVersion)
+                {
+                    DeclaredOnlyTools = declaredOnlyTools
+                };
                 var stepContext = RuntimeStepContext.Create(
                     stepId,
                     stepIndex,

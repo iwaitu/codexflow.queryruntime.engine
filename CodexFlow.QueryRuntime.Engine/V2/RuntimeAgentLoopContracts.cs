@@ -34,6 +34,21 @@ public sealed record RuntimeAgentLoopRequest(
 
     public IRuntimeToolCatalogSelector? ToolCatalogSelector { get; init; }
 
+    /// <summary>
+    /// Opt-in: on a Step that must expose no tools (finalization or
+    /// ContinueWithoutTools), keep declaring the tools of the last Step that
+    /// exposed any, through <see cref="RuntimeModelRequest.DeclaredOnlyTools"/>.
+    /// Only the provider request keeps its tool definitions, with the tool choice
+    /// unchanged, so the Step can reuse the provider prompt cache. The Step still
+    /// exposes no tools to the Runtime: nothing but the instruction in the history
+    /// tells the model not to call one, and a call it emits anyway is handled by
+    /// <see cref="RuntimeToolFinalizationPolicy.ToolCallHandling"/> (ignored when
+    /// the output has text, otherwise the Turn fails closed). Not applied when
+    /// the Step requests JSON output, because some providers cannot combine
+    /// tools with structured output.
+    /// </summary>
+    public bool KeepToolDeclarationsOnToolFreeSteps { get; init; }
+
     public IRuntimeAuditSink? AuditSink { get; init; }
 
     public RuntimeAuditFailureMode AuditFailureMode { get; init; } = RuntimeAuditFailureMode.FailClosed;

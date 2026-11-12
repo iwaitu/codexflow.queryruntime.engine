@@ -384,8 +384,16 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
             throw new RuntimeProtocolAdapterException("The MEAI options factory returned null.");
         var requestStrict = _options.ToolStrict == MeaiToolStrictMode.WhenSchemaCompatible;
         List<string>? downgraded = null;
-        var tools = new List<AITool>(request.Tools.Count);
-        foreach (var descriptor in request.Tools)
+        // A Step that exposes no tools may still declare the previous Step's tools so
+        // the provider request keeps its cached prefix. The tool mode is left as on a
+        // tool Step: providers drop the definitions from the prompt under "none", which
+        // changes the prefix just like not sending them. The Runtime discards any call.
+        var declaredOnly = request.Tools.Count == 0 && request.DeclaredOnlyTools is { Count: > 0 } inactive
+            ? inactive
+            : null;
+        var declarations = declaredOnly ?? request.Tools;
+        var tools = new List<AITool>(declarations.Count);
+        foreach (var descriptor in declarations)
         {
             var strict = false;
             if (requestStrict)
@@ -406,7 +414,7 @@ public sealed class MeaiRuntimeModelClient : IRuntimeModelAttemptClient, IDispos
                 "Strict tool schemas were requested but these tools do not satisfy the strict subset " +
                 "(additionalProperties:false and every property required), so they were sent without strict: " +
                 string.Join(", ", downgraded));
-        options.ToolMode = request.Tools.Count == 0
+        options.ToolMode = declarations.Count == 0
             ? ChatToolMode.None
             : string.IsNullOrWhiteSpace(request.Parameters.RequiredToolName)
                 ? options.ToolMode

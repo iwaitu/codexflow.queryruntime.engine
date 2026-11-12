@@ -238,6 +238,46 @@ public sealed class MeaiRuntimeProtocolAdapterTests
     }
 
     [Fact]
+    public async Task RuntimeModelClient_DeclaredOnlyToolsAreSentWithTheToolChoiceUnchanged()
+    {
+        var fake = new FakeChatClient();
+        using var adapter = new MeaiRuntimeModelClient(fake, _ => new ChatOptions());
+        using var schemaDocument = JsonDocument.Parse("{\"type\":\"object\",\"properties\":{}}");
+        var tool = new RuntimeToolDescriptor(
+            "read_file",
+            "1.0.0",
+            "Read a file.",
+            schemaDocument.RootElement.Clone(),
+            RuntimeToolSideEffect.ReadOnly,
+            RuntimeToolIdempotency.Idempotent);
+        RuntimeModelRequest Request(IReadOnlyList<RuntimeToolDescriptor>? declaredOnly) => new(
+            new RuntimeSessionId("session-1"),
+            new RuntimeTurnId("turn-1"),
+            new RuntimeStepId("step-1"),
+            [new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("hello")])],
+            [],
+            new RuntimeModelParameters(),
+            HistoryVersion: 0)
+        {
+            DeclaredOnlyTools = declaredOnly
+        };
+
+        await foreach (var _ in adapter.StreamAsync(Request([tool]), TestContext.Current.CancellationToken))
+        {
+        }
+        var declaration = Assert.IsAssignableFrom<AIFunction>(Assert.Single(fake.LastOptions!.Tools!));
+        Assert.Equal("read_file", declaration.Name);
+        // Same tool mode as a Step that exposes the tool: the factory's, here unset.
+        Assert.Null(fake.LastOptions.ToolMode);
+
+        await foreach (var _ in adapter.StreamAsync(Request(null), TestContext.Current.CancellationToken))
+        {
+        }
+        Assert.Empty(fake.LastOptions!.Tools!);
+        Assert.Equal(ChatToolMode.None, fake.LastOptions.ToolMode);
+    }
+
+    [Fact]
     public async Task RuntimeModelClient_BuffersFinishReasonUntilTrailingUsage()
     {
         using var adapter = new MeaiRuntimeModelClient(

@@ -16,6 +16,14 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
   applies only to the fallback used when no boundary fits.
 - A tool activated through `tool_search` is now appended after the tools already exposed instead of being sorted in by
   name, so the tool declarations sent on earlier Steps stay an unchanged prefix. The initial set keeps its name order.
+- Add `RuntimeAgentLoopRequest.KeepToolDeclarationsOnToolFreeSteps` (off by default). A Step that must expose no tools
+  (finalization or `ContinueWithoutTools`) then still declares the tools of the last Step that exposed any, through the new
+  `RuntimeModelRequest.DeclaredOnlyTools`, and `MeaiRuntimeModelClient` sends them with the tool choice unchanged. Dropping
+  the tool definitions changed the start of the provider request, so the final and largest request of a Turn missed the
+  prompt cache; sending them with a "none" tool choice does not help, because providers then leave them out of the prompt.
+  The Step still exposes no tools to the Runtime: only the instruction in the history tells the model not to call one, and
+  a call it emits anyway is handled by `ToolCallHandling` as before. The option is skipped when the Step requests JSON
+  output. The `qre` CLI turns it on.
 
 ## [0.25.10]
 
