@@ -208,6 +208,66 @@ public sealed class RuntimeContextTests
     }
 
     [Fact]
+    public void ContextPrepare_CompactedProjectionKeepsItsPrefixWhileHistoryGrows()
+    {
+        var options = new RuntimeContextOptions
+        {
+            MaxContextTokens = 2_000,
+            MaxItemTokens = 400,
+            MaxToolResultTokens = 200,
+            LargeToolResultTokens = 200,
+            SummaryTokens = 120
+        };
+        var history = RuntimeHistory.Create(
+        [
+            new RuntimeMessage(RuntimeMessageRole.System, [new RuntimeTextItem("constraint")]),
+            new RuntimeMessage(RuntimeMessageRole.User, [new RuntimeTextItem("the task")])
+        ], 0, options);
+        string[]? previous = null;
+        var compactedSteps = 0;
+        var prefixBreaks = 0;
+        for (var step = 0; step < 60; step++)
+        {
+            var call = Call($"call-{step}", "read_file");
+            history.AppendBatch(
+            [
+                new RuntimeMessage(RuntimeMessageRole.Assistant, [new RuntimeToolCallItem(call)]),
+                new RuntimeMessage(RuntimeMessageRole.Tool,
+                    [new RuntimeToolResultItem(new RuntimeToolResult(
+                        call.InvocationId,
+                        $"result-{step} " + new string('r', 240),
+                        true))])
+            ]);
+            // A new manager per Step: the boundary is a function of the history alone.
+            var prepared = new RuntimeContextManager(options).Prepare(history.Snapshot(), "the task", null);
+            Assert.True(prepared.EstimatedTokens <= options.MaxContextTokens);
+            var items = prepared.Messages.SelectMany(static message => message.Items).ToArray();
+            Assert.True(
+                items.OfType<RuntimeToolCallItem>().Select(static item => item.Call.InvocationId.Value).ToHashSet()
+                    .SetEquals(items.OfType<RuntimeToolResultItem>().Select(static item => item.Result.InvocationId.Value)));
+            Assert.Contains(items.OfType<RuntimeTextItem>(), static item => item.Text == "constraint");
+            Assert.Contains(items.OfType<RuntimeTextItem>(), static item => item.Text == "the task");
+
+            var current = prepared.Messages.Select(static message => JsonSerializer.Serialize(message)).ToArray();
+            if (prepared.Compacted)
+            {
+                compactedSteps++;
+                if (previous == null || previous.Length > current.Length ||
+                    !previous.SequenceEqual(current.Take(previous.Length)))
+                {
+                    prefixBreaks++;
+                }
+            }
+            previous = current;
+        }
+
+        TestContext.Current.TestOutputHelper?.WriteLine($"compacted steps: {compactedSteps}, prefix breaks: {prefixBreaks}");
+        Assert.True(compactedSteps >= 30, $"expected a long compacted stretch, got {compactedSteps}");
+        // Each Step adds about 76 tokens and the boundary moves once per 800.
+        Assert.InRange(prefixBreaks, 1, compactedSteps / 5);
+    }
+
+    [Fact]
     public async Task AgentLoop_UsesPreparedProjectionAndExposesContextEvents()
     {
         var options = SmallOptions();

@@ -967,18 +967,27 @@ tokenizer 的计数。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `MaxContextTokens` | 32 000 | 每个 Step 发给模型的消息投影上限（含当 Step 暴露的工具 schema 估算）。超出时做确定性本地压缩：保留最新 user、system、未完成的工具调用与最近轨迹，其余替换为一条摘要。 |
+| `MaxContextTokens` | 32 000 | 每个 Step 发给模型的消息投影上限（含当 Step 暴露的工具 schema 估算）。超出时做确定性本地压缩：在一个稳定边界处切开，边界之后的消息原样保留，边界之前只保留 system、最后一条 user 以及与保留结果配对的工具调用，其余替换为一条摘要。见下文“压缩边界与提示缓存”。 |
 | `MaxItemTokens` | 8 000 | 追加历史时单个 text / reasoning / 工具参数的硬上限，超出部分被截断（`text_fragment_hard_cap` 等）。 |
 | `MaxToolResultTokens` | 4 000 | 单个工具结果文本的硬上限（`tool_result_hard_cap`）。 |
 | `LargeToolResultTokens` | 2 000 | 工具结果超过该值时，原文存为 history blob（`runtime-history://sha256/...` artifact），模型只看到前 `LargeToolResultTokens` 的内容加替换标记（`large_tool_result_replaced`）。这是**模型实际可见的工具结果上限**。 |
 | `SummaryTokens` | 2 000 | 压缩时摘要的上限。 |
-| `RecentTrajectoryMessages` | 12 | 压缩时优先保留的最近消息数。 |
+| `RecentTrajectoryMessages` | 12 | 仅用于回退路径：没有任何稳定边界放得下时，按最近消息数逐 Step 选取。 |
 | `MaxArtifactsPerResult` / `MaxBlobBytes` / `MaxTotalBlobBytes` | 16 / 1 MiB / 8 MiB | 工具结果 artifact 与 history blob 的数量与字节上限。 |
 | `TruncationPolicy` | `Allow` | 截断时的处理策略，见下文。 |
 
 默认值面向 32k 窗口的代码分析场景：工具结果多为文件片段、命令输出，截断后模型
 可以再调用工具读取更小的范围。对于“首条 user 消息就是大块证据、单次工具返回数万字”
 的嵌入场景（例如材料包审查），默认值会静默裁剪证据，需要放宽。
+
+**压缩边界与提示缓存**：候选边界位于历史累计估算 token 跨过
+`MaxContextTokens × 2/5` 整数倍的位置，只取决于边界之前的消息，历史追加不会让它移动。
+每个 Step 取“投影放得下”的最靠前的边界，因此压缩之后相邻 Step 发出的消息前缀保持不变，
+provider 的提示缓存（KV cache）可以持续命中；只有投影再次超出预算时边界才前移一格，
+大约每增长 2/5 个窗口发生一次。边界是历史的纯函数，`Prepare` 不保存状态，恢复后得到
+相同的投影。摘要预算固定为 `min(SummaryTokens, 预算/4)`，不随保留部分增长而变化。
+当 Step 暴露的工具集合变化（预算随之变化）或 `RequiredToolName` 变化时，边界或摘要
+可能变化一次。
 
 **与模型上下文窗口的关系**：`MaxContextTokens` 应小于
 `模型窗口 − MaxOutputTokens − 安全余量`。安全余量用于吸收估算误差（见下文）和

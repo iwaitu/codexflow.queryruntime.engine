@@ -5,6 +5,16 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [Unreleased]
+
+- Context compaction now keeps a stable boundary instead of re-selecting the most recent messages on every Step. Once the
+  projection exceeds `MaxContextTokens`, everything after a boundary is kept verbatim and the boundary moves only when the
+  projection overflows again (about once per 2/5 of the window), so consecutive Steps send the same prefix and a provider
+  prompt cache keeps hitting. Before, the window slid by one message per Step and every request after the first compaction
+  missed the cache. The boundary is a function of the history alone, so `Prepare` stays deterministic. A compacted
+  projection now holds as much recent history as fits, not at most `RecentTrajectoryMessages` messages; that option
+  applies only to the fallback used when no boundary fits.
+
 ## [0.25.10]
 
 - The `qre` CLI now reads and writes UTF-8 (no byte order mark) instead of the system ANSI code page. On a Chinese Windows the .NET console

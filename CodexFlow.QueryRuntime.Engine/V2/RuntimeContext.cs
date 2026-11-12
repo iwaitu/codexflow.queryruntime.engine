@@ -145,6 +145,11 @@ public sealed record RuntimeContextOptions
 
     public int SummaryTokens { get; init; } = 2_000;
 
+    /// <summary>
+    /// Recent messages kept by the fallback compaction, which runs only when no
+    /// stable boundary fits the budget. Stable-boundary compaction keeps as much
+    /// recent history as fits.
+    /// </summary>
     public int RecentTrajectoryMessages { get; init; } = 12;
 
     public int MaxArtifactsPerResult { get; init; } = 16;
@@ -881,14 +886,26 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
                 Array.AsReadOnly([contextEvent]));
         }
 
-        var selected = Select(history, requiredToolName, messageBudget);
-        var selectedIds = selected.Select(static entry => entry.Id).ToHashSet();
-        var omitted = history.Messages.Where(entry => !selectedIds.Contains(entry.Id)).ToArray();
-        var remaining = Math.Max(0, messageBudget - selected.Sum(static entry => RuntimeTokenEstimator.Estimate(entry.Message)));
-        var summaryTokenBudget = Math.Max(0, Math.Min(Options.SummaryTokens, remaining - 4));
-        var summary = summaryTokenBudget == 0
-            ? string.Empty
-            : BuildSummary(omitted, objective, requiredToolName, summaryTokenBudget);
+        IReadOnlyList<RuntimeHistoryMessage> selected;
+        RuntimeHistoryMessage[] omitted;
+        string summary;
+        if (SelectAtStableBoundary(history, objective, requiredToolName, messageBudget) is { } stable)
+        {
+            (selected, omitted, summary) = stable;
+        }
+        else
+        {
+            // No stable boundary fits (for example a tail larger than the budget):
+            // fall back to the per-Step recent-message window.
+            selected = Select(history, requiredToolName, messageBudget);
+            var selectedIds = selected.Select(static entry => entry.Id).ToHashSet();
+            omitted = history.Messages.Where(entry => !selectedIds.Contains(entry.Id)).ToArray();
+            var remaining = Math.Max(0, messageBudget - selected.Sum(static entry => RuntimeTokenEstimator.Estimate(entry.Message)));
+            var summaryTokenBudget = Math.Max(0, Math.Min(Options.SummaryTokens, remaining - 4));
+            summary = summaryTokenBudget == 0
+                ? string.Empty
+                : BuildSummary(omitted, objective, requiredToolName, summaryTokenBudget);
+        }
         var messages = new List<RuntimeMessage>();
         var replacementIds = omitted.SelectMany(static entry => entry.ItemIds).ToArray();
         if (!string.IsNullOrWhiteSpace(summary))
@@ -930,6 +947,174 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
             reservedToolTokens,
             true,
             Array.AsReadOnly(events));
+    }
+
+    /// <summary>
+    /// Compacts at a boundary that does not move while the history only grows, so
+    /// consecutive Steps send the same prefix and a provider prompt cache keeps
+    /// hitting. Candidate boundaries sit where the cumulative estimated tokens of
+    /// the history cross a multiple of 2/5 of <see cref="RuntimeContextOptions.MaxContextTokens"/>;
+    /// they depend only on the messages before them. The earliest boundary whose
+    /// projection fits is used: everything after it is kept verbatim, and from
+    /// before it only the system messages, the last user message and tool calls
+    /// still paired with a kept result survive; the rest becomes the summary. The
+    /// boundary advances only when the projection overflows again. Returns null
+    /// when no boundary fits.
+    /// </summary>
+    private (IReadOnlyList<RuntimeHistoryMessage> Selected, RuntimeHistoryMessage[] Omitted, string Summary)? SelectAtStableBoundary(
+        RuntimeHistorySnapshot history,
+        string objective,
+        string? requiredToolName,
+        int messageBudget)
+    {
+        var entries = history.Messages;
+        var count = entries.Count;
+        var prefixTokens = new long[count + 1];
+        var callIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        var resultIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var index = 0; index < count; index++)
+        {
+            var message = entries[index].Message;
+            prefixTokens[index + 1] = prefixTokens[index] + RuntimeTokenEstimator.Estimate(message);
+            foreach (var item in message.Items)
+            {
+                switch (item)
+                {
+                    case RuntimeToolCallItem call:
+                        callIndex[call.Call.InvocationId.Value] = index;
+                        break;
+                    case RuntimeToolResultItem result:
+                        resultIndex[result.Result.InvocationId.Value] = index;
+                        break;
+                }
+            }
+        }
+
+        // The stride ignores the per-Step tool reservation so a changed tool set
+        // does not move the candidate boundaries.
+        long stride = Math.Max(1, Options.MaxContextTokens * 2L / 5);
+        // A fixed summary budget keeps the summary text identical while the tail grows.
+        var summaryTokenBudget = Math.Max(0, Math.Min(Options.SummaryTokens, messageBudget / 4) - 4);
+        var nextThreshold = stride;
+        for (var boundary = 1; boundary < count; boundary++)
+        {
+            if (prefixTokens[boundary] < nextThreshold)
+            {
+                continue;
+            }
+            nextThreshold = (prefixTokens[boundary] / stride + 1) * stride;
+            var tailTokens = prefixTokens[count] - prefixTokens[boundary];
+            if (tailTokens > messageBudget)
+            {
+                continue;
+            }
+            var pinned = PinBeforeBoundary(entries, boundary, callIndex, resultIndex);
+            var used = tailTokens;
+            var omitted = new List<RuntimeHistoryMessage>();
+            for (var index = 0; index < boundary; index++)
+            {
+                if (pinned[index])
+                {
+                    used += prefixTokens[index + 1] - prefixTokens[index];
+                }
+                else
+                {
+                    omitted.Add(entries[index]);
+                }
+            }
+            if (omitted.Count == 0 || used > messageBudget)
+            {
+                continue;
+            }
+            var summary = summaryTokenBudget == 0
+                ? string.Empty
+                : BuildSummary(omitted, objective, requiredToolName, summaryTokenBudget);
+            if (!string.IsNullOrWhiteSpace(summary))
+            {
+                used += 4 + RuntimeTokenEstimator.Estimate(summary);
+            }
+            if (used > messageBudget)
+            {
+                continue;
+            }
+            var selected = new List<RuntimeHistoryMessage>(count - omitted.Count);
+            for (var index = 0; index < count; index++)
+            {
+                if (index >= boundary || pinned[index])
+                {
+                    selected.Add(entries[index]);
+                }
+            }
+            return (selected, omitted.ToArray(), summary);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Marks the messages before <paramref name="boundary"/> that stay visible.
+    /// The answer depends only on those messages, so it is stable for a boundary.
+    /// </summary>
+    private static bool[] PinBeforeBoundary(
+        IReadOnlyList<RuntimeHistoryMessage> entries,
+        int boundary,
+        Dictionary<string, int> callIndex,
+        Dictionary<string, int> resultIndex)
+    {
+        var pinned = new bool[boundary];
+        var lastUser = -1;
+        for (var index = 0; index < boundary; index++)
+        {
+            var message = entries[index].Message;
+            if (message.Role == RuntimeMessageRole.System)
+            {
+                pinned[index] = true;
+            }
+            else if (message.Role == RuntimeMessageRole.User)
+            {
+                lastUser = index;
+            }
+            // A call whose result is not before the boundary is either still
+            // pending or answered in the kept tail.
+            if (message.Items.OfType<RuntimeToolCallItem>().Any(call =>
+                    !resultIndex.TryGetValue(call.Call.InvocationId.Value, out var resultAt) || resultAt >= boundary))
+            {
+                pinned[index] = true;
+            }
+        }
+        if (lastUser >= 0)
+        {
+            pinned[lastUser] = true;
+        }
+
+        // A pinned message never leaves a visible call without its result or a
+        // visible result without its call.
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (var index = 0; index < boundary; index++)
+            {
+                if (!pinned[index])
+                {
+                    continue;
+                }
+                foreach (var item in entries[index].Message.Items)
+                {
+                    var partner = item switch
+                    {
+                        RuntimeToolCallItem call when resultIndex.TryGetValue(call.Call.InvocationId.Value, out var resultAt) => resultAt,
+                        RuntimeToolResultItem result when callIndex.TryGetValue(result.Result.InvocationId.Value, out var callAt) => callAt,
+                        _ => -1
+                    };
+                    if (partner >= 0 && partner < boundary && !pinned[partner])
+                    {
+                        pinned[partner] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        return pinned;
     }
 
     private IReadOnlyList<RuntimeHistoryMessage> Select(
