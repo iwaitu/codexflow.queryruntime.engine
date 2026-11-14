@@ -198,6 +198,8 @@ public sealed class RuntimeAgentLoop
                 IReadOnlyList<RuntimeToolDescriptor>? declaredOnlyTools = null;
                 try
                 {
+                    // What the provider counted for the Steps already taken, per token the estimator expected: the budget is tightened by it.
+                    var estimateScale = ResolveEstimateScale(turn.Steps);
                     if (forcedToolFree)
                     {
                         stepTools = [];
@@ -211,7 +213,9 @@ public sealed class RuntimeAgentLoop
                         var selectionContext = contextManager.Prepare(
                             historySnapshot,
                             request.Objective,
-                            requiredToolName);
+                            requiredToolName,
+                            0,
+                            estimateScale);
                         stepTools = ValidateSelectedTools(
                             request.ToolCatalogSelector.SelectTools(
                                 selectionContext,
@@ -249,7 +253,8 @@ public sealed class RuntimeAgentLoop
                         historySnapshot,
                         request.Objective,
                         requiredToolName,
-                        reservedToolTokens);
+                        reservedToolTokens,
+                        estimateScale);
                 }
                 catch (RuntimeAgentLoopFailure)
                 {
@@ -2155,6 +2160,27 @@ public sealed class RuntimeAgentLoop
                 $"Unsupported Runtime item type '{item.GetType().FullName}'.",
                 nameof(item))
         };
+
+    /// <summary>
+    /// The largest ratio, over the Steps taken, of the input tokens the provider reported to the tokens the estimator expected for that
+    /// Step's context; one when nothing is known or the provider counts no more than the estimate. Read from the Step states, so a resumed
+    /// run has it too.
+    /// </summary>
+    private static double ResolveEstimateScale(IReadOnlyList<RuntimeStepState> steps)
+    {
+        var scale = 1.0;
+        foreach (var step in steps)
+        {
+            var estimated = step.Context.PreparedContext?.EstimatedTokens ?? 0;
+            var reported = step.Output?.Usage.InputTokens ?? 0;
+            if (estimated > 0 && reported > 0)
+            {
+                scale = Math.Max(scale, (double)reported / estimated);
+            }
+        }
+
+        return Math.Min(scale, RuntimeContextManager.MaxEstimateScale);
+    }
 
     private static RuntimeUsageTotals AddUsage(RuntimeUsageTotals current, RuntimeUsage added)
     {

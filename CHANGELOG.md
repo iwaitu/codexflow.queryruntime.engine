@@ -5,6 +5,18 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.2]
+
+- The context budget now learns how far the token estimate is from the provider's count. `RuntimeTokenEstimator` counts UTF-8
+  bytes / 4, which is two to three times too few for text a tokenizer splits finely (Chinese, and above all JSON that writes
+  Chinese as unicode escapes). In a live run nine 42 KB tool results were estimated at 116,631 tokens, never compacted, and
+  refused by the provider at 262,145. The agent loop now reads the input tokens the provider reported for the Steps already
+  taken, compares them with the estimate the Step was prepared with, and passes the largest ratio (at most 4) to the new
+  `IRuntimeContextManager.Prepare(..., estimateScale)` overload; `RuntimeContextManager` divides its budget by it, so the history
+  is compacted before the provider's window is reached. The scale never goes below 1, so a model whose text the estimator
+  counts right is unaffected, and a run that has taken no Step yet is budgeted exactly as before. The overload is a default
+  interface method that ignores the scale, so existing `IRuntimeContextManager` implementations keep working unchanged.
+
 ## [0.26.1]
 
 - Consume VllmChatClient **2.0.39** and pin it as the verified SDK version. That release makes the Responses API mode of

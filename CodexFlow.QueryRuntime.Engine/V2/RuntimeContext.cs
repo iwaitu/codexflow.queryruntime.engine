@@ -249,6 +249,18 @@ public interface IRuntimeContextManager
         string objective,
         string? requiredToolName,
         int reservedToolTokens = 0);
+
+    /// <summary>
+    /// <see cref="Prepare(RuntimeHistorySnapshot, string, string?, int)"/> with the ratio of what the provider counted to what
+    /// <see cref="RuntimeTokenEstimator"/> estimated for the Steps already taken. An implementation that does not calibrate ignores it.
+    /// </summary>
+    PreparedRuntimeContext Prepare(
+        RuntimeHistorySnapshot history,
+        string objective,
+        string? requiredToolName,
+        int reservedToolTokens,
+        double estimateScale)
+        => Prepare(history, objective, requiredToolName, reservedToolTokens);
 }
 
 public interface IRuntimeContextEventSink
@@ -846,11 +858,30 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
 
     public RuntimeContextOptions Options { get; }
 
+    /// <summary>The largest correction applied: beyond it the ratio says the estimate is wrong in a way scaling will not fix.</summary>
+    public const double MaxEstimateScale = 4.0;
+
+    private const int MinCalibratedMessageBudget = 512;
+
     public PreparedRuntimeContext Prepare(
         RuntimeHistorySnapshot history,
         string objective,
         string? requiredToolName,
         int reservedToolTokens = 0)
+        => Prepare(history, objective, requiredToolName, reservedToolTokens, 1.0);
+
+    /// <summary>
+    /// The estimate counts UTF-8 bytes / 4, which is two to three times too few for text a tokenizer splits finely (Chinese, and JSON
+    /// that writes Chinese as unicode escapes). <paramref name="estimateScale"/> is what the provider really counted per estimated token
+    /// in the Steps already taken: the budget is divided by it, so the history is compacted before the PROVIDER's window is reached, not
+    /// the estimate's. A scale below one, or one that is not a finite number, changes nothing: calibration only ever tightens the budget.
+    /// </summary>
+    public PreparedRuntimeContext Prepare(
+        RuntimeHistorySnapshot history,
+        string objective,
+        string? requiredToolName,
+        int reservedToolTokens,
+        double estimateScale)
     {
         ArgumentNullException.ThrowIfNull(history);
         ArgumentException.ThrowIfNullOrWhiteSpace(objective);
@@ -860,7 +891,16 @@ public sealed class RuntimeContextManager : IRuntimeContextManager
                 nameof(reservedToolTokens),
                 $"C5 tool schemas require {reservedToolTokens} estimated tokens, leaving no message budget within {Options.MaxContextTokens} tokens.");
         }
+        var scale = double.IsFinite(estimateScale) && estimateScale > 1.0 ? Math.Min(estimateScale, MaxEstimateScale) : 1.0;
         var messageBudget = Options.MaxContextTokens - reservedToolTokens;
+        if (scale > 1.0)
+        {
+            // (estimate + reserved) * scale <= window. The floor keeps a tiny window from calibrating itself to nothing.
+            messageBudget = Math.Max(
+                (int)(Options.MaxContextTokens / scale) - reservedToolTokens,
+                Math.Min(messageBudget, MinCalibratedMessageBudget));
+        }
+
         var allTokens = history.Messages.Sum(static entry => RuntimeTokenEstimator.Estimate(entry.Message));
         if (allTokens <= messageBudget)
         {
