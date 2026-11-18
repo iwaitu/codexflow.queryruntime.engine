@@ -5,6 +5,12 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.3]
+
+- Consume VllmChatClient **2.0.40** and pin it as the verified SDK version. That release fixes multimodal `ContentParts`
+  serialization in `Responses` and `AnthropicMessages` modes (including `VllmQwen3NextChatClient`) so image inputs are
+  sent as structured `input_image` (with `detail: "auto"`) and Anthropic `image` blocks instead of serialized JSON strings.
+
 ## [0.26.2]
 
 - The context budget now learns how far the token estimate is from the provider's count. `RuntimeTokenEstimator` counts UTF-8
