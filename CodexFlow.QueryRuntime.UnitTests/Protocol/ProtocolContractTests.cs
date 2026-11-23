@@ -68,6 +68,27 @@ public sealed class ProtocolContractTests
     }
 
     [Fact]
+    public void SignedToolCall_RoundTripsWithoutChangingUnsignedJson()
+    {
+        const string original = """
+            {"role":"Assistant","items":[{"kind":"tool_call","call":{"invocationId":{"value":"call-1"},"name":"read","arguments":{"path":"test"},"informationalOnly":false}}]}
+            """;
+        var metadata = QueryRuntimeProtocolJsonContext.Default.RuntimeMessage;
+        var legacy = JsonSerializer.Deserialize(original, metadata)!;
+        var item = Assert.IsType<RuntimeToolCallItem>(Assert.Single(legacy.Items));
+        Assert.Null(item.Call.ProtectedData);
+        using var legacyJson = JsonDocument.Parse(original);
+        using var serializedJson = JsonDocument.Parse(JsonSerializer.Serialize(legacy, metadata));
+        Assert.True(JsonElement.DeepEquals(legacyJson.RootElement, serializedJson.RootElement));
+
+        var signed = item with { Call = item.Call with { ProtectedData = "signature/+==" } };
+        var json = JsonSerializer.Serialize(legacy with { Items = [signed] }, metadata);
+        var restored = Assert.IsType<RuntimeToolCallItem>(JsonSerializer.Deserialize(json, metadata)!.Items[0]);
+        Assert.Equal(signed.Call.ProtectedData, restored.Call.ProtectedData);
+        Assert.True(JsonElement.DeepEquals(item.Call.Arguments, restored.Call.Arguments));
+    }
+
+    [Fact]
     public void ProtocolPublicTypes_RemainInProtocolAssembly()
     {
         var protocolAssembly = typeof(RuntimeItem).Assembly;

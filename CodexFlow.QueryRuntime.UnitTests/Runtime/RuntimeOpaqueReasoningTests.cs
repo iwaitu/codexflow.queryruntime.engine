@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using CodexFlow.QueryRuntime.Engine.V2;
 using CodexFlow.QueryRuntime.Models;
 using CodexFlow.QueryRuntime.Protocol;
@@ -29,6 +30,37 @@ public sealed class RuntimeOpaqueReasoningTests
         Assert.Contains(prepared.Messages.SelectMany(m => m.Items),
             item => item is RuntimeReasoningItem reasoning && reasoning.ProtectedData == opaque);
         Assert.DoesNotContain(restored.DrainEvents(), e => e.Code == "reasoning_fragment_hard_cap");
+    }
+
+    [Fact]
+    public void SignedToolCall_PreservesContextAndRejectsAnOversizedBatch()
+    {
+        var toolCall = new RuntimeToolCall(new RuntimeInvocationId("signed-1"), "read",
+            JsonElement.Parse("""{"path":"file"}"""))
+        {
+            ProtectedData = "provider-signature/+=="
+        };
+        var item = new RuntimeToolCallItem(toolCall);
+        var tokenCount = RuntimeTokenEstimator.Estimate(item);
+        Assert.Equal(tokenCount,
+            RuntimeTokenEstimator.Estimate(item with { Call = toolCall with { ProtectedData = null } }) +
+            RuntimeTokenEstimator.Estimate(toolCall.ProtectedData));
+
+        var options = Options(tokenCount);
+        var message = new RuntimeMessage(RuntimeMessageRole.Assistant, [item]);
+        var history = RuntimeHistory.Create([message], 0, options);
+        var snapshot = history.Snapshot();
+        var restored = RuntimeHistory.RestoreCanonical(snapshot.Messages, snapshot.Version,
+            snapshot.NextMessageSequence, options);
+        var prepared = new RuntimeContextManager(options).Prepare(restored.Snapshot(), "test", null);
+        var preparedCall = Assert.Single(prepared.Messages.SelectMany(m => m.Items).OfType<RuntimeToolCallItem>()).Call;
+        Assert.Equal(toolCall.ProtectedData, preparedCall.ProtectedData);
+        Assert.True(JsonElement.DeepEquals(toolCall.Arguments, preparedCall.Arguments));
+
+        var large = item with { Call = toolCall with { ProtectedData = new string('x', (tokenCount + 1) * 4) } };
+        Assert.Throws<RuntimeOpaqueReasoningLimitException>(() => restored.AppendBatch([message with { Items = [large] }]));
+        Assert.Equal(snapshot.Version, restored.Snapshot().Version);
+        Assert.Equal(snapshot.NextMessageSequence, restored.Snapshot().NextMessageSequence);
     }
 
     [Fact]

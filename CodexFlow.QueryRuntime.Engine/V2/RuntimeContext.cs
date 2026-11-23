@@ -353,7 +353,7 @@ public sealed class RuntimeHistory
         var resolved = options ?? RuntimeContextOptions.Default;
         resolved.Validate();
         var history = new RuntimeHistory(version, resolved);
-        history.ValidateOpaqueReasoning(canonicalMessages.Select(static entry =>
+        history.ValidateOpaqueData(canonicalMessages.Select(static entry =>
             (entry ?? throw new ArgumentNullException(nameof(canonicalMessages))).Message));
         var messageIds = new HashSet<string>(StringComparer.Ordinal);
         var itemIds = new HashSet<string>(StringComparer.Ordinal);
@@ -437,7 +437,7 @@ public sealed class RuntimeHistory
     public long AppendBatch(IReadOnlyList<RuntimeMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        ValidateOpaqueReasoning(messages);
+        ValidateOpaqueData(messages);
         Version = checked(Version + 1);
         AppendCore(messages, Version);
         return Version;
@@ -471,7 +471,7 @@ public sealed class RuntimeHistory
     private void AppendCore(IReadOnlyList<RuntimeMessage> messages, long version)
     {
         // Validate the whole batch before normalization can mutate indexes or history.
-        ValidateOpaqueReasoning(messages);
+        ValidateOpaqueData(messages);
         foreach (var message in messages)
         {
             ArgumentNullException.ThrowIfNull(message);
@@ -494,15 +494,21 @@ public sealed class RuntimeHistory
         }
     }
 
-    private void ValidateOpaqueReasoning(IEnumerable<RuntimeMessage> messages)
+    private void ValidateOpaqueData(IEnumerable<RuntimeMessage> messages)
     {
         foreach (var message in messages)
         {
             ArgumentNullException.ThrowIfNull(message);
             ArgumentNullException.ThrowIfNull(message.Items);
-            foreach (var reasoning in message.Items.OfType<RuntimeReasoningItem>())
+            foreach (var item in message.Items)
             {
-                var estimatedTokens = RuntimeTokenEstimator.Estimate(reasoning.ProtectedData);
+                var estimatedTokens = item switch
+                {
+                    RuntimeReasoningItem reasoning => RuntimeTokenEstimator.Estimate(reasoning.ProtectedData),
+                    RuntimeToolCallItem toolCall when !string.IsNullOrWhiteSpace(toolCall.Call.ProtectedData)
+                        => RuntimeTokenEstimator.Estimate(toolCall),
+                    _ => 0
+                };
                 if (estimatedTokens > _options.MaxItemTokens)
                 {
                     throw new RuntimeOpaqueReasoningLimitException(estimatedTokens, _options.MaxItemTokens);
@@ -830,7 +836,8 @@ public static class RuntimeTokenEstimator
         {
             RuntimeTextItem text => Estimate(text.Text),
             RuntimeReasoningItem reasoning => Estimate(reasoning.Text) + Estimate(reasoning.ProtectedData),
-            RuntimeToolCallItem call => Estimate(call.Call.Name) + Estimate(call.Call.Arguments.GetRawText()) + 8,
+            RuntimeToolCallItem call => Estimate(call.Call.Name) + Estimate(call.Call.Arguments.GetRawText()) +
+                Estimate(call.Call.ProtectedData) + 8,
             RuntimeToolResultItem result => Estimate(result.Result.Text) +
                 (result.Result.Artifacts?.Count ?? 0) * 16 + 8,
             RuntimeArtifactItem artifact => Estimate(artifact.Artifact.Path) + 8,

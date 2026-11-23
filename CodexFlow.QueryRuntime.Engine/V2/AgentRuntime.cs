@@ -288,7 +288,7 @@ public sealed class AgentRuntime : IResumableAgentRuntime
                             stepId: request.StepId,
                             invocationId: toolCall.Call.InvocationId,
                             toolName: toolCall.Call.Name,
-                            toolCall: toolCall.Call).ConfigureAwait(false);
+                            toolCall: toolCall.Call with { ProtectedData = null }).ConfigureAwait(false);
                         break;
                     case RuntimeUsageEvent usage:
                         await emitter.EmitAsync(
