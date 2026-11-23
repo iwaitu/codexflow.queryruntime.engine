@@ -5,6 +5,11 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.4]
+
+- Consume VllmChatClient **2.0.41** and pin it as the verified SDK version. Gemini native tool calls preserve JSON
+  Schema constraints and send function results with a supported content role.
+
 ## [0.26.3]
 
 - Consume VllmChatClient **2.0.40** and pin it as the verified SDK version. That release fixes multimodal `ContentParts`

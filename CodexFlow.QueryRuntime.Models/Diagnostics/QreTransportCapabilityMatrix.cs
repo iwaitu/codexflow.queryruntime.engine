@@ -70,7 +70,7 @@ public sealed record QreTransportCapability
 /// </summary>
 public static class QreTransportCapabilityMatrix
 {
-    public const string VerifiedSdkVersion = "2.0.40";
+    public const string VerifiedSdkVersion = "2.0.41";
 
     public const string SharedHostHttpClientScenario = QreCapabilityStatus.Unsupported;
 
