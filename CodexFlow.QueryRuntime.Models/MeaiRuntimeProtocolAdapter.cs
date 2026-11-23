@@ -12,6 +12,8 @@ namespace CodexFlow.QueryRuntime.Models;
 /// </summary>
 public static class MeaiRuntimeProtocolAdapter
 {
+    private const string ThoughtSignatureKey = "thoughtSignature";
+
     public static IReadOnlyList<RuntimeMessage> ToProtocolMessages(IReadOnlyList<ChatMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
@@ -118,13 +120,7 @@ public static class MeaiRuntimeProtocolAdapter
             {
                 ProtectedData = reasoning.ProtectedData
             },
-            RuntimeToolCallItem call => new FunctionCallContent(
-                call.Call.InvocationId.Value,
-                call.Call.Name,
-                ToMeaiArguments(call.Call.Arguments))
-            {
-                InformationalOnly = call.Call.InformationalOnly
-            },
+            RuntimeToolCallItem call => ToMeaiToolCall(call.Call),
             RuntimeToolResultItem result => new FunctionResultContent(
                 result.Result.InvocationId.Value,
                 result.Result.Text),
@@ -134,11 +130,31 @@ public static class MeaiRuntimeProtocolAdapter
         };
 
     private static RuntimeToolCall ToProtocolToolCall(FunctionCallContent call)
-        => new(
+        => new RuntimeToolCall(
             new RuntimeInvocationId(call.CallId),
             call.Name,
             ProtocolJsonValueNormalizer.ToObjectElement(call.Arguments),
-            call.InformationalOnly);
+            call.InformationalOnly)
+        {
+            ProtectedData = call.AdditionalProperties?.TryGetValue(ThoughtSignatureKey, out var signature) == true &&
+                signature is string value && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : null
+        };
+
+    private static FunctionCallContent ToMeaiToolCall(RuntimeToolCall call)
+    {
+        var content = new FunctionCallContent(call.InvocationId.Value, call.Name, ToMeaiArguments(call.Arguments))
+        {
+            InformationalOnly = call.InformationalOnly
+        };
+        if (!string.IsNullOrWhiteSpace(call.ProtectedData))
+        {
+            content.AdditionalProperties = new AdditionalPropertiesDictionary { [ThoughtSignatureKey] = call.ProtectedData };
+        }
+
+        return content;
+    }
 
     private static RuntimeUsage ToProtocolUsage(UsageDetails usage)
     {

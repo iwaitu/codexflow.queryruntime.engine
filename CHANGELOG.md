@@ -5,6 +5,11 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.5]
+
+- Preserve provider-signed tool calls across the runtime and MEAI adapter so Gemini can continue after a tool result.
+  The signature stays outside tool arguments and public presentation events.
+
 ## [0.26.4]
 
 - Consume VllmChatClient **2.0.41** and pin it as the verified SDK version. Gemini native tool calls preserve JSON

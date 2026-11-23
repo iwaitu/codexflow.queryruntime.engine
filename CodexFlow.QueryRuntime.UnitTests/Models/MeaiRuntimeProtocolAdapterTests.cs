@@ -21,6 +21,8 @@ public sealed class MeaiRuntimeProtocolAdapterTests
                 ["flags"] = new object?[] { true, "ordered" }
             });
         var reasoning = new TextReasoningContent("inspect first") { ProtectedData = "opaque" };
+        const string signature = "fixture/+==";
+        call.AdditionalProperties = new AdditionalPropertiesDictionary { ["thoughtSignature"] = signature };
         var messages = new[]
         {
             new ChatMessage(ChatRole.User, [new TextContent("inspect")]),
@@ -35,8 +37,10 @@ public sealed class MeaiRuntimeProtocolAdapterTests
         var protocolCall = Assert.IsType<RuntimeToolCallItem>(protocol[1].Items[1]).Call;
         Assert.Equal("README.md", protocolCall.Arguments.GetProperty("path").GetString());
         Assert.Equal(3, protocolCall.Arguments.GetProperty("line").GetInt64());
+        Assert.Equal(signature, protocolCall.ProtectedData);
         var roundTripCall = Assert.IsType<FunctionCallContent>(roundTrip[1].Contents[1]);
         Assert.Equal(new[] { "path", "line", "flags" }, roundTripCall.Arguments!.Keys);
+        Assert.Equal(signature, roundTripCall.AdditionalProperties!["thoughtSignature"]);
         Assert.Equal("opaque", Assert.IsType<TextReasoningContent>(roundTrip[1].Contents[0]).ProtectedData);
         Assert.Equal("ok", Assert.IsType<FunctionResultContent>(roundTrip[2].Contents[0]).Result);
     }
@@ -44,6 +48,7 @@ public sealed class MeaiRuntimeProtocolAdapterTests
     [Fact]
     public void StreamUpdate_PreservesReasoningUsageWarningToolOrderAndStopReason()
     {
+        const string signature = "parallel-first/+==";
         var update = new ChatResponseUpdate
         {
             Role = ChatRole.Assistant,
@@ -52,7 +57,10 @@ public sealed class MeaiRuntimeProtocolAdapterTests
             [
                 new TextReasoningContent("reason"),
                 new TextContent("text"),
-                new FunctionCallContent("call-1", "first", new Dictionary<string, object?>()),
+                new FunctionCallContent("call-1", "first", new Dictionary<string, object?>())
+                {
+                    AdditionalProperties = new AdditionalPropertiesDictionary { ["thoughtSignature"] = signature }
+                },
                 new FunctionCallContent("call-2", "second", new Dictionary<string, object?>()),
                 new UsageContent(new UsageDetails
                 {
@@ -70,11 +78,38 @@ public sealed class MeaiRuntimeProtocolAdapterTests
             events,
             item => Assert.IsType<RuntimeReasoningDeltaEvent>(item),
             item => Assert.IsType<RuntimeTextDeltaEvent>(item),
-            item => Assert.Equal("first", Assert.IsType<RuntimeToolCallEvent>(item).Call.Name),
-            item => Assert.Equal("second", Assert.IsType<RuntimeToolCallEvent>(item).Call.Name),
+            item =>
+            {
+                var call = Assert.IsType<RuntimeToolCallEvent>(item).Call;
+                Assert.Equal("first", call.Name);
+                Assert.Equal(signature, call.ProtectedData);
+            },
+            item =>
+            {
+                var call = Assert.IsType<RuntimeToolCallEvent>(item).Call;
+                Assert.Equal("second", call.Name);
+                Assert.Null(call.ProtectedData);
+            },
             item => Assert.Equal(14, Assert.IsType<RuntimeUsageEvent>(item).Usage.TotalTokens),
             item => Assert.Equal("meai_error_content", Assert.IsType<RuntimeWarningEvent>(item).Warning.Code),
             item => Assert.Equal(RuntimeModelStopReason.ToolCall, Assert.IsType<RuntimeModelCompletedEvent>(item).StopReason));
+    }
+
+    [Fact]
+    public void ToolSignatureMetadata_IsOptional()
+    {
+        object?[] invalidSignatures = [null, "", "  ", 42];
+        foreach (var signature in invalidSignatures)
+        {
+            var call = new FunctionCallContent("call-1", "read_file")
+            {
+                AdditionalProperties = new AdditionalPropertiesDictionary { ["thoughtSignature"] = signature }
+            };
+            var messages = MeaiRuntimeProtocolAdapter.ToProtocolMessages([new ChatMessage(ChatRole.Assistant, [call])]);
+            Assert.Null(Assert.IsType<RuntimeToolCallItem>(messages[0].Items[0]).Call.ProtectedData);
+            var restored = MeaiRuntimeProtocolAdapter.ToMeaiMessages(messages);
+            Assert.Null(Assert.IsType<FunctionCallContent>(restored[0].Contents[0]).AdditionalProperties);
+        }
     }
 
     [Fact]

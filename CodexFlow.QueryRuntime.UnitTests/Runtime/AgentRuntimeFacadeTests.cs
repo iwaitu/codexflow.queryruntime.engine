@@ -75,13 +75,15 @@ public sealed class AgentRuntimeFacadeTests
     [Fact]
     public async Task RunAsync_RequiredToolContinuesUntilSuccessfulObservation()
     {
+        const string signature = "signature/+==";
+        var sink = new RecordingSink();
         var executor = new RecordingToolExecutor();
         var model = new ScriptedModelClient(
             _ => Events(
                 new RuntimeTextDeltaEvent("draft"),
                 new RuntimeModelCompletedEvent(RuntimeModelStopReason.EndTurn)),
             _ => Events(
-                new RuntimeToolCallEvent(ToolCall("call-verify", "verify_state")),
+                new RuntimeToolCallEvent(ToolCall("call-verify", "verify_state") with { ProtectedData = signature }),
                 new RuntimeModelCompletedEvent(RuntimeModelStopReason.ToolCall)),
             _ => Events(
                 new RuntimeTextDeltaEvent("verified final"),
@@ -95,7 +97,7 @@ public sealed class AgentRuntimeFacadeTests
 
         var result = await runtime.RunAsync(
             new RuntimeRunRequest(request),
-            eventSink: null,
+            sink,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(RuntimeTurnStatus.Completed, result.Status);
@@ -104,6 +106,10 @@ public sealed class AgentRuntimeFacadeTests
         Assert.True(result.Turn.Progress.RequiredToolSatisfied);
         Assert.Equal(1, result.Turn.Progress.ContinuationCount);
         Assert.Equal("verify_state", model.Requests[1].Parameters.RequiredToolName);
+        var replayed = Assert.Single(model.Requests[2].Messages.SelectMany(m => m.Items).OfType<RuntimeToolCallItem>());
+        Assert.Equal(signature, replayed.Call.ProtectedData);
+        var presentation = Assert.Single(sink.Events, e => e.Type == RuntimePresentationEventType.ToolCallRequested);
+        Assert.Null(presentation.ToolCall!.ProtectedData);
     }
 
     [Fact]

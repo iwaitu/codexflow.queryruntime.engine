@@ -39,7 +39,12 @@ public sealed record RuntimeToolCall(
     RuntimeInvocationId InvocationId,
     string Name,
     JsonElement Arguments,
-    bool InformationalOnly = false);
+    bool InformationalOnly = false)
+{
+    /// <summary>Opaque provider data to replay with this call, outside its executable arguments.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ProtectedData { get; init; }
+}
 
 public sealed record RuntimeToolResult(
     RuntimeInvocationId InvocationId,
