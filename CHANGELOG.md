@@ -5,6 +5,11 @@ All notable changes to the `CodexFlow.QueryRuntime.Engine` and
 [Semantic Versioning](https://semver.org/); prerelease builds use
 `-preview.N`.
 
+## [0.26.6]
+
+- Update VllmChatClient to **2.0.42** so Gemini native streams deliver all tool calls and text before
+  emitting the finish reason.
+
 ## [0.26.5]
 
 - Preserve provider-signed tool calls across the runtime and MEAI adapter so Gemini can continue after a tool result.
